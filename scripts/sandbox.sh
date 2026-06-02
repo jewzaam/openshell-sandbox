@@ -137,6 +137,7 @@ EXAMPLES:
     $(basename "$0") --create nexus --repo git@github.com:org/nexus.git --ref pr/42
     $(basename "$0") --ensure nexus-pr-42 --repo git@github.com:org/nexus.git --ref pr/42
     $(basename "$0") --add-repo nexus --repo git@github.com:org/lib.git --ref v2.0
+    $(basename "$0") --add-repo nexus --repo git@github.com:org/ui.git --source-dir ~/source/ui
     $(basename "$0") --download nexus
     $(basename "$0") --upload nexus --repo nexus
     $(basename "$0") --connect nexus
@@ -433,7 +434,7 @@ if [[ "$ADD_REPO_MODE" == true ]]; then
         repo_name=$(basename "$repo" .git)
 
         echo "adding ${repo_name} to sandbox ${SANDBOX_NAME}..." >&2
-        clone_repo_host "$repo" "$ref" "$SANDBOX_DIR"
+        clone_repo_host "$repo" "$ref" "$SANDBOX_DIR" "$SOURCE_DIR"
 
         sha=$(git -C "${SANDBOX_DIR}/${repo_name}" rev-parse HEAD)
         write_manifest "$SANDBOX_DIR" "$SANDBOX_NAME" "$repo_name" "$repo" "$ref" "$sha"
@@ -581,17 +582,19 @@ echo "" >&2
 CREATE_PID=$!
 
 elapsed=0
-while ! openshell sandbox list "${GW_FLAG[@]}" 2>/dev/null | grep -q "${SANDBOX_TARGET}"; do
+while true; do
+    if openshell sandbox list "${GW_FLAG[@]}" 2>/dev/null | grep -q "^${SANDBOX_TARGET}[[:space:]].*Ready"; then
+        break
+    fi
     sleep 1
     elapsed=$((elapsed + 1))
-    if [[ $elapsed -ge 60 ]]; then
+    if [[ $elapsed -ge 120 ]]; then
         kill "$CREATE_PID" 2>/dev/null || true
-        echo "error: sandbox did not appear within 60s" >&2
+        echo "error: sandbox did not reach Ready within 120s" >&2
         exit 1
     fi
 done
 
-sleep 2
 kill "$CREATE_PID" 2>/dev/null || true
 wait "$CREATE_PID" 2>/dev/null || true
 
