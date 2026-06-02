@@ -3,21 +3,27 @@
 #
 # Create and manage OpenShell sandboxes with Claude Code.
 # Captures env vars, uploads credentials and ~/.claude/ config,
-# clones repos, and starts Claude in auto mode.
+# clones repos on host, uploads to sandbox, and starts Claude in auto mode.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SANDBOXES_DIR="${HOME}/sandboxes"
 
 # Defaults
 SANDBOX_NAME=""
 CONNECT_NAME=""
 DELETE_NAME=""
 LIST_MODE=false
+NO_CLONE=false
+DOWNLOAD_MODE=false
+UPLOAD_MODE=false
+ADD_REPO_MODE=false
 GATEWAY=""
 POLICY_FILE=""
 REPOS=()
+REFS=()
 EXTRA_ARGS=()
 
 # ---------------------------------------------------------------------------
@@ -92,24 +98,142 @@ Usage: $(basename "$0") [OPTIONS] [-- CLAUDE_ARGS...]
 Create an OpenShell sandbox running Claude Code in auto mode.
 
 OPTIONS:
-    --name NAME       Sandbox name (auto-generated if omitted)
+    --create NAME     Create sandbox with this name
+    --repo URL        Git repo to clone on host and upload (repeatable)
+    --ref REF         Ref for preceding --repo: branch, pr/<num>, tag/<name>, or SHA
+    --add-repo NAME   Add repo(s) to existing sandbox (use --repo for URL)
+    --download NAME   Download repos from sandbox to ~/sandboxes/<name>/
+    --upload NAME     Upload local repo changes back into sandbox
     --policy FILE     Override policy file (default: auto-detect home/work)
-    --repo URL        Git repo to clone (repeatable, auto-detects cwd origin)
     --gateway NAME    OpenShell gateway (default: \$OPENSHELL_GATEWAY)
     --connect NAME    Reconnect to an existing sandbox
-    --delete NAME     Delete a sandbox
+    --delete NAME     Delete a sandbox and local state
+    --no-clone        Skip repo cloning (create sandbox with env + config only)
     --list            List sandboxes
     --help            Show this help
 
 EXAMPLES:
-    $(basename "$0")                                          # auto-detect policy and repo
-    $(basename "$0") --name nexus                             # named sandbox
-    $(basename "$0") --repo git@github.com:org/a.git --repo git@github.com:org/b.git
-    $(basename "$0") --connect nexus                          # reconnect
-    $(basename "$0") --list                                   # list sandboxes
-    $(basename "$0") --delete nexus                           # cleanup
+    $(basename "$0") --create nexus --repo git@github.com:org/nexus.git --ref pr/42
+    $(basename "$0") --add-repo nexus --repo git@github.com:org/lib.git --ref v2.0
+    $(basename "$0") --download nexus
+    $(basename "$0") --upload nexus --repo nexus
+    $(basename "$0") --connect nexus
+    $(basename "$0") --delete nexus
 EOF
     exit "${1:-0}"
+}
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+clone_repo_host() {
+    local url="$1" ref="$2" sandbox_dir="$3"
+    local repo_name
+    repo_name=$(basename "$url" .git)
+    local target="${sandbox_dir}/${repo_name}"
+
+    if [[ -d "$target" ]]; then
+        echo "  ${repo_name} already cloned, skipping" >&2
+        return 0
+    fi
+
+    # Strip trailing slash — gh CLI fails to resolve repo name with it
+    local clean_url="${url%/}"
+    git clone "$clean_url" "$target"
+
+    if [[ -n "$ref" ]]; then
+        if [[ "$ref" =~ ^pr/([0-9]+)$ ]]; then
+            local pr_num="${BASH_REMATCH[1]}"
+            git -C "$target" fetch origin "pull/${pr_num}/head:pr-${pr_num}"
+            git -C "$target" checkout "pr-${pr_num}"
+        elif [[ "$ref" =~ ^tag/ ]]; then
+            git -C "$target" checkout "tags/${ref#tag/}"
+        else
+            git -C "$target" checkout "$ref"
+        fi
+    fi
+}
+
+upload_repo() {
+    local sandbox_name="$1" sandbox_dir="$2" repo_name="$3"
+    openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
+        --no-git-ignore \
+        "${sandbox_dir}/${repo_name}" /sandbox/source/
+}
+
+write_manifest() {
+    local sandbox_dir="$1" sandbox_name="$2" repo_name="$3"
+    local url="$4" ref="$5" sha="$6"
+    local manifest="${sandbox_dir}/manifest.json"
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    if [[ ! -f "$manifest" ]]; then
+        jq -n \
+            --arg name "$sandbox_name" \
+            --arg created "$now" \
+            '{name: $name, created: $created, repos: {}}' \
+            > "${manifest}.tmp"
+        mv "${manifest}.tmp" "$manifest"
+    fi
+
+    jq \
+        --arg repo "$repo_name" \
+        --arg url "$url" \
+        --arg ref "$ref" \
+        --arg sha "$sha" \
+        --arg ts "$now" \
+        '.repos[$repo] = {url: $url, ref: $ref, sha: $sha, cloned_at: $ts}' \
+        "$manifest" > "${manifest}.tmp"
+    mv "${manifest}.tmp" "$manifest"
+}
+
+download_sandbox() {
+    local sandbox_name="$1" sandbox_dir="$2"
+    local manifest="${sandbox_dir}/manifest.json"
+
+    if [[ ! -f "$manifest" ]]; then
+        echo "error: no manifest at ${manifest}" >&2
+        exit 1
+    fi
+
+    local repos
+    repos=$(jq -r '.repos | keys[]' "$manifest")
+
+    for repo_name in $repos; do
+        echo "  downloading ${repo_name}..." >&2
+        openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+            "/sandbox/source/${repo_name}" "${sandbox_dir}/"
+    done
+}
+
+upload_sandbox() {
+    local sandbox_name="$1" sandbox_dir="$2" target_repo="${3:-}"
+    local manifest="${sandbox_dir}/manifest.json"
+
+    if [[ ! -f "$manifest" ]]; then
+        echo "error: no manifest at ${manifest}" >&2
+        exit 1
+    fi
+
+    if [[ -n "$target_repo" ]]; then
+        if [[ ! -d "${sandbox_dir}/${target_repo}" ]]; then
+            echo "error: repo not found at ${sandbox_dir}/${target_repo}" >&2
+            exit 1
+        fi
+        echo "  uploading ${target_repo}..." >&2
+        upload_repo "$sandbox_name" "$sandbox_dir" "$target_repo"
+    else
+        local repos
+        repos=$(jq -r '.repos | keys[]' "$manifest")
+        for repo_name in $repos; do
+            if [[ -d "${sandbox_dir}/${repo_name}" ]]; then
+                echo "  uploading ${repo_name}..." >&2
+                upload_repo "$sandbox_name" "$sandbox_dir" "$repo_name"
+            fi
+        done
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -121,7 +245,7 @@ while [[ $# -gt 0 ]]; do
         --help|-h)
             usage 0
             ;;
-        --name)
+        --create)
             SANDBOX_NAME="$2"
             shift 2
             ;;
@@ -131,6 +255,31 @@ while [[ $# -gt 0 ]]; do
             ;;
         --repo)
             REPOS+=("$2")
+            REFS+=("")
+            shift 2
+            ;;
+        --ref)
+            if [[ ${#REFS[@]} -gt 0 ]]; then
+                REFS[${#REFS[@]}-1]="$2"
+            else
+                echo "error: --ref must follow --repo or --add-repo" >&2
+                exit 1
+            fi
+            shift 2
+            ;;
+        --add-repo)
+            ADD_REPO_MODE=true
+            SANDBOX_NAME="$2"
+            shift 2
+            ;;
+        --download)
+            DOWNLOAD_MODE=true
+            SANDBOX_NAME="$2"
+            shift 2
+            ;;
+        --upload)
+            UPLOAD_MODE=true
+            SANDBOX_NAME="$2"
             shift 2
             ;;
         --connect)
@@ -143,6 +292,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --list)
             LIST_MODE=true
+            shift
+            ;;
+        --no-clone)
+            NO_CLONE=true
             shift
             ;;
         --gateway|-g)
@@ -169,11 +322,76 @@ if [[ "$LIST_MODE" == true ]]; then
     exec openshell sandbox list "${GW_FLAG[@]}"
     exit $?
 elif [[ -n "$DELETE_NAME" ]]; then
-    exec openshell sandbox delete "$DELETE_NAME" "${GW_FLAG[@]}"
-    exit $?
+    openshell sandbox delete "$DELETE_NAME" "${GW_FLAG[@]}" || true
+    if [[ -d "${SANDBOXES_DIR}/${DELETE_NAME}" ]]; then
+        rm -rf "${SANDBOXES_DIR}/${DELETE_NAME}"
+        echo "removed local state: ${SANDBOXES_DIR}/${DELETE_NAME}" >&2
+    fi
+    exit 0
 elif [[ -n "$CONNECT_NAME" ]]; then
     exec openshell sandbox connect "$CONNECT_NAME" "${GW_FLAG[@]}"
     exit $?
+fi
+
+# --- Add repo to existing sandbox ---
+if [[ "$ADD_REPO_MODE" == true ]]; then
+    if [[ ${#REPOS[@]} -eq 0 ]]; then
+        echo "error: --add-repo requires --repo URL" >&2
+        exit 1
+    fi
+    SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
+    mkdir -p "$SANDBOX_DIR"
+
+    for i in "${!REPOS[@]}"; do
+        repo="${REPOS[$i]}"
+        ref="${REFS[$i]:-}"
+        repo_name=$(basename "$repo" .git)
+
+        echo "adding ${repo_name} to sandbox ${SANDBOX_NAME}..." >&2
+        clone_repo_host "$repo" "$ref" "$SANDBOX_DIR"
+
+        sha=$(git -C "${SANDBOX_DIR}/${repo_name}" rev-parse HEAD)
+        write_manifest "$SANDBOX_DIR" "$SANDBOX_NAME" "$repo_name" "$repo" "$ref" "$sha"
+
+        echo "uploading ${repo_name}..." >&2
+        upload_repo "$SANDBOX_NAME" "$SANDBOX_DIR" "$repo_name"
+    done
+
+    echo "done." >&2
+    exit 0
+fi
+
+# --- Download from sandbox ---
+if [[ "$DOWNLOAD_MODE" == true ]]; then
+    SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
+
+    echo "downloading from sandbox ${SANDBOX_NAME}..." >&2
+    download_sandbox "$SANDBOX_NAME" "$SANDBOX_DIR"
+    echo "done. files in ${SANDBOX_DIR}/" >&2
+    exit 0
+fi
+
+# --- Upload to sandbox ---
+if [[ "$UPLOAD_MODE" == true ]]; then
+    SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
+    target_repo=""
+    if [[ ${#REPOS[@]} -gt 0 ]]; then
+        target_repo=$(basename "${REPOS[0]}" .git)
+    fi
+
+    echo "uploading to sandbox ${SANDBOX_NAME}..." >&2
+    upload_sandbox "$SANDBOX_NAME" "$SANDBOX_DIR" "$target_repo"
+    echo "done." >&2
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Validate --create required when --repo specified
+# ---------------------------------------------------------------------------
+
+if [[ -z "$SANDBOX_NAME" && "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
+    echo "error: --create required when --repo is specified" >&2
+    exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -181,7 +399,7 @@ fi
 # ---------------------------------------------------------------------------
 
 if [[ -z "$POLICY_FILE" ]]; then
-    local profile="home"
+    profile="home"
     if [[ -n "${CLAUDE_CODE_USE_VERTEX+x}" ]]; then
         profile="work"
     fi
@@ -197,11 +415,19 @@ fi
 # Generate /sandbox/.env content (runtime env vars)
 # ---------------------------------------------------------------------------
 
+# Populate GH_TOKEN from secret-tool if not already set
+if [[ -z "${GH_TOKEN:-}" ]] && command -v secret-tool >/dev/null 2>&1; then
+    GH_TOKEN=$(secret-tool lookup github openshell-sandbox-ro 2>/dev/null || true)
+    if [[ -n "$GH_TOKEN" ]]; then
+        export GH_TOKEN
+    fi
+fi
+
 ENV_CONTENT=""
 captured=0
 for var in "${ALL_VARS[@]}"; do
     if [[ -n "${!var+x}" ]]; then
-        ENV_CONTENT+="$(printf '%s=%q\n' "$var" "${!var}")"
+        ENV_CONTENT+="$(printf '%s=%q' "$var" "${!var}")"$'\n'
         captured=$((captured + 1))
     fi
 done
@@ -255,6 +481,11 @@ sleep 2
 kill "$CREATE_PID" 2>/dev/null || true
 wait "$CREATE_PID" 2>/dev/null || true
 
+# Create host-side state directory
+if [[ -n "$SANDBOX_TARGET" ]]; then
+    mkdir -p "${SANDBOXES_DIR}/${SANDBOX_TARGET}"
+fi
+
 # ---------------------------------------------------------------------------
 # Upload credentials
 # ---------------------------------------------------------------------------
@@ -286,53 +517,79 @@ if [[ -d "${HOME}/.claude" ]]; then
         --exclude=.git \
         "${HOME}/.claude/" "${CLAUDE_TMP}/.claude/"
 
-    # Strip settings.json: remove allow permissions and hooks
+    # Strip settings.json: remove allow permissions and hooks, rewrite paths
     # (sandbox policy is the security boundary)
     if [[ -f "${CLAUDE_TMP}/.claude/settings.json" ]]; then
         python3 -c "
 import json, sys
 with open(sys.argv[1], 'r') as f:
-    s = json.load(f)
+    raw = f.read()
+raw = raw.replace(sys.argv[2], '/sandbox')
+s = json.loads(raw)
 for key in list(s.keys()):
     if key.startswith('permissions') and 'allow' in key.lower():
         del s[key]
 s.pop('hooks', None)
 with open(sys.argv[1], 'w') as f:
     json.dump(s, f, indent=2)
-" "${CLAUDE_TMP}/.claude/settings.json"
+" "${CLAUDE_TMP}/.claude/settings.json" "${HOME}"
     fi
 
+    # Rewrite host HOME paths to /sandbox in all plugin config files
+    if [[ -d "${CLAUDE_TMP}/.claude/plugins" ]]; then
+        find "${CLAUDE_TMP}/.claude/plugins" -name "*.json" -exec \
+            sed -i "s|${HOME}|/sandbox|g" {} +
+    fi
+
+    # Stage .bashrc and .env into temp dir
+    cp "${REPO_ROOT}/config/bashrc" "${CLAUDE_TMP}/.bashrc"
+    echo "$ENV_CONTENT" > "${CLAUDE_TMP}/.env"
+
+    # Upload config to /sandbox (uploads accumulate, not clobber)
     openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
         "${CLAUDE_TMP}/.claude" /sandbox
+    openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
+        "${CLAUDE_TMP}/.bashrc" /sandbox
+    openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
+        "${CLAUDE_TMP}/.env" /sandbox
     rm -rf "$CLAUDE_TMP"
 fi
 
-# ---------------------------------------------------------------------------
-# Write runtime env vars to /sandbox/.env
-# ---------------------------------------------------------------------------
-
-echo "$ENV_CONTENT" | openshell sandbox exec --name "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
-    --no-tty -- bash -c 'cat > /sandbox/.env'
+# Re-upload bin/ (OpenShell may reset home dir during sandbox create)
+openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
+    "${REPO_ROOT}/bin" /sandbox
 
 # ---------------------------------------------------------------------------
-# Clone repos
+# Clone repos on host and upload to sandbox
 # ---------------------------------------------------------------------------
 
-if [[ ${#REPOS[@]} -eq 0 ]]; then
+if [[ "$NO_CLONE" != true && ${#REPOS[@]} -eq 0 ]]; then
     current_remote=$(git remote get-url origin 2>/dev/null || true)
     if [[ -n "$current_remote" ]]; then
         REPOS+=("$current_remote")
+        REFS+=("")
     fi
 fi
 
 WORKDIR="/sandbox"
-if [[ ${#REPOS[@]} -gt 0 ]]; then
-    echo "cloning repos..." >&2
-    for repo in "${REPOS[@]}"; do
+if [[ "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
+    SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_TARGET}"
+    mkdir -p "$SANDBOX_DIR"
+
+    echo "cloning repos on host..." >&2
+    for i in "${!REPOS[@]}"; do
+        repo="${REPOS[$i]}"
+        ref="${REFS[$i]:-}"
         repo_name=$(basename "$repo" .git)
-        echo "  ${repo_name}" >&2
-        openshell sandbox exec --name "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
-            --no-tty -- git clone "$repo" "/sandbox/source/$repo_name" 2>&1 || true
+
+        echo "  ${repo_name}${ref:+ (${ref})}" >&2
+        clone_repo_host "$repo" "$ref" "$SANDBOX_DIR"
+
+        sha=$(git -C "${SANDBOX_DIR}/${repo_name}" rev-parse HEAD)
+        write_manifest "$SANDBOX_DIR" "$SANDBOX_TARGET" "$repo_name" "$repo" "$ref" "$sha"
+
+        echo "  uploading ${repo_name} to sandbox..." >&2
+        upload_repo "$SANDBOX_TARGET" "$SANDBOX_DIR" "$repo_name"
     done
 
     first_repo=$(basename "${REPOS[0]}" .git)
@@ -345,5 +602,5 @@ fi
 
 echo "starting claude in ${WORKDIR}..." >&2
 exec openshell sandbox exec --name "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
-    --tty -- bash -c "source /sandbox/.bashrc && cd $WORKDIR && exec claude --dangerously-skip-permissions"
+    --tty -- bash -c "source /sandbox/.bashrc && cd $WORKDIR && exec claude-wrapper.sh"
 exit $?

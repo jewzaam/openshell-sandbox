@@ -73,12 +73,22 @@ network_policies:
         port: 443
         protocol: rest
         enforcement: enforce
-        access: full
+        access: read-only
       - host: github.com
         port: 443
         protocol: rest
         enforcement: enforce
-        access: full
+        access: read-write
+      - host: codeload.github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: objects.githubusercontent.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
     binaries:
       - { path: "/**" }
 
@@ -90,6 +100,17 @@ network_policies:
         protocol: rest
         enforcement: enforce
         access: read-only
+    binaries:
+      - { path: "/**" }
+
+  otel:
+    name: otel-collector
+    endpoints:
+      - host: host.containers.internal
+        port: 4318
+        protocol: rest
+        enforcement: enforce
+        access: full
     binaries:
       - { path: "/**" }
 

@@ -4,4 +4,4 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/claude.env"
 
 # run claude
-claude "$@"
+claude --dangerously-skip-permissions "$@"

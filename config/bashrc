@@ -2,7 +2,6 @@
 # Base .bashrc for OpenShell sandbox. Baked into the image at build time.
 # Runtime env vars are added to /sandbox/.env by sandbox.sh and sourced below.
 
-export HOME=/sandbox
 export XDG_CONFIG_HOME=/sandbox/.config
 export PATH="/sandbox/bin:${PATH}"
 
@@ -13,9 +12,14 @@ if [[ -f /sandbox/.env ]]; then
     set +a
 fi
 
+# Configure git HTTPS auth from token (sandbox has read-only GitHub access)
+if [[ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]]; then
+    git config --global url."https://${GH_TOKEN:-${GITHUB_TOKEN}}@github.com/".insteadOf "https://github.com/"
+fi
+
 # quality of life
 export EDITOR=vi
 export PYTHONDONTWRITEBYTECODE=1
-alias vi="vim -p"
 alias fetch="git fetch --all --prune --tags"
 alias ll="ls -l"
+alias claude="/sandbox/bin/claude-wrapper.sh"
