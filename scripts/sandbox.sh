@@ -20,8 +20,10 @@ NO_CLONE=false
 DOWNLOAD_MODE=false
 UPLOAD_MODE=false
 ADD_REPO_MODE=false
+ENSURE_MODE=false
 GATEWAY=""
 POLICY_FILE=""
+SOURCE_DIR=""
 REPOS=()
 REFS=()
 EXTRA_ARGS=()
@@ -88,6 +90,21 @@ ALL_VARS=(
 )
 
 # ---------------------------------------------------------------------------
+# Infer sandbox name from CWD if under ~/sandboxes/<name>/
+# ---------------------------------------------------------------------------
+
+infer_sandbox_name() {
+    local cwd
+    cwd="$(pwd)"
+    if [[ "$cwd" == "${SANDBOXES_DIR}/"* ]]; then
+        local relative="${cwd#${SANDBOXES_DIR}/}"
+        echo "${relative%%/*}"
+        return 0
+    fi
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
 
@@ -99,21 +116,26 @@ Create an OpenShell sandbox running Claude Code in auto mode.
 
 OPTIONS:
     --create NAME     Create sandbox with this name
+    --ensure [NAME]   Create sandbox if missing, reconnect if exists (use with --repo/--ref)
     --repo URL        Git repo to clone on host and upload (repeatable)
     --ref REF         Ref for preceding --repo: branch, pr/<num>, tag/<name>, or SHA
-    --add-repo NAME   Add repo(s) to existing sandbox (use --repo for URL)
-    --download NAME   Download repos from sandbox to ~/sandboxes/<name>/
-    --upload NAME     Upload local repo changes back into sandbox
+    --source-dir DIR  Copy remotes from local repo and fetch (sandbox has no git auth)
+    --add-repo [NAME] Add repo(s) to existing sandbox (use --repo for URL)
+    --download [NAME] Download repos from sandbox to ~/sandboxes/<name>/
+    --upload [NAME]   Upload local repo changes back into sandbox
     --policy FILE     Override policy file (default: auto-detect home/work)
     --gateway NAME    OpenShell gateway (default: \$OPENSHELL_GATEWAY)
-    --connect NAME    Reconnect to an existing sandbox
-    --delete NAME     Delete a sandbox and local state
+    --connect [NAME]  Reconnect to an existing sandbox
+    --delete [NAME]   Delete a sandbox and local state
+
+    NAME is optional for commands marked [NAME] when CWD is under ~/sandboxes/<name>/.
     --no-clone        Skip repo cloning (create sandbox with env + config only)
     --list            List sandboxes
     --help            Show this help
 
 EXAMPLES:
     $(basename "$0") --create nexus --repo git@github.com:org/nexus.git --ref pr/42
+    $(basename "$0") --ensure nexus-pr-42 --repo git@github.com:org/nexus.git --ref pr/42
     $(basename "$0") --add-repo nexus --repo git@github.com:org/lib.git --ref v2.0
     $(basename "$0") --download nexus
     $(basename "$0") --upload nexus --repo nexus
@@ -128,7 +150,7 @@ EOF
 # ---------------------------------------------------------------------------
 
 clone_repo_host() {
-    local url="$1" ref="$2" sandbox_dir="$3"
+    local url="$1" ref="$2" sandbox_dir="$3" source_dir="${4:-}"
     local repo_name
     repo_name=$(basename "$url" .git)
     local target="${sandbox_dir}/${repo_name}"
@@ -142,6 +164,18 @@ clone_repo_host() {
     local clean_url="${url%/}"
     git clone "$clean_url" "$target"
 
+    # Copy remotes from source repo and fetch (sandbox has no git auth)
+    if [[ -n "$source_dir" && -d "$source_dir/.git" ]]; then
+        local remote remote_url
+        while IFS= read -r remote; do
+            [[ "$remote" == "origin" ]] && continue
+            remote_url="$(git -C "$source_dir" remote get-url "$remote")"
+            git -C "$target" remote add "$remote" "$remote_url" 2>/dev/null || true
+            echo "  fetching remote ${remote}..." >&2
+            git -C "$target" fetch "$remote"
+        done < <(git -C "$source_dir" remote)
+    fi
+
     if [[ -n "$ref" ]]; then
         if [[ "$ref" =~ ^pr/([0-9]+)$ ]]; then
             local pr_num="${BASH_REMATCH[1]}"
@@ -150,7 +184,9 @@ clone_repo_host() {
         elif [[ "$ref" =~ ^tag/ ]]; then
             git -C "$target" checkout "tags/${ref#tag/}"
         else
-            git -C "$target" checkout "$ref"
+            if ! git -C "$target" checkout "$ref" 2>/dev/null; then
+                echo "  warning: ref '${ref}' not found, using default branch" >&2
+            fi
         fi
     fi
 }
@@ -203,8 +239,9 @@ download_sandbox() {
 
     for repo_name in $repos; do
         echo "  downloading ${repo_name}..." >&2
+        mkdir -p "${sandbox_dir}/${repo_name}"
         openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
-            "/sandbox/source/${repo_name}" "${sandbox_dir}/"
+            "/sandbox/source/${repo_name}" "${sandbox_dir}/${repo_name}"
     done
 }
 
@@ -246,19 +283,28 @@ while [[ $# -gt 0 ]]; do
             usage 0
             ;;
         --create)
+            [[ $# -ge 2 ]] || { echo "error: --create requires NAME" >&2; exit 1; }
             SANDBOX_NAME="$2"
             shift 2
             ;;
         --policy)
+            [[ $# -ge 2 ]] || { echo "error: --policy requires FILE" >&2; exit 1; }
             POLICY_FILE="$2"
             shift 2
             ;;
+        --source-dir)
+            [[ $# -ge 2 ]] || { echo "error: --source-dir requires PATH" >&2; exit 1; }
+            SOURCE_DIR="$2"
+            shift 2
+            ;;
         --repo)
+            [[ $# -ge 2 ]] || { echo "error: --repo requires URL" >&2; exit 1; }
             REPOS+=("$2")
             REFS+=("")
             shift 2
             ;;
         --ref)
+            [[ $# -ge 2 ]] || { echo "error: --ref requires REF" >&2; exit 1; }
             if [[ ${#REFS[@]} -gt 0 ]]; then
                 REFS[${#REFS[@]}-1]="$2"
             else
@@ -267,28 +313,57 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
+        --ensure)
+            ENSURE_MODE=true
+            if [[ $# -ge 2 && "$2" != --* ]]; then
+                SANDBOX_NAME="$2"; shift 2
+            else
+                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --ensure requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                shift
+            fi
+            ;;
         --add-repo)
             ADD_REPO_MODE=true
-            SANDBOX_NAME="$2"
-            shift 2
+            if [[ $# -ge 2 && "$2" != --* ]]; then
+                SANDBOX_NAME="$2"; shift 2
+            else
+                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --add-repo requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                shift
+            fi
             ;;
         --download)
             DOWNLOAD_MODE=true
-            SANDBOX_NAME="$2"
-            shift 2
+            if [[ $# -ge 2 && "$2" != --* ]]; then
+                SANDBOX_NAME="$2"; shift 2
+            else
+                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --download requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                shift
+            fi
             ;;
         --upload)
             UPLOAD_MODE=true
-            SANDBOX_NAME="$2"
-            shift 2
+            if [[ $# -ge 2 && "$2" != --* ]]; then
+                SANDBOX_NAME="$2"; shift 2
+            else
+                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --upload requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                shift
+            fi
             ;;
         --connect)
-            CONNECT_NAME="$2"
-            shift 2
+            if [[ $# -ge 2 && "$2" != --* ]]; then
+                CONNECT_NAME="$2"; shift 2
+            else
+                CONNECT_NAME="$(infer_sandbox_name)" || { echo "error: --connect requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                shift
+            fi
             ;;
         --delete)
-            DELETE_NAME="$2"
-            shift 2
+            if [[ $# -ge 2 && "$2" != --* ]]; then
+                DELETE_NAME="$2"; shift 2
+            else
+                DELETE_NAME="$(infer_sandbox_name)" || { echo "error: --delete requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                shift
+            fi
             ;;
         --list)
             LIST_MODE=true
@@ -299,6 +374,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --gateway|-g)
+            [[ $# -ge 2 ]] || { echo "error: --gateway requires NAME" >&2; exit 1; }
             GATEWAY="$2"
             shift 2
             ;;
@@ -329,7 +405,16 @@ elif [[ -n "$DELETE_NAME" ]]; then
     fi
     exit 0
 elif [[ -n "$CONNECT_NAME" ]]; then
-    exec openshell sandbox connect "$CONNECT_NAME" "${GW_FLAG[@]}"
+    SANDBOX_DIR="${SANDBOXES_DIR}/${CONNECT_NAME}"
+    WORKDIR="/sandbox"
+    if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
+        first_repo=$(jq -r '.repos | keys[0] // empty' "${SANDBOX_DIR}/manifest.json")
+        if [[ -n "$first_repo" ]]; then
+            WORKDIR="/sandbox/source/${first_repo}"
+        fi
+    fi
+    exec openshell sandbox exec --name "${CONNECT_NAME}" "${GW_FLAG[@]}" \
+        --tty --timeout 0 -- bash -c "source /sandbox/.bashrc && cd ${WORKDIR} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
     exit $?
 fi
 
@@ -383,6 +468,35 @@ if [[ "$UPLOAD_MODE" == true ]]; then
     upload_sandbox "$SANDBOX_NAME" "$SANDBOX_DIR" "$target_repo"
     echo "done." >&2
     exit 0
+fi
+
+# --- Ensure (create-or-connect) ---
+if [[ "$ENSURE_MODE" == true ]]; then
+    if openshell sandbox list "${GW_FLAG[@]}" 2>/dev/null | grep -q "^${SANDBOX_NAME}[[:space:]]"; then
+        SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
+        WORKDIR="/sandbox"
+        if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
+            first_repo=$(jq -r '.repos | keys[0] // empty' "${SANDBOX_DIR}/manifest.json")
+            if [[ -n "$first_repo" ]]; then
+                WORKDIR="/sandbox/source/${first_repo}"
+            fi
+        fi
+        echo "sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
+        exec openshell sandbox exec --name "${SANDBOX_NAME}" "${GW_FLAG[@]}" \
+            --tty --timeout 0 -- bash -c "source /sandbox/.bashrc && cd ${WORKDIR} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
+    else
+        ENSURE_ARGS=(--create "$SANDBOX_NAME")
+        for i in "${!REPOS[@]}"; do
+            ENSURE_ARGS+=(--repo "${REPOS[$i]}")
+            if [[ -n "${REFS[$i]:-}" ]]; then
+                ENSURE_ARGS+=(--ref "${REFS[$i]}")
+            fi
+        done
+        [[ -n "$GATEWAY" ]] && ENSURE_ARGS+=(--gateway "$GATEWAY")
+        [[ -n "$POLICY_FILE" ]] && ENSURE_ARGS+=(--policy "$POLICY_FILE")
+        [[ -n "$SOURCE_DIR" ]] && ENSURE_ARGS+=(--source-dir "$SOURCE_DIR")
+        exec "$0" "${ENSURE_ARGS[@]}"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -447,7 +561,7 @@ fi
 # Create sandbox
 # ---------------------------------------------------------------------------
 
-CREATE_CMD=(openshell sandbox create "${GW_FLAG[@]}" --no-auto-providers)
+CREATE_CMD=(openshell sandbox create "${GW_FLAG[@]}" --no-auto-providers --keep)
 
 if [[ -n "$SANDBOX_NAME" ]]; then
     CREATE_CMD+=(--name "$SANDBOX_NAME")
@@ -583,7 +697,7 @@ if [[ "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
         repo_name=$(basename "$repo" .git)
 
         echo "  ${repo_name}${ref:+ (${ref})}" >&2
-        clone_repo_host "$repo" "$ref" "$SANDBOX_DIR"
+        clone_repo_host "$repo" "$ref" "$SANDBOX_DIR" "$SOURCE_DIR"
 
         sha=$(git -C "${SANDBOX_DIR}/${repo_name}" rev-parse HEAD)
         write_manifest "$SANDBOX_DIR" "$SANDBOX_TARGET" "$repo_name" "$repo" "$ref" "$sha"
@@ -602,5 +716,5 @@ fi
 
 echo "starting claude in ${WORKDIR}..." >&2
 exec openshell sandbox exec --name "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
-    --tty -- bash -c "source /sandbox/.bashrc && cd $WORKDIR && exec claude-wrapper.sh"
+    --tty --timeout 0 -- bash -c "source /sandbox/.bashrc && cd $WORKDIR && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
 exit $?
