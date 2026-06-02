@@ -1,0 +1,160 @@
+#!/bin/bash
+
+MAKE_REMOTES=$1
+
+# "trunk" is the primary branch, usually "main" or "master" but generalized to whatever origin/HEAD points to
+BRANCH_TRUNK=$(git branch -a | grep "remotes/origin/HEAD" | sed 's|.* -> .*/\([^/]*\)|\1|g' | head -n1)
+
+# Check if a branch has been merged into trunk via any merge strategy
+# (regular merge, rebase-and-merge, or squash merge)
+function is_merged {
+    local branch=$1
+    local trunk=$2
+
+    # Regular merge: branch is an ancestor of trunk
+    if git merge-base --is-ancestor "$branch" "$trunk" 2>/dev/null; then
+        return 0
+    fi
+
+    # Rebase merge: all commits have patch-equivalent in trunk
+    # git cherry marks unmatched commits with '+', matched with '-'
+    local unmerged
+    unmerged=$(git cherry "$trunk" "$branch" 2>/dev/null | grep -c '^+')
+    if [ "$unmerged" = "0" ]; then
+        return 0
+    fi
+
+    # Squash merge: the branch tree is identical to trunk (all changes landed)
+    if git diff --quiet "$trunk" "$branch" -- 2>/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
+function reset_git_trunk {
+    echo ""
+    echo -n "Do a hard reset and clean (ALL UNSTAGED AND NEW CHANGES WILL BE DELETED) [yes/NO]: "
+    read -r DO_RESET
+    
+    if [ "$DO_RESET" == "yes" ];
+    then
+        git clean -xdf
+        git checkout -b $BRANCH_TRUNK origin/$BRANCH_TRUNK 2>/dev/null || git checkout $BRANCH_TRUNK
+        git reset --hard HEAD
+        git pull
+    else
+        exit -1
+    fi
+}
+
+UPSTREAM_REPO=$(git remote -v | grep fetch | grep origin | sed 's|[^.@]*[@/]\([^/.]*\)\..*|\1|g')
+HAVE_GITLAB_FORK=$(git remote -v | grep gitlab | grep fetch | grep ^nmalik | wc -l) # specifically look for a remote 'nmalik'
+HAVE_GITHUB_FORK=$(git remote -v | grep github | grep fetch | grep ^jewzaam | wc -l) # specifically look for a remote 'jewzaam'
+
+# if I have any forks disable set-url on push for origin
+if [[ $HAVE_GITLAB_FORK -gt 0 ]] || [[ $HAVE_GITHUB_FORK -gt 0 ]];
+then
+    # disable push for origin, which should (must?) always be upstream.
+    git remote set-url --push origin no_push
+fi
+
+if [ "$MAKE_REMOTES" == "-m" ];
+then
+    # make sure we have expected forks
+    if [ "$UPSTREAM_REPO" == "gitlab" ] && [ "$HAVE_GITLAB_FORK" != "1" ];
+    then
+        remote-add nmalik
+    fi
+
+    if [ "$UPSTREAM_REPO" == "github" ] && [ "$HAVE_GITHUB_FORK" != "1" ];
+    then
+        remote-add jewzaam
+    fi
+
+    HAVE_GITLAB_FORK=$(git remote -v | grep gitlab | grep fetch | grep nmalik | wc -l)
+    HAVE_GITHUB_FORK=$(git remote -v | grep github | grep fetch | grep jewzaam | wc -l)
+fi
+
+# make sure VPN is online
+if [ "$UPSTREAM_REPO" == "gitlab" ];
+then
+    vpn-up
+fi
+
+echo "Checking out '$BRANCH_TRUNK' and pruning local branches..."
+git checkout -b $BRANCH_TRUNK origin/$BRANCH_TRUNK 2>/dev/null || git checkout $BRANCH_TRUNK
+CHECKOUT_STATUS=$?
+
+if [ "$CHECKOUT_STATUS" != "0" ];
+then
+    echo "FAILURE: cannot checkout '$BRANCH_TRUNK'"
+
+    # reset or exit:
+    reset_git_trunk
+fi
+
+git pull
+PULL_STATUS=$?
+
+if [ "$PULL_STATUS" != "0" ];
+then
+    echo "FAILURE: unable to pull, see above error"
+
+    # reset or exit:
+    reset_git_trunk
+fi
+
+for R in $(git remote);
+do
+    git remote prune $R &
+done
+
+wait
+
+# delete local branches where the upstream is gone
+echo "Deleting local branches..."
+git branch -vv | grep '\[.*/.*: gone\]' | awk '{print $1}' | xargs git branch -d 2>/dev/null &
+
+# delete local branches that have been merged to current branch (which is now trunk)
+for BRANCH in $(git branch -a | grep -v -e "remotes/" -e "^[+]" | grep -v $BRANCH_TRUNK | xargs);
+do
+    if is_merged "$BRANCH" "$BRANCH_TRUNK"; then
+        # Use -D because rebase/squash merged branches aren't recognized by -d
+        git branch -D $BRANCH &
+    fi
+done
+
+wait
+
+echo "Deleting remote branches..."
+# delete remote branches that have been merged to current branch (which is now trunk)
+for BRANCH in $(git branch -a | grep -e "remotes/jewzaam" -e "remotes/nmalik" | grep -v $BRANCH_TRUNK | sed 's|remotes/\([^/]*\)\/|\1:|g' | xargs);
+do
+    # BRANCH format is <remote>:<branch>
+    # ':' is used to easily support a branch name with / in it.
+    # therefore, convert : to / for checking, so it's against the REMOTE branch
+    local_ref=$(echo $BRANCH | tr ':' '/')
+    if is_merged "$local_ref" "$BRANCH_TRUNK"; then
+        echo $BRANCH | awk -F: '{print "git push " $1 " :" $2 " --no-verify"}' | sh &
+    fi
+done
+
+wait
+
+# push origin trunk to my fork
+if [ "$HAVE_GITHUB_FORK" == "1" ];
+then
+    echo "Pushing '$BRANCH_TRUNK' branch..."
+    git push jewzaam $BRANCH_TRUNK --no-verify
+fi
+
+if [ "$HAVE_GITLAB_FORK" == "1" ];
+then
+    echo "Pushing '$BRANCH_TRUNK' branch..."
+    git push nmalik $BRANCH_TRUNK --no-verify
+fi
+
+wait
+
+git status
