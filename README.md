@@ -9,7 +9,7 @@ SDLC skill access. Podman-based, rootless.
   Claude's permission system (`--dangerously-skip-permissions`)
 - Two profiles: **home** (Claude Max / Anthropic direct) and **work** (Vertex AI + Jira)
 - Auto-detects profile from env vars
-- Clones repos into `/sandbox/source/<project>/` for multi-repo work
+- Clones repos on host (SSH works), uploads to sandbox for private repo support
 - Uploads `~/.claude/` config with symlinks resolved (skills, plugins, settings)
 - `/sandbox/bin/` on PATH for arbitrary user scripts
 
@@ -30,33 +30,44 @@ make build
 ## Usage
 
 ```bash
-# Auto-detect profile and repo from cwd
-scripts/sandbox.sh
-
-# Named sandbox
-scripts/sandbox.sh --name nexus
+# Create sandbox with repo at specific PR
+sandbox.sh --create nexus --repo git@github.com:org/nexus.git --ref pr/42
 
 # Multiple repos
-scripts/sandbox.sh --repo git@github.com:org/nexus.git --repo git@github.com:org/nexus-ui.git
+sandbox.sh --create nexus --repo git@github.com:org/nexus.git --repo git@github.com:org/nexus-ui.git
+
+# Add repo to existing sandbox
+sandbox.sh --add-repo nexus --repo git@github.com:org/lib.git --ref v2.0
+
+# Download changes from sandbox (run in second terminal)
+sandbox.sh --download nexus
+
+# Upload rebased code back into sandbox
+sandbox.sh --upload nexus --repo nexus
 
 # Reconnect to existing sandbox
-scripts/sandbox.sh --connect nexus
+sandbox.sh --connect nexus
 
 # List / delete
-scripts/sandbox.sh --list
-scripts/sandbox.sh --delete nexus
+sandbox.sh --list
+sandbox.sh --delete nexus
 ```
 
 ### Options
 
 | Option | Description |
 |--------|-------------|
-| `--name NAME` | Sandbox name (auto-generated if omitted) |
+| `--create NAME` | Create sandbox with this name |
+| `--repo URL` | Git repo to clone on host and upload (repeatable) |
+| `--ref REF` | Ref for preceding `--repo`: branch, `pr/<num>`, `tag/<name>`, or SHA |
+| `--add-repo NAME` | Add repo(s) to existing sandbox (use `--repo` for URL) |
+| `--download NAME` | Download repos from sandbox to `~/sandboxes/<name>/` |
+| `--upload NAME` | Upload local repo changes back into sandbox |
 | `--policy FILE` | Override policy file (default: auto-detect home/work) |
-| `--repo URL` | Git repo to clone (repeatable, auto-detects cwd origin) |
 | `--gateway NAME` | OpenShell gateway |
 | `--connect NAME` | Reconnect to existing sandbox |
-| `--delete NAME` | Delete sandbox |
+| `--delete NAME` | Delete sandbox and local state |
+| `--no-clone` | Skip repo cloning |
 | `--list` | List sandboxes |
 
 ### Profiles
@@ -101,8 +112,8 @@ Auto-detection: `CLAUDE_CODE_USE_VERTEX` set → work, otherwise → home.
 └── source/                 # Repos (baked + cloned at create time)
     ├── knowledgebase/      # Baked into image
     ├── standards/          # Baked into image
-    ├── nexus/              # Cloned at sandbox creation
-    └── nexus-ui/           # Cloned at sandbox creation
+    ├── nexus/              # Uploaded from host
+    └── nexus-ui/           # Uploaded from host
 ```
 
 ## Development

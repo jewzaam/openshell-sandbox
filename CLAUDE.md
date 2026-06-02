@@ -32,10 +32,21 @@ Containerfile.
   repos. `rsync -rL` resolves them before upload so content works inside the sandbox.
 - **settings.json stripping.** Allow permissions and hooks are removed from
   the uploaded settings.json. Deny permissions and marketplace config are kept.
+- **Host-side repo management.** Repos are cloned on the host (where SSH
+  works), then uploaded to the sandbox via `sandbox upload`. State tracked in
+  `~/sandboxes/<name>/manifest.json`. Supports download (pull changes back),
+  upload (push rebased code in), and add-repo (add to running sandbox).
 - **Baked-in repos.** `knowledgebase` and `standards` are cloned at image build
-  time into `/sandbox/source/`. Project repos are cloned at sandbox creation.
+  time into `/sandbox/source/`. Project repos are cloned on host and uploaded.
 - **repo-update.json.** Installed to `/sandbox/.config/repo-update.json` at
   build time. Lists repos for update tooling.
+- **SSH→HTTPS URL auto-conversion.** Sandbox has no SSH egress (port 22 not in
+  policy). `sandbox.sh` auto-converts `git@github.com:org/repo.git` to
+  `https://github.com/org/repo.git` before cloning. Agents should pass either
+  format — conversion is handled.
+- **Containerfile HOME directory.** Use `useradd -d /sandbox` in Containerfile.
+  Default HOME is `/home/sandbox`, causing gitconfig and env sourcing mismatches
+  across `sandbox exec` calls. The `-d /sandbox` flag sets HOME correctly from passwd.
 
 ## OpenShell Policy Gotchas
 
@@ -50,12 +61,24 @@ These are hard-won — do not simplify or remove:
 7. `--upload` on `sandbox create` is unreliable. Use `sandbox upload` after creation.
 8. `sandbox upload` preserves symlinks as-is. Resolve with `rsync -rL` before uploading.
 9. `sandbox exec` stdin pipe is limited to 4MB.
+10. OpenShell overwrites `/sandbox/.bashrc` during `sandbox create`. Re-upload after creation.
+11. `sandbox upload` treats destination as parent directory. Uploading `foo` to `/sandbox/` creates `/sandbox/foo/`.
+12. `sandbox upload` of a single file to a directory replaces the directory contents. Upload the parent directory instead (e.g. `upload bin/ /sandbox/` not `upload bin/file /sandbox/bin/`).
+13. All traffic goes through OpenShell's HTTP/1.1 CONNECT proxy. gRPC (HTTP/2) cannot traverse it. Use OTLP HTTP (`http/protobuf` on port 4318) instead of gRPC (port 4317) for telemetry.
+14. Policies can be hot-updated on running sandboxes: `openshell policy set --policy <file> <name>`.
+15. `github.com` requires `access: read-write` in network policy for HTTPS git clone. Git clone over HTTPS uses POST (`git-upload-pack`), not GET. `api.github.com` stays `read-only` to block REST API mutations (push, PR create).
+
+## Shell Script Gotchas
+
+- **`.env` newline loss.** Bash `$()` command substitution strips trailing
+  newlines. When building `.env` content with `printf '%s=%q\n'` inside `$()`,
+  the final newline is lost. Append `$'\n'` explicitly outside the substitution.
 
 ## Development Workflow
 
 1. Edit files
 2. `make build` if Containerfile, bin/, or config/ changed
-3. Test with `scripts/sandbox.sh --name test`
+3. Test with `scripts/sandbox.sh --create test`
 4. No rebuild needed for policy-only or env var changes
 
 ## Standards

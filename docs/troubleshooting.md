@@ -39,6 +39,28 @@ binary '/usr/local/bin/claude' not allowed in policy 'vertex_ai'
 
 **Fix:** Use `**.googleapis.com` for multi-level subdomain matching.
 
+### `git clone` returns 403: `Permission denied` for username
+
+```
+fatal: could not read Username for 'https://github.com': Permission denied
+error: RPC failed; HTTP 403
+```
+
+**Cause:** `git-upload-pack` (smart HTTP clone) uses POST requests. If `github.com` is set to `access: read-only`, POST is blocked.
+
+**Fix:** Set `github.com` to `access: read-write` in network policy. Keep `api.github.com` as `read-only` to block REST mutations.
+
+### OTLP/gRPC fails: `HTTP/0.9` or `ECONNREFUSED` on port 4317
+
+```
+curl: (1) Received HTTP/0.9 when not allowed
+connect ECONNREFUSED
+```
+
+**Cause:** All sandbox traffic routes through OpenShell's HTTP/1.1 CONNECT proxy. gRPC (HTTP/2) cannot traverse it.
+
+**Fix:** Use OTLP HTTP (`http/protobuf`) on port 4318 instead of gRPC on 4317. Requires collector to have HTTP receiver enabled.
+
 ## Authentication
 
 ### `Not logged in · Please run /login`
@@ -99,11 +121,40 @@ Piping data through `sandbox exec` is limited to 4MB.
 
 **Fix:** Use `openshell sandbox upload` for large payloads.
 
+### `sandbox upload` creates extra directory nesting
+
+`sandbox upload` copies the directory itself into the destination, not its contents.
+Uploading `~/.config/gcloud` to `/sandbox/.config/gcloud` creates
+`/sandbox/.config/gcloud/gcloud/` (doubled).
+
+**Fix:** Upload to the parent: `sandbox upload <name> ~/.config/gcloud /sandbox/.config`
+→ creates `/sandbox/.config/gcloud/`.
+
 ### `~/.claude/` symlinks broken in sandbox
 
 `sandbox upload` preserves symlinks as-is. Host paths don't exist in sandbox.
 
 **Fix:** `sandbox.sh` uses `rsync -rL` to resolve symlinks before uploading.
+
+### `.bashrc` overwritten after `sandbox create`
+
+OpenShell replaces `/sandbox/.bashrc` during `sandbox create` with its own version.
+
+**Symptoms:** Missing env vars, wrong PATH, git credentials not configured.
+
+**Fix:** `sandbox.sh` re-uploads `config/bashrc` as `/sandbox/.bashrc` after creation.
+
+**Manual recovery:** `openshell sandbox upload <name> config/bashrc /sandbox/.bashrc`.
+
+**Gotcha:** Uploading a single file to an existing path creates a directory with that name. Stage the file as `.bashrc` in a temp directory, then upload the directory to `/sandbox`.
+
+### Single-file upload clobbers directory contents
+
+`openshell sandbox upload <name> bin/claude.env /sandbox/bin/` replaces ALL of `/sandbox/bin/` with just `claude.env`. Other scripts disappear.
+
+**Cause:** `sandbox upload` treats the destination as the target for the source item, not the parent directory.
+
+**Fix:** Upload the parent directory instead: `openshell sandbox upload <name> bin/ /sandbox/`.
 
 ## Policy Reference
 

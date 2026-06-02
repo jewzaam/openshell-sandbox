@@ -8,7 +8,7 @@ ARG BASE_IMAGE=python:3.13-slim
 FROM ${BASE_IMAGE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl git iproute2 nftables make jq vim \
+        curl git iproute2 nftables make jq vim-nox \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js (Claude Code, MCP servers)
@@ -22,18 +22,17 @@ RUN npm install -g @anthropic-ai/claude-code
 # uv (Python package manager)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Sandbox user (OpenShell requirement: high UID to avoid host conflicts)
-RUN groupadd -g 1000660000 sandbox && \
-    useradd -m -u 1000660000 -g sandbox -s /bin/bash sandbox
-
-# Project layout
-RUN install -d -o sandbox -g sandbox /sandbox/bin /sandbox/source
+# Sandbox user (HOME=/sandbox so all exec calls see correct home)
+RUN groupadd -g 1000 sandbox && \
+    useradd -m -u 1000 -g sandbox -s /bin/bash -d /sandbox sandbox
 
 COPY --chown=sandbox:sandbox bin/ /sandbox/bin/
 COPY --chown=sandbox:sandbox config/bashrc /sandbox/.bashrc
 COPY --chown=sandbox:sandbox config/repo-update.json /sandbox/.config/repo-update.json
 
 USER sandbox
+
+RUN mkdir -p /sandbox/bin /sandbox/source /sandbox/.config
 
 # Bake in reference repos
 RUN git clone https://github.com/jewzaam/knowledgebase.git /sandbox/source/knowledgebase \
