@@ -66,32 +66,6 @@ network_policies:
     binaries:
       - { path: "/**" }
 
-  github:
-    name: github-rw
-    endpoints:
-      - host: api.github.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-      - host: github.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-      - host: codeload.github.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-      - host: objects.githubusercontent.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-    binaries:
-      - { path: "/**" }
-
   npm:
     name: npm-readonly
     endpoints:

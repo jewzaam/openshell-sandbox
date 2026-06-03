@@ -53,11 +53,6 @@ JIRA_VARS=(
     JIRA_CLOUD_ID
 )
 
-GITHUB_VARS=(
-    GITHUB_TOKEN
-    GH_TOKEN
-    GITHUB_USER
-)
 
 CLAUDE_VARS=(
     CLAUDE_CODE_MAX_TURNS
@@ -84,7 +79,6 @@ ALL_VARS=(
     "${ANTHROPIC_VARS[@]}"
     "${VERTEX_VARS[@]}"
     "${JIRA_VARS[@]}"
-    "${GITHUB_VARS[@]}"
     "${CLAUDE_VARS[@]}"
     "${OTEL_VARS[@]}"
 )
@@ -523,14 +517,6 @@ fi
 # ---------------------------------------------------------------------------
 # Generate /sandbox/.env content (runtime env vars)
 # ---------------------------------------------------------------------------
-
-# Populate GH_TOKEN from secret-tool if not already set
-if [[ -z "${GH_TOKEN:-}" ]] && command -v secret-tool >/dev/null 2>&1; then
-    GH_TOKEN=$(secret-tool lookup github openshell-sandbox-ro 2>/dev/null || true)
-    if [[ -n "$GH_TOKEN" ]]; then
-        export GH_TOKEN
-    fi
-fi
 
 ENV_CONTENT=""
 captured=0
