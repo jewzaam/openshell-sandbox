@@ -409,10 +409,7 @@ elif [[ -n "$CONNECT_NAME" ]]; then
     SANDBOX_DIR="${SANDBOXES_DIR}/${CONNECT_NAME}"
     WORKDIR="/sandbox"
     if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
-        first_repo=$(jq -r '.repos | keys[0] // empty' "${SANDBOX_DIR}/manifest.json")
-        if [[ -n "$first_repo" ]]; then
-            WORKDIR="/sandbox/source/${first_repo}"
-        fi
+        WORKDIR="/sandbox/source/"
     fi
     exec openshell sandbox exec --name "${CONNECT_NAME}" "${GW_FLAG[@]}" \
         --tty --timeout 0 -- bash -c "source /sandbox/.bashrc && cd ${WORKDIR} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
@@ -477,10 +474,7 @@ if [[ "$ENSURE_MODE" == true ]]; then
         SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
         WORKDIR="/sandbox"
         if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
-            first_repo=$(jq -r '.repos | keys[0] // empty' "${SANDBOX_DIR}/manifest.json")
-            if [[ -n "$first_repo" ]]; then
-                WORKDIR="/sandbox/source/${first_repo}"
-            fi
+            WORKDIR="/sandbox/source/"
         fi
         echo "sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
         exec openshell sandbox exec --name "${SANDBOX_NAME}" "${GW_FLAG[@]}" \
@@ -709,8 +703,7 @@ if [[ "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
         upload_repo "$SANDBOX_TARGET" "$SANDBOX_DIR" "$repo_name"
     done
 
-    first_repo=$(basename "${REPOS[0]}" .git)
-    WORKDIR="/sandbox/source/$first_repo"
+    WORKDIR="/sandbox/source/"
 fi
 
 # ---------------------------------------------------------------------------
