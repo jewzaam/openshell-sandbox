@@ -28,7 +28,6 @@ RUN groupadd -g 1000 sandbox && \
 
 COPY --chown=sandbox:sandbox bin/ /sandbox/bin/
 COPY --chown=sandbox:sandbox config/bashrc /sandbox/.bashrc
-COPY --chown=sandbox:sandbox config/repo-update.json /sandbox/.config/repo-update.json
 
 USER sandbox
 
