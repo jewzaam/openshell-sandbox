@@ -412,8 +412,12 @@ fi
 
 # --- Add repo to existing sandbox ---
 if [[ "$ADD_REPO_MODE" == true ]]; then
+    if [[ ${#REPOS[@]} -eq 0 && -n "$SOURCE_DIR" && -d "$SOURCE_DIR/.git" ]]; then
+        REPOS+=("$(git -C "$SOURCE_DIR" remote get-url origin)")
+        REFS+=("")
+    fi
     if [[ ${#REPOS[@]} -eq 0 ]]; then
-        echo "error: --add-repo requires --repo URL" >&2
+        echo "error: --add-repo requires --repo URL or --source-dir PATH" >&2
         exit 1
     fi
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
