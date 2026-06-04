@@ -93,7 +93,9 @@ Auto-detection: `CLAUDE_CODE_USE_VERTEX` set → work, otherwise → home.
 │   ├── home.yaml           # Anthropic direct + GitHub
 │   └── work.yaml           # Vertex AI + Jira + GitHub
 ├── scripts/
-│   └── sandbox.sh          # Create/manage sandboxes
+│   ├── sandbox.sh              # Create/manage sandboxes
+│   ├── mint-sandbox-token.py   # Re-mint expired sandbox JWTs
+│   └── reset-rootless-netns.sh # Reset rootless podman networking
 └── docs/
     └── troubleshooting.md  # Known issues and fixes
 ```
@@ -135,6 +137,54 @@ make build
 
 Rebuild when: bin/ scripts change, Containerfile changes, config/ changes.
 No rebuild needed for: policy changes, env var changes, repo changes.
+
+## After Reboot / Gateway Restart
+
+Rootless Podman sandboxes need two recovery steps after a system reboot:
+
+### 1. Reset the rootless network namespace
+
+Pasta's rootless-netns becomes stale after reboot. Reset it before starting
+the gateway:
+
+```bash
+# Stop other bridge-networked containers first (e.g., compose stacks)
+pushd ~/source/claude-otel-stack/; podman-compose down; popd
+
+scripts/reset-rootless-netns.sh
+
+# Restart compose stacks
+pushd ~/source/claude-otel-stack/; podman-compose up -d; popd
+```
+
+### 2. Re-mint sandbox JWTs
+
+Sandbox tokens expire after 1 hour (gateway-configured TTL). After a gateway
+restart, existing sandboxes have stale tokens. Re-mint and restart:
+
+```bash
+# Single sandbox
+python3 scripts/mint-sandbox-token.py <sandbox-name>
+podman stop openshell-sandbox-<name> && podman start openshell-sandbox-<name>
+
+# All errored sandboxes
+for name in $(openshell sandbox list | grep Error | awk '{print $1}'); do
+  python3 scripts/mint-sandbox-token.py "$name"
+  podman stop "openshell-sandbox-$name" && podman start "openshell-sandbox-$name"
+done
+```
+
+### Screenrc automation
+
+Add to your screenrc to automate the full sequence:
+
+```
+stuff "pushd ~/source/claude-otel-stack/; podman-compose down; popd \015"
+stuff "./scripts/reset-rootless-netns.sh \015"
+stuff "pushd ~/source/claude-otel-stack/; podman-compose up -d; popd \015"
+stuff "mise run gateway 2>&1 | tee >(rotatelogs -n 5 gateway.log 3600) & \015"
+stuff "sleep 10 && for name in \$(openshell sandbox list 2>/dev/null | grep Error | awk '{print \$1}'); do python3 scripts/mint-sandbox-token.py \$name && podman stop openshell-sandbox-\$name && podman start openshell-sandbox-\$name; done \015"
+```
 
 ## Documentation
 
