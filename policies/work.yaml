@@ -88,6 +88,17 @@ network_policies:
     binaries:
       - { path: "/**" }
 
+  dashboard:
+    name: claude-dashboard
+    endpoints:
+      - host: host.containers.internal
+        port: 17384
+        protocol: rest
+        enforcement: enforce
+        access: full
+    binaries:
+      - { path: "/**" }
+
   pypi:
     name: pypi-readonly
     endpoints:

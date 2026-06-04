@@ -536,6 +536,9 @@ if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS+x}" ]]; then
     ENV_CONTENT+=$'\n'"GOOGLE_APPLICATION_CREDENTIALS=/sandbox/.config/gcloud/application_default_credentials.json"
 fi
 
+# Dashboard hooks: relay to host dashboard via container gateway
+ENV_CONTENT+="CLAUDE_DASHBOARD_HOST=host.containers.internal"$'\n'
+
 if [[ $captured -eq 0 ]]; then
     echo "warning: no env vars captured, sandbox will have no credentials" >&2
 else
@@ -619,8 +622,8 @@ if [[ -d "${HOME}/.claude" ]]; then
         --exclude=.venv \
         "${HOME}/.claude/" "${CLAUDE_TMP}/.claude/"
 
-    # Strip settings.json: remove allow permissions and hooks, rewrite paths
-    # (sandbox policy is the security boundary)
+    # Strip settings.json: remove allow permissions, strip non-dashboard hooks, rewrite paths
+    # (sandbox policy is the security boundary; dashboard hooks are passive relays)
     if [[ -f "${CLAUDE_TMP}/.claude/settings.json" ]]; then
         python3 -c "
 import json, sys
@@ -631,10 +634,34 @@ s = json.loads(raw)
 for key in list(s.keys()):
     if key.startswith('permissions') and 'allow' in key.lower():
         del s[key]
-s.pop('hooks', None)
+# Preserve dashboard hooks (hook_relay.py), strip everything else
+hooks = s.get('hooks')
+if isinstance(hooks, dict):
+    for event in list(hooks.keys()):
+        rules = hooks[event]
+        if isinstance(rules, list):
+            kept = [r for r in rules if isinstance(r, dict) and any(
+                'hook_relay.py' in h.get('command', '')
+                for h in r.get('hooks', []) if isinstance(h, dict)
+            )]
+            if kept:
+                hooks[event] = kept
+            else:
+                del hooks[event]
+    if not hooks:
+        del s['hooks']
+else:
+    s.pop('hooks', None)
 with open(sys.argv[1], 'w') as f:
     json.dump(s, f, indent=2)
 " "${CLAUDE_TMP}/.claude/settings.json" "${HOME}"
+    fi
+
+    # Copy dashboard relay script for sandbox hook support
+    RELAY_SRC="${HOME}/.claude/claude-dashboard/scripts/hook_relay.py"
+    if [[ -f "$RELAY_SRC" ]]; then
+        mkdir -p "${CLAUDE_TMP}/.claude/claude-dashboard/scripts"
+        cp "$RELAY_SRC" "${CLAUDE_TMP}/.claude/claude-dashboard/scripts/"
     fi
 
     # Rewrite host HOME paths to /sandbox in all plugin config files
