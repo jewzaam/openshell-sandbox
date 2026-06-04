@@ -17,6 +17,8 @@ Containerfile.
 - `policies/` — network + filesystem policies per profile (`home.yaml`, `work.yaml`)
 - `policies/local.yaml` — gitignored, for custom overrides
 - `scripts/sandbox.sh` — main entry point: create, upload, clone, start Claude
+- `scripts/mint-sandbox-token.py` — re-mint expired sandbox JWTs using gateway signing key
+- `scripts/reset-rootless-netns.sh` — reset rootless podman network namespace after reboot/interface change
 - `docs/troubleshooting.md` — known issues, triage, policy reference
 
 ## Key Concepts
@@ -67,6 +69,26 @@ These are hard-won — do not simplify or remove:
 13. All traffic goes through OpenShell's HTTP/1.1 CONNECT proxy. gRPC (HTTP/2) cannot traverse it. Use OTLP HTTP (`http/protobuf` on port 4318) instead of gRPC (port 4317) for telemetry.
 14. Policies can be hot-updated on running sandboxes: `openshell policy set --policy <file> <name>`.
 15. `github.com` requires `access: read-write` in network policy for HTTPS git clone. Git clone over HTTPS uses POST (`git-upload-pack`), not GET. `api.github.com` stays `read-only` to block REST API mutations (push, PR create).
+
+## Reboot Recovery
+
+After system reboot, two things break:
+
+1. **Rootless-netns is stale.** Pasta's rootless network namespace references
+   interfaces from the previous boot. Run `scripts/reset-rootless-netns.sh`
+   before starting the gateway. This stops all containers, kills pasta,
+   removes the netns dir, restarts podman socket, then restarts the containers.
+
+2. **Sandbox JWTs are expired.** Tokens have a 1-hour TTL. After reboot +
+   gateway restart, all existing sandbox tokens are stale. The supervisor
+   inside each sandbox fails with `Unauthenticated: ExpiredSignature`.
+   Run `scripts/mint-sandbox-token.py <name>` to write a fresh token to the
+   bind-mounted host file, then restart the container.
+
+The JWT claims structure must include `sandbox_id` (denormalized UUID) in
+addition to the SPIFFE `sub` field — omitting it causes `missing field
+sandbox_id` validation error. `iss` and `aud` must be
+`openshell-gateway:<gateway_id>`, not just `openshell-gateway`.
 
 ## Shell Script Gotchas
 
