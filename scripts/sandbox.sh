@@ -616,6 +616,7 @@ if [[ -d "${HOME}/.claude" ]]; then
         --exclude=my-claude-stuff-data \
         --exclude=claude-dashboard \
         --exclude=.git \
+        --exclude=.venv \
         "${HOME}/.claude/" "${CLAUDE_TMP}/.claude/"
 
     # Strip settings.json: remove allow permissions and hooks, rewrite paths
