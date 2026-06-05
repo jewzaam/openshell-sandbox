@@ -232,12 +232,17 @@ download_sandbox() {
     local repos
     repos=$(jq -r '.repos | keys[]' "$manifest")
 
+    local dl_tmp
+    dl_tmp="$(mktemp -d)"
     for repo_name in $repos; do
         echo "  downloading ${repo_name}..." >&2
-        mkdir -p "${sandbox_dir}/${repo_name}"
+        mkdir -p "${dl_tmp}/${repo_name}"
         openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
-            "/sandbox/source/${repo_name}" "${sandbox_dir}/${repo_name}"
+            "/sandbox/source/${repo_name}" "${dl_tmp}/${repo_name}"
+        mkdir -p "${sandbox_dir}/${repo_name}"
+        rsync -a --exclude=.venv "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
     done
+    rm -rf "$dl_tmp"
 }
 
 upload_sandbox() {
@@ -622,7 +627,7 @@ if [[ -d "${HOME}/.claude" ]]; then
         --exclude=.venv \
         "${HOME}/.claude/" "${CLAUDE_TMP}/.claude/"
 
-    # Strip settings.json: remove allow permissions, strip non-dashboard hooks, rewrite paths
+    # Strip settings.json: remove allow permissions, keep only dashboard hooks, rewrite paths
     # (sandbox policy is the security boundary; dashboard hooks are passive relays)
     if [[ -f "${CLAUDE_TMP}/.claude/settings.json" ]]; then
         python3 -c "
@@ -631,17 +636,17 @@ with open(sys.argv[1], 'r') as f:
     raw = f.read()
 raw = raw.replace(sys.argv[2], '/sandbox')
 s = json.loads(raw)
-for key in list(s.keys()):
-    if key.startswith('permissions') and 'allow' in key.lower():
-        del s[key]
-# Preserve dashboard hooks (hook_relay.py), strip everything else
+# Remove allow permissions (nested under 'permissions' dict)
+if isinstance(s.get('permissions'), dict):
+    s['permissions'].pop('allow', None)
+# Keep only claude-dashboard hooks, strip everything else
 hooks = s.get('hooks')
 if isinstance(hooks, dict):
     for event in list(hooks.keys()):
         rules = hooks[event]
         if isinstance(rules, list):
             kept = [r for r in rules if isinstance(r, dict) and any(
-                'hook_relay.py' in h.get('command', '')
+                'claude-dashboard' in h.get('command', '')
                 for h in r.get('hooks', []) if isinstance(h, dict)
             )]
             if kept:
