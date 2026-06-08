@@ -29,23 +29,31 @@ make build
 
 ## Usage
 
+### sandbox.sh — create and manage sandboxes
+
 ```bash
 # Create sandbox with repo at specific PR
 sandbox.sh --create nexus --repo git@github.com:org/nexus.git --ref pr/42
 
+# Create-or-connect (idempotent)
+sandbox.sh --ensure nexus-pr-42 --repo git@github.com:org/nexus.git --ref pr/42
+
 # Multiple repos
 sandbox.sh --create nexus --repo git@github.com:org/nexus.git --repo git@github.com:org/nexus-ui.git
 
-# Add repo to existing sandbox
+# Add repo to existing sandbox (infer URL from local checkout)
+sandbox.sh --add-repo nexus --source-dir ~/source/lib
+
+# Add repo with explicit URL
 sandbox.sh --add-repo nexus --repo git@github.com:org/lib.git --ref v2.0
 
-# Download changes from sandbox (run in second terminal)
+# Download changes from sandbox
 sandbox.sh --download nexus
 
 # Upload rebased code back into sandbox
 sandbox.sh --upload nexus --repo nexus
 
-# Reconnect to existing sandbox
+# Reconnect to existing sandbox (launches Claude)
 sandbox.sh --connect nexus
 
 # List / delete
@@ -58,24 +66,44 @@ sandbox.sh --delete nexus
 | Option | Description |
 |--------|-------------|
 | `--create NAME` | Create sandbox with this name |
+| `--ensure [NAME]` | Create if missing, reconnect if exists |
 | `--repo URL` | Git repo to clone on host and upload (repeatable) |
 | `--ref REF` | Ref for preceding `--repo`: branch, `pr/<num>`, `tag/<name>`, or SHA |
-| `--add-repo NAME` | Add repo(s) to existing sandbox (use `--repo` for URL) |
-| `--download NAME` | Download repos from sandbox to `~/sandboxes/<name>/` |
-| `--upload NAME` | Upload local repo changes back into sandbox |
+| `--source-dir DIR` | Copy remotes from local repo and fetch (sandbox has no git auth) |
+| `--add-repo [NAME]` | Add repo(s) to existing sandbox |
+| `--download [NAME]` | Download repos from sandbox to `~/sandboxes/<name>/` |
+| `--upload [NAME]` | Upload local repo changes back into sandbox |
 | `--policy FILE` | Override policy file (default: auto-detect home/work) |
 | `--gateway NAME` | OpenShell gateway |
-| `--connect NAME` | Reconnect to existing sandbox |
-| `--delete NAME` | Delete sandbox and local state |
+| `--connect [NAME]` | Reconnect to existing sandbox (launches Claude) |
+| `--delete [NAME]` | Delete sandbox and local state |
 | `--no-clone` | Skip repo cloning |
 | `--list` | List sandboxes |
+
+`[NAME]` is optional when CWD is under `~/sandboxes/<name>/`.
+
+### scode — VS Code launcher for sandboxes
+
+```bash
+# Open sandbox for a repo + ref (auto-names sandbox <repo>-<ref>)
+scode ~/source/nexus pr/1176
+
+# Default branch
+scode ~/source/nexus
+
+# Custom sandbox name, no repos (add repos separately)
+scode --name review-workspace
+```
+
+Creates `~/sandboxes/<name>/.vscode/tasks.json` with auto-launching sandbox
+and bash terminals, then opens VS Code.
 
 ### Profiles
 
 | Profile | Auth | Network Access |
 |---------|------|----------------|
-| `home` | Claude Max subscription (login session) | Anthropic API, GitHub, npm, PyPI |
-| `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`) | Google APIs, Jira, GitHub, npm, PyPI |
+| `home` | Claude Max subscription (login session) | Anthropic API, npm, PyPI |
+| `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`) | Google APIs, Jira, npm, PyPI |
 
 Auto-detection: `CLAUDE_CODE_USE_VERTEX` set → work, otherwise → home.
 
@@ -87,14 +115,15 @@ Auto-detection: `CLAUDE_CODE_USE_VERTEX` set → work, otherwise → home.
 ├── Makefile                # build, clean
 ├── bin/                    # Scripts copied to /sandbox/bin/ (on PATH)
 ├── config/
-│   ├── bashrc              # Base .bashrc (baked into image)
-│   └── repo-update.json    # Repo list for update tooling
+│   └── bashrc              # Base .bashrc (baked into image)
 ├── policies/
-│   ├── home.yaml           # Anthropic direct + GitHub
-│   └── work.yaml           # Vertex AI + Jira + GitHub
+│   ├── home.yaml           # Anthropic direct
+│   └── work.yaml           # Vertex AI + Jira
 ├── scripts/
 │   ├── sandbox.sh              # Create/manage sandboxes
-│   ├── mint-sandbox-token.py   # Re-mint expired sandbox JWTs
+│   ├── scode                   # VS Code launcher for sandboxes
+│   ├── mint-sandbox-token.py   # Re-mint a single sandbox JWT
+│   ├── mint-sandbox-tokens.sh  # Re-mint all errored sandbox JWTs
 │   └── reset-rootless-netns.sh # Reset rootless podman networking
 └── docs/
     └── troubleshooting.md  # Known issues and fixes
@@ -108,8 +137,7 @@ Auto-detection: `CLAUDE_CODE_USE_VERTEX` set → work, otherwise → home.
 ├── .env                    # Runtime env vars (generated at create time)
 ├── .claude/                # Uploaded from host (symlinks resolved)
 ├── .config/
-│   ├── gcloud/             # Uploaded from host (Vertex AI creds)
-│   └── repo-update.json    # Repo list (baked into image)
+│   └── gcloud/             # Uploaded from host (Vertex AI creds)
 ├── bin/                    # User scripts (from repo bin/)
 └── source/                 # Repos (baked + cloned at create time)
     ├── knowledgebase/      # Baked into image
@@ -148,42 +176,21 @@ Pasta's rootless-netns becomes stale after reboot. Reset it before starting
 the gateway:
 
 ```bash
-# Stop other bridge-networked containers first (e.g., compose stacks)
-pushd ~/source/claude-otel-stack/; podman-compose down; popd
-
 scripts/reset-rootless-netns.sh
-
-# Restart compose stacks
-pushd ~/source/claude-otel-stack/; podman-compose up -d; popd
 ```
 
 ### 2. Re-mint sandbox JWTs
 
 Sandbox tokens expire after 1 hour (gateway-configured TTL). After a gateway
-restart, existing sandboxes have stale tokens. Re-mint and restart:
+restart, existing sandboxes have stale tokens.
 
 ```bash
+# All errored sandboxes (waits for gateway, then re-mints + restarts)
+scripts/mint-sandbox-tokens.sh
+
 # Single sandbox
 python3 scripts/mint-sandbox-token.py <sandbox-name>
 podman stop openshell-sandbox-<name> && podman start openshell-sandbox-<name>
-
-# All errored sandboxes
-for name in $(openshell sandbox list | grep Error | awk '{print $1}'); do
-  python3 scripts/mint-sandbox-token.py "$name"
-  podman stop "openshell-sandbox-$name" && podman start "openshell-sandbox-$name"
-done
-```
-
-### Screenrc automation
-
-Add to your screenrc to automate the full sequence:
-
-```
-stuff "pushd ~/source/claude-otel-stack/; podman-compose down; popd \015"
-stuff "./scripts/reset-rootless-netns.sh \015"
-stuff "pushd ~/source/claude-otel-stack/; podman-compose up -d; popd \015"
-stuff "mise run gateway 2>&1 | tee >(rotatelogs -n 5 gateway.log 3600) & \015"
-stuff "sleep 10 && for name in \$(openshell sandbox list 2>/dev/null | grep Error | awk '{print \$1}'); do python3 scripts/mint-sandbox-token.py \$name && podman stop openshell-sandbox-\$name && podman start openshell-sandbox-\$name; done \015"
 ```
 
 ## Documentation

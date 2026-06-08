@@ -13,11 +13,12 @@ Containerfile.
 - `Makefile` — `make build` (podman), `make clean`
 - `bin/` — user scripts copied to `/sandbox/bin/` at image build time
 - `config/bashrc` — base `.bashrc` baked into image, sources `/sandbox/.env`
-- `config/repo-update.json` — repo list, installed to `/sandbox/.config/repo-update.json`
 - `policies/` — network + filesystem policies per profile (`home.yaml`, `work.yaml`)
 - `policies/local.yaml` — gitignored, for custom overrides
 - `scripts/sandbox.sh` — main entry point: create, upload, clone, start Claude
-- `scripts/mint-sandbox-token.py` — re-mint expired sandbox JWTs using gateway signing key
+- `scripts/scode` — VS Code launcher for sandbox-backed sessions
+- `scripts/mint-sandbox-token.py` — re-mint a single sandbox JWT using gateway signing key
+- `scripts/mint-sandbox-tokens.sh` — wait for gateway, re-mint all errored sandbox JWTs
 - `scripts/reset-rootless-netns.sh` — reset rootless podman network namespace after reboot/interface change
 - `docs/troubleshooting.md` — known issues, triage, policy reference
 
@@ -40,8 +41,6 @@ Containerfile.
   upload (push rebased code in), and add-repo (add to running sandbox).
 - **Baked-in repos.** `knowledgebase` and `standards` are cloned at image build
   time into `/sandbox/source/`. Project repos are cloned on host and uploaded.
-- **repo-update.json.** Installed to `/sandbox/.config/repo-update.json` at
-  build time. Lists repos for update tooling.
 - **SSH→HTTPS URL auto-conversion.** Sandbox has no SSH egress (port 22 not in
   policy). `sandbox.sh` auto-converts `git@github.com:org/repo.git` to
   `https://github.com/org/repo.git` before cloning. Agents should pass either
