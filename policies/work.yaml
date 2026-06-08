@@ -88,6 +88,28 @@ network_policies:
     binaries:
       - { path: "/**" }
 
+  prometheus:
+    name: prometheus-read
+    endpoints:
+      - host: host.containers.internal
+        port: 9090
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
+  loki:
+    name: loki-read
+    endpoints:
+      - host: host.containers.internal
+        port: 3100
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
   dashboard:
     name: claude-dashboard
     endpoints:
