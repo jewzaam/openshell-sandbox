@@ -8,7 +8,7 @@ ARG BASE_IMAGE=python:3.13-slim
 FROM ${BASE_IMAGE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl git iproute2 nftables make jq vim-nox \
+        curl git gawk iproute2 nftables make jq vim-nox \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js (Claude Code, MCP servers)
@@ -21,6 +21,9 @@ RUN npm install -g @anthropic-ai/claude-code
 
 # uv (Python package manager)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Python tools
+RUN pip install --no-cache-dir pytest
 
 # Sandbox user (HOME=/sandbox so all exec calls see correct home)
 RUN groupadd -g 1000 sandbox && \

@@ -411,7 +411,7 @@ elif [[ -n "$CONNECT_NAME" ]]; then
         WORKDIR="/sandbox/source/"
     fi
     exec openshell sandbox exec --name "${CONNECT_NAME}" "${GW_FLAG[@]}" \
-        --tty --timeout 0 -- bash -c "source /sandbox/.bashrc && cd ${WORKDIR} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
+        --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${WORKDIR} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
     exit $?
 fi
 
@@ -481,7 +481,7 @@ if [[ "$ENSURE_MODE" == true ]]; then
         fi
         echo "sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
         exec openshell sandbox exec --name "${SANDBOX_NAME}" "${GW_FLAG[@]}" \
-            --tty --timeout 0 -- bash -c "source /sandbox/.bashrc && cd ${WORKDIR} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
+            --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${WORKDIR} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
     else
         ENSURE_ARGS=(--create "$SANDBOX_NAME")
         for i in "${!REPOS[@]}"; do
@@ -692,6 +692,14 @@ fi
 # Re-upload bin/ (OpenShell may reset home dir during sandbox create)
 openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
     "${REPO_ROOT}/bin" /sandbox
+
+# Upload sandbox system prompt for Claude Code
+PROMPT_TMP="$(mktemp -d)"
+mkdir -p "${PROMPT_TMP}/source"
+cp "${REPO_ROOT}/config/sandbox-claude.md" "${PROMPT_TMP}/source/CLAUDE.md"
+openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
+    "${PROMPT_TMP}/source" /sandbox
+rm -rf "$PROMPT_TMP"
 
 # ---------------------------------------------------------------------------
 # Clone repos on host and upload to sandbox
