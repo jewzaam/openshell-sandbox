@@ -21,6 +21,7 @@ DOWNLOAD_MODE=false
 UPLOAD_MODE=false
 ADD_REPO_MODE=false
 ENSURE_MODE=false
+REFRESH_MODE=false
 GATEWAY=""
 POLICY_FILE=""
 SOURCE_DIR=""
@@ -117,8 +118,9 @@ OPTIONS:
     --add-repo [NAME] Add repo(s) to existing sandbox (use --repo for URL)
     --download [NAME] Download repos from sandbox to ~/sandboxes/<name>/
     --upload [NAME]   Upload local repo changes back into sandbox
-    --policy FILE     Override policy file (default: auto-detect home/work)
+    --policy NAME     Policy name or path (e.g. research, work). Standalone: hot-swap on running sandbox
     --gateway NAME    OpenShell gateway (default: \$OPENSHELL_GATEWAY)
+    --refresh [NAME]  Re-upload ~/.claude/, bin/, .bashrc, .env, system prompt
     --connect [NAME]  Reconnect to an existing sandbox
     --delete [NAME]   Delete a sandbox and local state
 
@@ -273,6 +275,116 @@ upload_sandbox() {
     fi
 }
 
+upload_config() {
+    local sandbox_target="$1"
+
+    echo "uploading claude config..." >&2
+    if [[ -d "${HOME}/.claude" ]]; then
+        CLAUDE_TMP="$(mktemp -d)"
+        rsync -rL \
+            --exclude=projects \
+            --exclude=agentpulse \
+            --exclude=venvs \
+            --exclude=file-history \
+            --exclude=backups \
+            --exclude=paste-cache \
+            --exclude=debug \
+            --exclude=my-claude-stuff-data \
+            --exclude=claude-dashboard \
+            --exclude=.git \
+            --exclude=.venv \
+            "${HOME}/.claude/" "${CLAUDE_TMP}/.claude/"
+
+        # Strip settings.json: remove allow permissions, keep only dashboard hooks, rewrite paths
+        if [[ -f "${CLAUDE_TMP}/.claude/settings.json" ]]; then
+            python3 -c "
+import json, sys
+with open(sys.argv[1], 'r') as f:
+    raw = f.read()
+raw = raw.replace(sys.argv[2], '/sandbox')
+s = json.loads(raw)
+if isinstance(s.get('permissions'), dict):
+    s['permissions'].pop('allow', None)
+hooks = s.get('hooks')
+if isinstance(hooks, dict):
+    for event in list(hooks.keys()):
+        rules = hooks[event]
+        if isinstance(rules, list):
+            kept = [r for r in rules if isinstance(r, dict) and any(
+                'claude-dashboard' in h.get('command', '')
+                for h in r.get('hooks', []) if isinstance(h, dict)
+            )]
+            if kept:
+                hooks[event] = kept
+            else:
+                del hooks[event]
+    if not hooks:
+        del s['hooks']
+else:
+    s.pop('hooks', None)
+with open(sys.argv[1], 'w') as f:
+    json.dump(s, f, indent=2)
+" "${CLAUDE_TMP}/.claude/settings.json" "${HOME}"
+        fi
+
+        # Copy dashboard relay script for sandbox hook support
+        RELAY_SRC="${HOME}/.claude/claude-dashboard/scripts/hook_relay.py"
+        if [[ -f "$RELAY_SRC" ]]; then
+            mkdir -p "${CLAUDE_TMP}/.claude/claude-dashboard/scripts"
+            cp "$RELAY_SRC" "${CLAUDE_TMP}/.claude/claude-dashboard/scripts/"
+        fi
+
+        # Rewrite host HOME paths to /sandbox in all plugin config files
+        if [[ -d "${CLAUDE_TMP}/.claude/plugins" ]]; then
+            find "${CLAUDE_TMP}/.claude/plugins" -name "*.json" -exec \
+                sed -i "s|${HOME}|/sandbox|g" {} +
+        fi
+
+        # Stage .bashrc and .env into temp dir
+        cp "${REPO_ROOT}/config/bashrc" "${CLAUDE_TMP}/.bashrc"
+        echo "$ENV_CONTENT" > "${CLAUDE_TMP}/.env"
+
+        # Upload config to /sandbox
+        openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+            "${CLAUDE_TMP}/.claude" /sandbox
+        openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+            "${CLAUDE_TMP}/.bashrc" /sandbox
+        openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+            "${CLAUDE_TMP}/.env" /sandbox
+        rm -rf "$CLAUDE_TMP"
+    fi
+
+    # Re-upload bin/
+    openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+        "${REPO_ROOT}/bin" /sandbox
+
+    # Upload sandbox system prompt
+    PROMPT_TMP="$(mktemp -d)"
+    mkdir -p "${PROMPT_TMP}/source"
+    cp "${REPO_ROOT}/config/sandbox-claude.md" "${PROMPT_TMP}/source/CLAUDE.md"
+    openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+        "${PROMPT_TMP}/source" /sandbox
+    rm -rf "$PROMPT_TMP"
+}
+
+# ---------------------------------------------------------------------------
+# Resolve policy file from bare name or path
+# ---------------------------------------------------------------------------
+
+resolve_policy() {
+    local input="$1"
+    if [[ -f "$input" ]]; then
+        echo "$input"
+    elif [[ -f "${REPO_ROOT}/policies/${input}.yaml" ]]; then
+        echo "${REPO_ROOT}/policies/${input}.yaml"
+    elif [[ -f "${REPO_ROOT}/policies/${input}" ]]; then
+        echo "${REPO_ROOT}/policies/${input}"
+    else
+        echo "error: policy not found: ${input} (tried ${REPO_ROOT}/policies/${input}.yaml)" >&2
+        return 1
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Parse args
 # ---------------------------------------------------------------------------
@@ -288,9 +400,18 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --policy)
-            [[ $# -ge 2 ]] || { echo "error: --policy requires FILE" >&2; exit 1; }
-            POLICY_FILE="$2"
+            [[ $# -ge 2 ]] || { echo "error: --policy requires NAME" >&2; exit 1; }
+            POLICY_FILE="$(resolve_policy "$2")" || exit 1
             shift 2
+            ;;
+        --refresh)
+            REFRESH_MODE=true
+            if [[ $# -ge 2 && "$2" != --* ]]; then
+                SANDBOX_NAME="$2"; shift 2
+            else
+                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --refresh requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                shift
+            fi
             ;;
         --source-dir)
             [[ $# -ge 2 ]] || { echo "error: --source-dir requires PATH" >&2; exit 1; }
@@ -497,6 +618,37 @@ if [[ "$ENSURE_MODE" == true ]]; then
     fi
 fi
 
+# --- Policy hot-swap on existing sandbox ---
+if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_MODE" != true ]]; then
+    POLICY_TARGET="$(infer_sandbox_name)" || { echo "error: --policy requires sandbox NAME or CWD under ~/sandboxes/<name>/" >&2; exit 1; }
+    echo "setting policy on ${POLICY_TARGET}..." >&2
+    set_output=$(openshell policy set "${GW_FLAG[@]}" --policy "$POLICY_FILE" "$POLICY_TARGET" 2>&1)
+    echo "$set_output" >&2
+    if ! echo "$set_output" | grep -qi "unchanged"; then
+        elapsed=0
+    while true; do
+        latest_status=$(openshell policy list "${GW_FLAG[@]}" "$POLICY_TARGET" 2>/dev/null | tail -1 | awk '{print $3}')
+        if [[ "$latest_status" == "Failed" ]]; then
+            echo "error: policy validation failed" >&2
+            openshell policy list "${GW_FLAG[@]}" "$POLICY_TARGET" >&2
+            exit 1
+        fi
+        if [[ "$latest_status" == "Loaded" || "$latest_status" == "Effective" ]]; then
+            break
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+        if [[ $elapsed -ge 30 ]]; then
+            echo "error: policy update not applied within 30s" >&2
+            openshell policy list "${GW_FLAG[@]}" "$POLICY_TARGET" >&2
+            exit 1
+        fi
+    done
+    fi
+    echo "done." >&2
+    exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # Validate --create required when --repo specified
 # ---------------------------------------------------------------------------
@@ -511,16 +663,7 @@ fi
 # ---------------------------------------------------------------------------
 
 if [[ -z "$POLICY_FILE" ]]; then
-    profile="home"
-    if [[ -n "${CLAUDE_CODE_USE_VERTEX+x}" ]]; then
-        profile="work"
-    fi
-
-    POLICY_FILE="${REPO_ROOT}/policies/${profile}.yaml"
-    if [[ ! -f "$POLICY_FILE" ]]; then
-        echo "error: policy file not found: ${POLICY_FILE}" >&2
-        exit 1
-    fi
+    POLICY_FILE="$(resolve_policy "code")" || exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -548,6 +691,14 @@ if [[ $captured -eq 0 ]]; then
     echo "warning: no env vars captured, sandbox will have no credentials" >&2
 else
     echo "captured $captured env vars" >&2
+fi
+
+# --- Refresh config on existing sandbox ---
+if [[ "$REFRESH_MODE" == true ]]; then
+    echo "refreshing config on ${SANDBOX_NAME}..." >&2
+    upload_config "$SANDBOX_NAME"
+    echo "done. reconnect to apply (sandbox.sh --connect)" >&2
+    exit 0
 fi
 
 # ---------------------------------------------------------------------------
@@ -606,100 +757,7 @@ if [[ -d "${HOME}/.config/gcloud" ]]; then
         "${HOME}/.config/gcloud" /sandbox/.config
 fi
 
-# ---------------------------------------------------------------------------
-# Upload ~/.claude/ (resolve symlinks, strip for sandbox)
-# ---------------------------------------------------------------------------
-
-echo "uploading claude config..." >&2
-if [[ -d "${HOME}/.claude" ]]; then
-    CLAUDE_TMP="$(mktemp -d)"
-    rsync -rL \
-        --exclude=projects \
-        --exclude=agentpulse \
-        --exclude=venvs \
-        --exclude=file-history \
-        --exclude=backups \
-        --exclude=paste-cache \
-        --exclude=debug \
-        --exclude=my-claude-stuff-data \
-        --exclude=claude-dashboard \
-        --exclude=.git \
-        --exclude=.venv \
-        "${HOME}/.claude/" "${CLAUDE_TMP}/.claude/"
-
-    # Strip settings.json: remove allow permissions, keep only dashboard hooks, rewrite paths
-    # (sandbox policy is the security boundary; dashboard hooks are passive relays)
-    if [[ -f "${CLAUDE_TMP}/.claude/settings.json" ]]; then
-        python3 -c "
-import json, sys
-with open(sys.argv[1], 'r') as f:
-    raw = f.read()
-raw = raw.replace(sys.argv[2], '/sandbox')
-s = json.loads(raw)
-# Remove allow permissions (nested under 'permissions' dict)
-if isinstance(s.get('permissions'), dict):
-    s['permissions'].pop('allow', None)
-# Keep only claude-dashboard hooks, strip everything else
-hooks = s.get('hooks')
-if isinstance(hooks, dict):
-    for event in list(hooks.keys()):
-        rules = hooks[event]
-        if isinstance(rules, list):
-            kept = [r for r in rules if isinstance(r, dict) and any(
-                'claude-dashboard' in h.get('command', '')
-                for h in r.get('hooks', []) if isinstance(h, dict)
-            )]
-            if kept:
-                hooks[event] = kept
-            else:
-                del hooks[event]
-    if not hooks:
-        del s['hooks']
-else:
-    s.pop('hooks', None)
-with open(sys.argv[1], 'w') as f:
-    json.dump(s, f, indent=2)
-" "${CLAUDE_TMP}/.claude/settings.json" "${HOME}"
-    fi
-
-    # Copy dashboard relay script for sandbox hook support
-    RELAY_SRC="${HOME}/.claude/claude-dashboard/scripts/hook_relay.py"
-    if [[ -f "$RELAY_SRC" ]]; then
-        mkdir -p "${CLAUDE_TMP}/.claude/claude-dashboard/scripts"
-        cp "$RELAY_SRC" "${CLAUDE_TMP}/.claude/claude-dashboard/scripts/"
-    fi
-
-    # Rewrite host HOME paths to /sandbox in all plugin config files
-    if [[ -d "${CLAUDE_TMP}/.claude/plugins" ]]; then
-        find "${CLAUDE_TMP}/.claude/plugins" -name "*.json" -exec \
-            sed -i "s|${HOME}|/sandbox|g" {} +
-    fi
-
-    # Stage .bashrc and .env into temp dir
-    cp "${REPO_ROOT}/config/bashrc" "${CLAUDE_TMP}/.bashrc"
-    echo "$ENV_CONTENT" > "${CLAUDE_TMP}/.env"
-
-    # Upload config to /sandbox (uploads accumulate, not clobber)
-    openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
-        "${CLAUDE_TMP}/.claude" /sandbox
-    openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
-        "${CLAUDE_TMP}/.bashrc" /sandbox
-    openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
-        "${CLAUDE_TMP}/.env" /sandbox
-    rm -rf "$CLAUDE_TMP"
-fi
-
-# Re-upload bin/ (OpenShell may reset home dir during sandbox create)
-openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
-    "${REPO_ROOT}/bin" /sandbox
-
-# Upload sandbox system prompt for Claude Code
-PROMPT_TMP="$(mktemp -d)"
-mkdir -p "${PROMPT_TMP}/source"
-cp "${REPO_ROOT}/config/sandbox-claude.md" "${PROMPT_TMP}/source/CLAUDE.md"
-openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
-    "${PROMPT_TMP}/source" /sandbox
-rm -rf "$PROMPT_TMP"
+upload_config "${SANDBOX_TARGET}"
 
 # ---------------------------------------------------------------------------
 # Clone repos on host and upload to sandbox
