@@ -61,6 +61,34 @@ connect ECONNREFUSED
 
 **Fix:** Use OTLP HTTP (`http/protobuf`) on port 4318 instead of gRPC on 4317. Requires collector to have HTTP receiver enabled.
 
+## MCP Servers
+
+### MCP plugin `.venv` Python version mismatch
+
+```
+libpython3.14.so.1.0: cannot open shared object file
+```
+
+**Cause:** Host-built `.venv` (Python 3.14) uploaded to sandbox (Python 3.13). MCP servers with dependencies installed in host venv fail when sandbox Python cannot load the shared libraries.
+
+**Fix:** `.venv` is now excluded from upload via rsync. If it persists in an existing sandbox, delete the stale venv inside sandbox:
+```bash
+openshell sandbox exec --name <sandbox> -- rm -rf /sandbox/.claude/plugins/cache/*/servers/*/.venv
+```
+Then run `/mcp` to trigger reconnect and rebuild.
+
+## Hooks
+
+### Hooks blocked: `hook_relay.py: No such file or directory`
+
+```
+UserPromptSubmit operation blocked by hook: python3: can't open file '/sandbox/.claude/agentpulse/scripts/hook_relay.py': No such file or directory
+```
+
+**Cause:** `agentpulse` directory excluded from rsync upload, but agentpulse hooks survived settings.json stripping. Earlier stripping matched on `hook_relay.py` filename which also appears in agentpulse paths.
+
+**Fix:** Hook stripping now filters on `claude-dashboard` string instead of `hook_relay.py`. Only dashboard hooks are preserved. If issue persists in existing sandbox, run `sandbox.sh --refresh` to re-upload stripped config.
+
 ## Authentication
 
 ### `Not logged in · Please run /login`

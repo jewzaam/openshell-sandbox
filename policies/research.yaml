@@ -1,5 +1,10 @@
-# OpenShell sandbox policy: work profile
-# Vertex AI (Google Cloud) + Jira + GitHub
+# OpenShell sandbox policy: research profile
+# Vertex AI + Claude platform — no Jira, no Atlassian
+#
+# NOTE: Open web egress blocked by OpenShell L7 policy (no wildcard host support).
+# WebSearch works (Anthropic API-side). WebFetch blocked for non-allowlisted domains.
+# Full research profile requires native provider support (issue #3) to remove creds
+# from sandbox, making open egress safe.
 
 version: 1
 
@@ -45,35 +50,29 @@ network_policies:
     binaries:
       - { path: "/**" }
 
-  jira_api:
-    name: jira-rw
+  claude_platform:
+    name: claude-platform
     endpoints:
-      - host: redhat.atlassian.net
+      - host: claude.ai
         port: 443
         protocol: rest
         enforcement: enforce
         access: full
-      - host: api.atlassian.com
+      - host: platform.claude.com
         port: 443
         protocol: rest
         enforcement: enforce
         access: full
-      - host: auth.atlassian.com
+      - host: api.anthropic.com
         port: 443
         protocol: rest
         enforcement: enforce
         access: full
-    binaries:
-      - { path: "/**" }
-
-  npm:
-    name: npm-readonly
-    endpoints:
-      - host: registry.npmjs.org
+      - host: statsig.anthropic.com
         port: 443
         protocol: rest
         enforcement: enforce
-        access: read-only
+        access: full
     binaries:
       - { path: "/**" }
 
@@ -85,28 +84,6 @@ network_policies:
         protocol: rest
         enforcement: enforce
         access: full
-    binaries:
-      - { path: "/**" }
-
-  prometheus:
-    name: prometheus-read
-    endpoints:
-      - host: host.containers.internal
-        port: 9090
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-    binaries:
-      - { path: "/**" }
-
-  loki:
-    name: loki-read
-    endpoints:
-      - host: host.containers.internal
-        port: 3100
-        protocol: rest
-        enforcement: enforce
-        access: read-only
     binaries:
       - { path: "/**" }
 
