@@ -36,9 +36,11 @@ Containerfile.
 - **Symlink resolution.** `~/.claude/skills/` contains symlinks to `~/source/`
   repos. `rsync -rL` resolves them before upload so content works inside the sandbox.
 - **settings.json stripping.** Allow permissions nested under `permissions.allow`
-  dict are removed from uploaded settings.json. Only `claude-dashboard` hooks
-  are preserved; all others stripped. Deny permissions and marketplace config
-  are kept.
+  dict are removed from uploaded settings.json. Only OTEL dummy hooks
+  (`python3 -c ""`) are preserved; all others stripped. Deny permissions and
+  marketplace config are kept. The dummy hooks are critical — without a
+  registered hook, Claude Code does not emit OTEL events for that hook type.
+  The dummy hooks exist solely to trigger OTEL telemetry.
 - **Host-side repo management.** Repos are cloned on the host (where SSH
   works), then uploaded to the sandbox via `sandbox upload`. State tracked in
   `~/sandboxes/<name>/manifest.json`. Supports download (pull changes back),

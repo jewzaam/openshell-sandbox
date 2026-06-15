@@ -296,7 +296,7 @@ upload_config() {
             --exclude=.venv \
             "${HOME}/.claude/" "${CLAUDE_TMP}/.claude/"
 
-        # Strip settings.json: remove allow permissions, keep only dashboard hooks, rewrite paths
+        # Strip settings.json: remove allow permissions, keep only OTEL dummy hooks
         if [[ -f "${CLAUDE_TMP}/.claude/settings.json" ]]; then
             python3 -c "
 import json, sys
@@ -312,8 +312,8 @@ if isinstance(hooks, dict):
         rules = hooks[event]
         if isinstance(rules, list):
             kept = [r for r in rules if isinstance(r, dict) and any(
-                'claude-dashboard' in h.get('command', '')
-                for h in r.get('hooks', []) if isinstance(h, dict)
+                isinstance(h, dict) and h.get('command', '').strip() in ('python3 -c \"\"', 'python -c \"\"')
+                for h in r.get('hooks', [])
             )]
             if kept:
                 hooks[event] = kept
@@ -326,13 +326,6 @@ else:
 with open(sys.argv[1], 'w') as f:
     json.dump(s, f, indent=2)
 " "${CLAUDE_TMP}/.claude/settings.json" "${HOME}"
-        fi
-
-        # Copy dashboard relay script for sandbox hook support
-        RELAY_SRC="${HOME}/.claude/claude-dashboard/scripts/hook_relay.py"
-        if [[ -f "$RELAY_SRC" ]]; then
-            mkdir -p "${CLAUDE_TMP}/.claude/claude-dashboard/scripts"
-            cp "$RELAY_SRC" "${CLAUDE_TMP}/.claude/claude-dashboard/scripts/"
         fi
 
         # Rewrite host HOME paths to /sandbox in all plugin config files
