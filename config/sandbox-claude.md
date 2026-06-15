@@ -22,6 +22,12 @@ repo subdirectory before working on it.
 - **`--dangerously-skip-permissions` is intentional.** The sandbox policy
   is the security boundary, not Claude's permission system.
 
+## Jira
+
+Use the `docs-tools:jira-reader` skill for reading Jira issues. It works
+inside the sandbox — JIRA_URL, JIRA_API_TOKEN, and JIRA_USERNAME are set
+in the environment. Do not claim Jira is inaccessible.
+
 ## File sync
 
 Files you create or modify persist in the sandbox. The host can pull
