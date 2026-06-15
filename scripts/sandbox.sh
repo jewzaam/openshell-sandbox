@@ -48,6 +48,7 @@ VERTEX_VARS=(
 
 JIRA_VARS=(
     JIRA_USERNAME
+    JIRA_EMAIL
     JIRA_API_TOKEN
     JIRA_TOKEN
     JIRA_URL
@@ -499,6 +500,10 @@ while [[ $# -gt 0 ]]; do
             GATEWAY="$2"
             shift 2
             ;;
+        --*)
+            echo "error: unknown option: $1" >&2
+            usage 1
+            ;;
         *)
             EXTRA_ARGS+=("$1")
             shift
@@ -678,6 +683,20 @@ for var in "${ALL_VARS[@]}"; do
         captured=$((captured + 1))
     fi
 done
+
+# JIRA env var aliases — tools use inconsistent names
+if [[ -n "${JIRA_USERNAME+x}" && -z "${JIRA_EMAIL+x}" ]]; then
+    ENV_CONTENT+="$(printf 'JIRA_EMAIL=%q' "${JIRA_USERNAME}")"$'\n'
+fi
+if [[ -n "${JIRA_EMAIL+x}" && -z "${JIRA_USERNAME+x}" ]]; then
+    ENV_CONTENT+="$(printf 'JIRA_USERNAME=%q' "${JIRA_EMAIL}")"$'\n'
+fi
+if [[ -n "${JIRA_TOKEN+x}" && -z "${JIRA_API_TOKEN+x}" ]]; then
+    ENV_CONTENT+="$(printf 'JIRA_API_TOKEN=%q' "${JIRA_TOKEN}")"$'\n'
+fi
+if [[ -n "${JIRA_API_TOKEN+x}" && -z "${JIRA_TOKEN+x}" ]]; then
+    ENV_CONTENT+="$(printf 'JIRA_TOKEN=%q' "${JIRA_API_TOKEN}")"$'\n'
+fi
 
 # Remap credential file paths for sandbox
 if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS+x}" ]]; then
