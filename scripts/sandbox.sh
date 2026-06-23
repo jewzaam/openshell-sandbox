@@ -12,6 +12,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SANDBOXES_DIR="${HOME}/sandboxes"
 
 # Defaults
+DEBUG=false
 SANDBOX_NAME=""
 CONNECT_NAME=""
 DELETE_NAME=""
@@ -128,6 +129,7 @@ OPTIONS:
     NAME is optional for commands marked [NAME] when CWD is under ~/sandboxes/<name>/.
     --no-clone        Skip repo cloning (create sandbox with env + config only)
     --list            List sandboxes
+    --debug           Show all commands as they run (set -x)
     --help            Show this help
 
 EXAMPLES:
@@ -191,9 +193,14 @@ clone_repo_host() {
 
 upload_repo() {
     local sandbox_name="$1" sandbox_dir="$2" repo_name="$3"
+    # Resolve symlinks — tar can't overwrite dir with symlink (or vice versa)
+    local stage
+    stage="$(mktemp -d)"
+    rsync -rL "${sandbox_dir}/${repo_name}/" "${stage}/${repo_name}/"
     openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
         --no-git-ignore \
-        "${sandbox_dir}/${repo_name}" /sandbox/source/
+        "${stage}/${repo_name}" /sandbox/source/
+    rm -rf "$stage"
 }
 
 write_manifest() {
@@ -480,6 +487,10 @@ while [[ $# -gt 0 ]]; do
                 shift
             fi
             ;;
+        --debug)
+            DEBUG=true
+            shift
+            ;;
         --list)
             LIST_MODE=true
             shift
@@ -507,6 +518,10 @@ done
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
+
+if [[ "$DEBUG" == true ]]; then
+    set -x
+fi
 
 GW_FLAG=()
 if [[ -n "$GATEWAY" ]]; then
