@@ -72,6 +72,19 @@ Containerfile.
   prevent gRPC idle stream reaping.
 - **`upload_config()` function.** Extracted upload logic (claude config, bin/,
   bashrc, env, system prompt) into reusable function called by `--create` and `--refresh`.
+- **`upload_repo()` symlink resolution.** Uses `rsync -rL` to resolve symlinks
+  into a staging directory before uploading. Repos with symlinked version
+  directories (e.g., `tasks/run-aap-api-tests/0.3 -> ../../archive/...`) caused
+  tar extraction failures ("Cannot open: File exists") because tar cannot
+  overwrite a directory with a symlink or vice versa. Matches `upload_config()`
+  pattern for `~/.claude/` uploads.
+- **`SANDBOX_JIRA_*` env var override.** `sandbox.sh` supports sandbox-specific
+  scoped Jira credentials via separate env vars. When `SANDBOX_JIRA_TOKEN` is
+  set, `sandbox.sh` overrides `JIRA_TOKEN`, `JIRA_API_TOKEN`, `JIRA_EMAIL`,
+  `JIRA_USERNAME`, `JIRA_URL`, and `JIRA_CLOUD_ID` in the sandbox `.env` with
+  values from `SANDBOX_JIRA_TOKEN`, `SANDBOX_JIRA_EMAIL`, `SANDBOX_JIRA_URL`,
+  and `SANDBOX_JIRA_CLOUD_ID`. Last-value-wins when `.env` is sourced. Enables
+  read-only scoped Atlassian tokens in sandboxes while host keeps broad credentials.
 
 ## OpenShell Policy Gotchas
 

@@ -706,6 +706,22 @@ if [[ -n "${JIRA_API_TOKEN+x}" && -z "${JIRA_TOKEN+x}" ]]; then
     ENV_CONTENT+="$(printf 'JIRA_TOKEN=%q' "${JIRA_API_TOKEN}")"$'\n'
 fi
 
+# Sandbox-scoped JIRA credentials override (read-only scoped token via gateway)
+if [[ -n "${SANDBOX_JIRA_TOKEN+x}" ]]; then
+    ENV_CONTENT+="$(printf 'JIRA_TOKEN=%q' "${SANDBOX_JIRA_TOKEN}")"$'\n'
+    ENV_CONTENT+="$(printf 'JIRA_API_TOKEN=%q' "${SANDBOX_JIRA_TOKEN}")"$'\n'
+    if [[ -n "${SANDBOX_JIRA_EMAIL+x}" ]]; then
+        ENV_CONTENT+="$(printf 'JIRA_EMAIL=%q' "${SANDBOX_JIRA_EMAIL}")"$'\n'
+        ENV_CONTENT+="$(printf 'JIRA_USERNAME=%q' "${SANDBOX_JIRA_EMAIL}")"$'\n'
+    fi
+    if [[ -n "${SANDBOX_JIRA_URL+x}" ]]; then
+        ENV_CONTENT+="$(printf 'JIRA_URL=%q' "${SANDBOX_JIRA_URL}")"$'\n'
+    fi
+    if [[ -n "${SANDBOX_JIRA_CLOUD_ID+x}" ]]; then
+        ENV_CONTENT+="$(printf 'JIRA_CLOUD_ID=%q' "${SANDBOX_JIRA_CLOUD_ID}")"$'\n'
+    fi
+fi
+
 # Remap credential file paths for sandbox
 if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS+x}" ]]; then
     ENV_CONTENT+=$'\n'"GOOGLE_APPLICATION_CREDENTIALS=/sandbox/.config/gcloud/application_default_credentials.json"
