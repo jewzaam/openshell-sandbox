@@ -72,12 +72,11 @@ Containerfile.
   prevent gRPC idle stream reaping.
 - **`upload_config()` function.** Extracted upload logic (claude config, bin/,
   bashrc, env, system prompt) into reusable function called by `--create` and `--refresh`.
-- **`upload_repo()` symlink resolution.** Uses `rsync -rL` to resolve symlinks
-  into a staging directory before uploading. Repos with symlinked version
-  directories (e.g., `tasks/run-aap-api-tests/0.3 -> ../../archive/...`) caused
-  tar extraction failures ("Cannot open: File exists") because tar cannot
-  overwrite a directory with a symlink or vice versa. Matches `upload_config()`
-  pattern for `~/.claude/` uploads.
+- **`upload_repo()` pre-delete on re-upload.** Deletes existing sandbox copy
+  (`rm -rf /sandbox/source/<repo>`) before uploading to avoid tar type conflicts.
+  Symlinks are preserved as-is (no `rsync -rL`). Without pre-delete, re-uploading
+  a repo where a path changed between symlink and directory causes tar "Cannot
+  open: File exists" failures.
 - **`SANDBOX_JIRA_*` env var override.** `sandbox.sh` supports sandbox-specific
   scoped Jira credentials via separate env vars. When `SANDBOX_JIRA_TOKEN` is
   set, `sandbox.sh` overrides `JIRA_TOKEN`, `JIRA_API_TOKEN`, `JIRA_EMAIL`,
