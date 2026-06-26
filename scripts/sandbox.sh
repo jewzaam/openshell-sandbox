@@ -193,14 +193,16 @@ clone_repo_host() {
 
 upload_repo() {
     local sandbox_name="$1" sandbox_dir="$2" repo_name="$3"
-    # Resolve symlinks — tar can't overwrite dir with symlink (or vice versa)
-    local stage
-    stage="$(mktemp -d)"
-    rsync -rL "${sandbox_dir}/${repo_name}/" "${stage}/${repo_name}/"
+    # Pre-delete to avoid tar type conflicts (symlink vs dir) on re-upload
+    if [[ -z "$repo_name" ]]; then
+        echo "error: upload_repo called with empty repo_name" >&2
+        return 1
+    fi
+    openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+        -- rm -rf "/sandbox/source/${repo_name}" 2>/dev/null || true
     openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
         --no-git-ignore \
-        "${stage}/${repo_name}" /sandbox/source/
-    rm -rf "$stage"
+        "${sandbox_dir}/${repo_name}" /sandbox/source/
 }
 
 write_manifest() {
