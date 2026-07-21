@@ -818,6 +818,9 @@ fi
 # Dashboard hooks: relay to host dashboard via container gateway
 ENV_CONTENT+="CLAUDE_DASHBOARD_HOST=host.containers.internal"$'\n'
 
+# Sandbox source directory name for OTEL enrichment
+ENV_CONTENT+="$(printf 'SANDBOX_SOURCE_NAME=%q' "${SANDBOX_NAME}")"$'\n'
+
 if [[ $captured -eq 0 ]]; then
     echo "warning: no env vars captured, sandbox will have no credentials" >&2
 else
@@ -853,6 +856,7 @@ if [[ -n "$OPENSHELL_NAME" ]]; then
 fi
 
 CREATE_CMD+=(--policy "$POLICY_FILE")
+CREATE_CMD+=(--label "source.directory=${SANDBOX_NAME}")
 
 SANDBOX_TARGET="${OPENSHELL_NAME:-}"
 
