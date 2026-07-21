@@ -12,6 +12,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SANDBOXES_DIR="${HOME}/sandboxes"
 
 # Defaults
+DRYRUN=false
 DEBUG=false
 SANDBOX_NAME=""
 CONNECT_NAME=""
@@ -129,6 +130,7 @@ OPTIONS:
     NAME is optional for commands marked [NAME] when CWD is under ~/sandboxes/<name>/.
     --no-clone        Skip repo cloning (create sandbox with env + config only)
     --list            List sandboxes
+    --dryrun          Print commands instead of running them
     --debug           Show all commands as they run (set -x)
     --help            Show this help
 
@@ -143,6 +145,63 @@ EXAMPLES:
     $(basename "$0") --delete nexus
 EOF
     exit "${1:-0}"
+}
+
+# ---------------------------------------------------------------------------
+# Short name for OpenShell (19-char limit from DNS label constraint)
+# ---------------------------------------------------------------------------
+
+short_name() {
+    local hash
+    hash=$(printf '%s' "$1" | md5sum | cut -c1-12)
+    echo "sb-${hash}"
+}
+
+# Resolve full name → openshell name from manifest
+resolve_openshell_name() {
+    local name="$1"
+    local manifest="${SANDBOXES_DIR}/${name}/manifest.json"
+    if [[ -f "$manifest" ]]; then
+        local os_name
+        os_name=$(jq -r '.openshell_name // empty' "$manifest")
+        if [[ -n "$os_name" ]]; then
+            echo "$os_name"
+            return
+        fi
+    fi
+    short_name "$name"
+}
+
+# Resolve openshell name → full name by scanning manifests
+resolve_full_name() {
+    local os_name="$1"
+    local manifest
+    for manifest in "${SANDBOXES_DIR}"/*/manifest.json; do
+        [[ -f "$manifest" ]] || continue
+        local stored
+        stored=$(jq -r '.openshell_name // empty' "$manifest")
+        if [[ "$stored" == "$os_name" ]]; then
+            jq -r '.name' "$manifest"
+            return
+        fi
+    done
+    echo "$os_name"
+}
+
+# ---------------------------------------------------------------------------
+# Dry-run wrapper — prints command instead of running it
+# ---------------------------------------------------------------------------
+
+run() {
+    if [[ "$DRYRUN" == true ]]; then
+        echo "[dryrun]: $*" >&2
+        # exec would replace process — exit cleanly in dryrun
+        if [[ "$1" == "exec" ]]; then
+            exit 0
+        fi
+        return 0
+    fi
+    "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -162,7 +221,7 @@ clone_repo_host() {
 
     # Strip trailing slash — gh CLI fails to resolve repo name with it
     local clean_url="${url%/}"
-    git clone "$clean_url" "$target"
+    run git clone "$clean_url" "$target"
 
     # Copy remotes from source repo and fetch (sandbox has no git auth)
     if [[ -n "$source_dir" && -d "$source_dir/.git" ]]; then
@@ -170,21 +229,21 @@ clone_repo_host() {
         while IFS= read -r remote; do
             [[ "$remote" == "origin" ]] && continue
             remote_url="$(git -C "$source_dir" remote get-url "$remote")"
-            git -C "$target" remote add "$remote" "$remote_url" 2>/dev/null || true
+            run git -C "$target" remote add "$remote" "$remote_url" 2>/dev/null || true
             echo "  fetching remote ${remote}..." >&2
-            git -C "$target" fetch "$remote"
+            run git -C "$target" fetch "$remote"
         done < <(git -C "$source_dir" remote)
     fi
 
     if [[ -n "$ref" ]]; then
         if [[ "$ref" =~ ^pr/([0-9]+)$ ]]; then
             local pr_num="${BASH_REMATCH[1]}"
-            git -C "$target" fetch origin "pull/${pr_num}/head:pr-${pr_num}"
-            git -C "$target" checkout "pr-${pr_num}"
+            run git -C "$target" fetch origin "pull/${pr_num}/head:pr-${pr_num}"
+            run git -C "$target" checkout "pr-${pr_num}"
         elif [[ "$ref" =~ ^tag/ ]]; then
-            git -C "$target" checkout "tags/${ref#tag/}"
+            run git -C "$target" checkout "tags/${ref#tag/}"
         else
-            if ! git -C "$target" checkout "$ref" 2>/dev/null; then
+            if ! run git -C "$target" checkout "$ref" 2>/dev/null; then
                 echo "  warning: ref '${ref}' not found, using default branch" >&2
             fi
         fi
@@ -198,9 +257,9 @@ upload_repo() {
         echo "error: upload_repo called with empty repo_name" >&2
         return 1
     fi
-    openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+    run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
         -- rm -rf "/sandbox/source/${repo_name}" 2>/dev/null || true
-    openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
+    run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
         --no-git-ignore \
         "${sandbox_dir}/${repo_name}" /sandbox/source/
 }
@@ -213,10 +272,13 @@ write_manifest() {
     now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
     if [[ ! -f "$manifest" ]]; then
+        local os_name
+        os_name=$(short_name "$sandbox_name")
         jq -n \
             --arg name "$sandbox_name" \
+            --arg os_name "$os_name" \
             --arg created "$now" \
-            '{name: $name, created: $created, repos: {}}' \
+            '{name: $name, openshell_name: $os_name, created: $created, repos: {}}' \
             > "${manifest}.tmp"
         mv "${manifest}.tmp" "$manifest"
     fi
@@ -249,10 +311,10 @@ download_sandbox() {
     for repo_name in $repos; do
         echo "  downloading ${repo_name}..." >&2
         mkdir -p "${dl_tmp}/${repo_name}"
-        openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+        run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
             "/sandbox/source/${repo_name}" "${dl_tmp}/${repo_name}"
         mkdir -p "${sandbox_dir}/${repo_name}"
-        rsync -a --exclude=.venv "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
+        run rsync -a --exclude=.venv "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
     done
     rm -rf "$dl_tmp"
 }
@@ -348,24 +410,24 @@ with open(sys.argv[1], 'w') as f:
         echo "$ENV_CONTENT" > "${CLAUDE_TMP}/.env"
 
         # Upload config to /sandbox
-        openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
             "${CLAUDE_TMP}/.claude" /sandbox
-        openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
             "${CLAUDE_TMP}/.bashrc" /sandbox
-        openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
             "${CLAUDE_TMP}/.env" /sandbox
         rm -rf "$CLAUDE_TMP"
     fi
 
     # Re-upload bin/
-    openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+    run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
         "${REPO_ROOT}/bin" /sandbox
 
     # Upload sandbox system prompt
     PROMPT_TMP="$(mktemp -d)"
     mkdir -p "${PROMPT_TMP}/source"
     cp "${REPO_ROOT}/config/sandbox-claude.md" "${PROMPT_TMP}/source/CLAUDE.md"
-    openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+    run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
         "${PROMPT_TMP}/source" /sandbox
     rm -rf "$PROMPT_TMP"
 }
@@ -489,6 +551,10 @@ while [[ $# -gt 0 ]]; do
                 shift
             fi
             ;;
+        --dryrun|--dry-run)
+            DRYRUN=true
+            shift
+            ;;
         --debug)
             DEBUG=true
             shift
@@ -531,22 +597,32 @@ if [[ -n "$GATEWAY" ]]; then
 fi
 
 if [[ "$LIST_MODE" == true ]]; then
-    exec openshell sandbox list "${GW_FLAG[@]}"
+    openshell sandbox list "${GW_FLAG[@]}" | while IFS= read -r line; do
+        os_name=$(echo "$line" | awk '{print $1}')
+        full=$(resolve_full_name "$os_name")
+        if [[ "$full" != "$os_name" ]]; then
+            echo "$line  ($full)"
+        else
+            echo "$line"
+        fi
+    done
     exit $?
 elif [[ -n "$DELETE_NAME" ]]; then
-    openshell sandbox delete "$DELETE_NAME" "${GW_FLAG[@]}" || true
+    OS_NAME=$(resolve_openshell_name "$DELETE_NAME")
+    run openshell sandbox delete "$OS_NAME" "${GW_FLAG[@]}" || true
     if [[ -d "${SANDBOXES_DIR}/${DELETE_NAME}" ]]; then
         rm -rf "${SANDBOXES_DIR}/${DELETE_NAME}"
         echo "removed local state: ${SANDBOXES_DIR}/${DELETE_NAME}" >&2
     fi
     exit 0
 elif [[ -n "$CONNECT_NAME" ]]; then
+    OS_NAME=$(resolve_openshell_name "$CONNECT_NAME")
     SANDBOX_DIR="${SANDBOXES_DIR}/${CONNECT_NAME}"
     WORKDIR="/sandbox"
     if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
         WORKDIR="/sandbox/source/"
     fi
-    exec openshell sandbox exec --name "${CONNECT_NAME}" "${GW_FLAG[@]}" \
+    run exec openshell sandbox exec --name "${OS_NAME}" "${GW_FLAG[@]}" \
         --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${WORKDIR} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
     exit $?
 fi
@@ -561,6 +637,7 @@ if [[ "$ADD_REPO_MODE" == true ]]; then
         echo "error: --add-repo requires --repo URL or --source-dir PATH" >&2
         exit 1
     fi
+    OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
     mkdir -p "$SANDBOX_DIR"
 
@@ -576,7 +653,7 @@ if [[ "$ADD_REPO_MODE" == true ]]; then
         write_manifest "$SANDBOX_DIR" "$SANDBOX_NAME" "$repo_name" "$repo" "$ref" "$sha"
 
         echo "uploading ${repo_name}..." >&2
-        upload_repo "$SANDBOX_NAME" "$SANDBOX_DIR" "$repo_name"
+        upload_repo "$OS_NAME" "$SANDBOX_DIR" "$repo_name"
     done
 
     echo "done." >&2
@@ -585,16 +662,18 @@ fi
 
 # --- Download from sandbox ---
 if [[ "$DOWNLOAD_MODE" == true ]]; then
+    OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
 
     echo "downloading from sandbox ${SANDBOX_NAME}..." >&2
-    download_sandbox "$SANDBOX_NAME" "$SANDBOX_DIR"
+    download_sandbox "$OS_NAME" "$SANDBOX_DIR"
     echo "done. files in ${SANDBOX_DIR}/" >&2
     exit 0
 fi
 
 # --- Upload to sandbox ---
 if [[ "$UPLOAD_MODE" == true ]]; then
+    OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
     target_repo=""
     if [[ ${#REPOS[@]} -gt 0 ]]; then
@@ -602,21 +681,22 @@ if [[ "$UPLOAD_MODE" == true ]]; then
     fi
 
     echo "uploading to sandbox ${SANDBOX_NAME}..." >&2
-    upload_sandbox "$SANDBOX_NAME" "$SANDBOX_DIR" "$target_repo"
+    upload_sandbox "$OS_NAME" "$SANDBOX_DIR" "$target_repo"
     echo "done." >&2
     exit 0
 fi
 
 # --- Ensure (create-or-connect) ---
 if [[ "$ENSURE_MODE" == true ]]; then
-    if openshell sandbox list "${GW_FLAG[@]}" 2>/dev/null | grep -q "^${SANDBOX_NAME}[[:space:]]"; then
+    OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
+    if openshell sandbox list "${GW_FLAG[@]}" 2>/dev/null | grep -q "^${OS_NAME}[[:space:]]"; then
         SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
         WORKDIR="/sandbox"
         if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
             WORKDIR="/sandbox/source/"
         fi
         echo "sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
-        exec openshell sandbox exec --name "${SANDBOX_NAME}" "${GW_FLAG[@]}" \
+        run exec openshell sandbox exec --name "${OS_NAME}" "${GW_FLAG[@]}" \
             --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${WORKDIR} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
     else
         ENSURE_ARGS=(--create "$SANDBOX_NAME")
@@ -629,6 +709,7 @@ if [[ "$ENSURE_MODE" == true ]]; then
         [[ -n "$GATEWAY" ]] && ENSURE_ARGS+=(--gateway "$GATEWAY")
         [[ -n "$POLICY_FILE" ]] && ENSURE_ARGS+=(--policy "$POLICY_FILE")
         [[ -n "$SOURCE_DIR" ]] && ENSURE_ARGS+=(--source-dir "$SOURCE_DIR")
+        [[ "$DRYRUN" == true ]] && ENSURE_ARGS+=(--dryrun)
         exec "$0" "${ENSURE_ARGS[@]}"
     fi
 fi
@@ -636,16 +717,21 @@ fi
 # --- Policy hot-swap on existing sandbox ---
 if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_MODE" != true ]]; then
     POLICY_TARGET="$(infer_sandbox_name)" || { echo "error: --policy requires sandbox NAME or CWD under ~/sandboxes/<name>/" >&2; exit 1; }
+    OS_NAME=$(resolve_openshell_name "$POLICY_TARGET")
     echo "setting policy on ${POLICY_TARGET}..." >&2
-    set_output=$(openshell policy set "${GW_FLAG[@]}" --policy "$POLICY_FILE" "$POLICY_TARGET" 2>&1)
+    if [[ "$DRYRUN" == true ]]; then
+        run openshell policy set "${GW_FLAG[@]}" --policy "$POLICY_FILE" "$OS_NAME"
+        exit 0
+    fi
+    set_output=$(openshell policy set "${GW_FLAG[@]}" --policy "$POLICY_FILE" "$OS_NAME" 2>&1)
     echo "$set_output" >&2
     if ! echo "$set_output" | grep -qi "unchanged"; then
         elapsed=0
     while true; do
-        latest_status=$(openshell policy list "${GW_FLAG[@]}" "$POLICY_TARGET" 2>/dev/null | tail -1 | awk '{print $3}')
+        latest_status=$(openshell policy list "${GW_FLAG[@]}" "$OS_NAME" 2>/dev/null | tail -1 | awk '{print $3}')
         if [[ "$latest_status" == "Failed" ]]; then
             echo "error: policy validation failed" >&2
-            openshell policy list "${GW_FLAG[@]}" "$POLICY_TARGET" >&2
+            openshell policy list "${GW_FLAG[@]}" "$OS_NAME" >&2
             exit 1
         fi
         if [[ "$latest_status" == "Loaded" || "$latest_status" == "Effective" ]]; then
@@ -655,7 +741,7 @@ if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_
         elapsed=$((elapsed + 1))
         if [[ $elapsed -ge 30 ]]; then
             echo "error: policy update not applied within 30s" >&2
-            openshell policy list "${GW_FLAG[@]}" "$POLICY_TARGET" >&2
+            openshell policy list "${GW_FLAG[@]}" "$OS_NAME" >&2
             exit 1
         fi
     done
@@ -738,10 +824,18 @@ else
     echo "captured $captured env vars" >&2
 fi
 
+if [[ "$DRYRUN" == true ]]; then
+    echo "" >&2
+    echo "--- .env content (redacted tokens) ---" >&2
+    echo "$ENV_CONTENT" | sed 's/\(TOKEN\|KEY\|SECRET\|CREDENTIALS\)=.*/\1=REDACTED/' >&2
+    echo "--------------------------------------" >&2
+fi
+
 # --- Refresh config on existing sandbox ---
 if [[ "$REFRESH_MODE" == true ]]; then
+    OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     echo "refreshing config on ${SANDBOX_NAME}..." >&2
-    upload_config "$SANDBOX_NAME"
+    upload_config "$OS_NAME"
     echo "done. reconnect to apply (sandbox.sh --connect)" >&2
     exit 0
 fi
@@ -750,45 +844,64 @@ fi
 # Create sandbox
 # ---------------------------------------------------------------------------
 
+OPENSHELL_NAME=$(short_name "$SANDBOX_NAME")
+
 CREATE_CMD=(openshell sandbox create "${GW_FLAG[@]}" --no-auto-providers --keep)
 
-if [[ -n "$SANDBOX_NAME" ]]; then
-    CREATE_CMD+=(--name "$SANDBOX_NAME")
+if [[ -n "$OPENSHELL_NAME" ]]; then
+    CREATE_CMD+=(--name "$OPENSHELL_NAME")
 fi
 
 CREATE_CMD+=(--policy "$POLICY_FILE")
 
-SANDBOX_TARGET="${SANDBOX_NAME:-}"
+SANDBOX_TARGET="${OPENSHELL_NAME:-}"
 
-echo "creating sandbox..." >&2
+echo "creating sandbox '${SANDBOX_NAME}' (openshell: ${OPENSHELL_NAME})..." >&2
 echo "  policy:  ${POLICY_FILE}" >&2
 echo "" >&2
 
 # sandbox create hangs on SSH connect (podman driver issue).
 # Run in background, poll for sandbox, then use sandbox exec.
-"${CREATE_CMD[@]}" &>/dev/null &
-CREATE_PID=$!
+if [[ "$DRYRUN" == true ]]; then
+    run "${CREATE_CMD[@]}"
+    run echo "(poll openshell sandbox list until Ready)"
+else
+    CREATE_LOG="$(mktemp)"
+    "${CREATE_CMD[@]}" &>"$CREATE_LOG" &
+    CREATE_PID=$!
 
-elapsed=0
-while true; do
-    if openshell sandbox list "${GW_FLAG[@]}" 2>/dev/null | grep -q "^${SANDBOX_TARGET}[[:space:]].*Ready"; then
-        break
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
-    if [[ $elapsed -ge 120 ]]; then
-        kill "$CREATE_PID" 2>/dev/null || true
-        echo "error: sandbox did not reach Ready within 120s" >&2
-        exit 1
-    fi
-done
+    elapsed=0
+    while true; do
+        if ! kill -0 "$CREATE_PID" 2>/dev/null; then
+            if ! wait "$CREATE_PID" 2>/dev/null; then
+                echo "error: sandbox create failed:" >&2
+                cat "$CREATE_LOG" >&2
+                rm -f "$CREATE_LOG"
+                exit 1
+            fi
+        fi
+        if openshell sandbox list "${GW_FLAG[@]}" 2>/dev/null | grep -q "^${SANDBOX_TARGET}[[:space:]].*Ready"; then
+            break
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+        if [[ $elapsed -ge 120 ]]; then
+            kill "$CREATE_PID" 2>/dev/null || true
+            echo "error: sandbox did not reach Ready within 120s" >&2
+            cat "$CREATE_LOG" >&2
+            rm -f "$CREATE_LOG"
+            exit 1
+        fi
+    done
 
-kill "$CREATE_PID" 2>/dev/null || true
-wait "$CREATE_PID" 2>/dev/null || true
+    kill "$CREATE_PID" 2>/dev/null || true
+    wait "$CREATE_PID" 2>/dev/null || true
+    rm -f "$CREATE_LOG"
+fi
 
-# Create host-side state directory
-if [[ -n "$SANDBOX_TARGET" ]]; then
-    mkdir -p "${SANDBOXES_DIR}/${SANDBOX_TARGET}"
+# Create host-side state directory (full name, not short)
+if [[ -n "$SANDBOX_NAME" ]]; then
+    mkdir -p "${SANDBOXES_DIR}/${SANDBOX_NAME}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -798,7 +911,7 @@ fi
 echo "uploading credentials..." >&2
 
 if [[ -d "${HOME}/.config/gcloud" ]]; then
-    openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
+    run openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
         "${HOME}/.config/gcloud" /sandbox/.config
 fi
 
@@ -818,7 +931,7 @@ fi
 
 WORKDIR="/sandbox"
 if [[ "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
-    SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_TARGET}"
+    SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
     mkdir -p "$SANDBOX_DIR"
 
     echo "cloning repos on host..." >&2
@@ -831,7 +944,7 @@ if [[ "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
         clone_repo_host "$repo" "$ref" "$SANDBOX_DIR" "$SOURCE_DIR"
 
         sha=$(git -C "${SANDBOX_DIR}/${repo_name}" rev-parse HEAD)
-        write_manifest "$SANDBOX_DIR" "$SANDBOX_TARGET" "$repo_name" "$repo" "$ref" "$sha"
+        write_manifest "$SANDBOX_DIR" "$SANDBOX_NAME" "$repo_name" "$repo" "$ref" "$sha"
 
         echo "  uploading ${repo_name} to sandbox..." >&2
         upload_repo "$SANDBOX_TARGET" "$SANDBOX_DIR" "$repo_name"
@@ -845,6 +958,6 @@ fi
 # ---------------------------------------------------------------------------
 
 echo "starting claude in ${WORKDIR}..." >&2
-exec openshell sandbox exec --name "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
+run exec openshell sandbox exec --name "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
     --tty --timeout 0 -- bash -c "source /sandbox/.bashrc && cd $WORKDIR && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
 exit $?
