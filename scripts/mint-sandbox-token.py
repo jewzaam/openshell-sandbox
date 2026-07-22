@@ -20,19 +20,34 @@ def main():
         sys.exit(1)
 
     sandbox_name = sys.argv[1]
-    container_name = f"openshell-sandbox-{sandbox_name}"
 
-    # Get sandbox ID from container label
+    # Find container by openshell sandbox-name label
     result = subprocess.run(
-        ["podman", "inspect", "--format",
-         '{{ index .Config.Labels "openshell.sandbox-id" }}',
-         container_name],
+        ["podman", "ps", "-a", "--format", "json"],
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        print(f"ERROR: container {container_name} not found", file=sys.stderr)
+        print("ERROR: podman ps failed", file=sys.stderr)
         sys.exit(1)
-    sandbox_id = result.stdout.strip()
+
+    containers = json.loads(result.stdout)
+    container_id = None
+    for c in containers:
+        labels = c.get("Labels") or {}
+        if labels.get("openshell.ai/sandbox-name") == sandbox_name:
+            container_id = c["Id"]
+            break
+
+    if not container_id:
+        print(f"ERROR: no container with label openshell.ai/sandbox-name={sandbox_name}", file=sys.stderr)
+        sys.exit(1)
+
+    # Get sandbox ID from the same label lookup
+    sandbox_id = (labels.get("openshell.ai/sandbox-id") or
+                  labels.get("openshell.sandbox-id", ""))
+    if not sandbox_id:
+        print(f"ERROR: no sandbox-id label on container {container_id[:12]}", file=sys.stderr)
+        sys.exit(1)
 
     # Find gateway JWT config from active gateway metadata
     config_home = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
@@ -92,7 +107,7 @@ def main():
         "iss": gateway_identity,
         "aud": gateway_identity,
         "iat": now,
-        "exp": now + 86400,
+        "exp": 0,
         "sandbox_id": sandbox_id,
     }, separators=(",", ":"))
 
@@ -130,19 +145,29 @@ def main():
 
     token = f"{signing_input}.{b64url(signature)}"
 
-    # Write to token file
-    state_dir = os.path.expanduser("~/.local/state/openshell")
-    token_path = os.path.join(state_dir, "podman-sandbox-tokens", sandbox_id, "sandbox.jwt")
+    # Write token via podman cp into stopped container's overlay.
+    # Must stop first, cp, then start — overlay persists while container exists.
+    import tempfile
+    token_tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".jwt", delete=False)
+    token_tmp.write(token)
+    token_tmp.close()
 
-    os.makedirs(os.path.dirname(token_path), exist_ok=True)
-    with open(token_path, "w") as f:
-        f.write(token + "\n")
-    os.chmod(token_path, 0o600)
+    subprocess.run(["podman", "stop", container_id], capture_output=True)
+    result = subprocess.run(
+        ["podman", "cp", token_tmp.name, f"{container_id}:/etc/openshell/auth/sandbox.jwt"],
+        capture_output=True, text=True,
+    )
+    os.unlink(token_tmp.name)
+    if result.returncode != 0:
+        print(f"ERROR: podman cp failed: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    subprocess.run(["podman", "start", container_id], capture_output=True)
 
     print(f"Token minted for sandbox {sandbox_name} (ID: {sandbox_id})")
-    print(f"Written to: {token_path}")
-    print(f"Expires: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now + 86400))}")
-    print(f"\nRestart the container: podman stop {container_name} && podman start {container_name}")
+    print(f"Written to: /etc/openshell/auth/sandbox.jwt (via podman cp)")
+    print(f"Expires: never (exp=0)")
+    print(f"Container {container_id[:12]} stopped, token replaced, started.")
 
 
 if __name__ == "__main__":
