@@ -29,7 +29,10 @@ wait_for_gateway 18080 60
 
 for name in $(openshell sandbox list 2>/dev/null | awk '/Error/ {print $1}'); do
     echo "Re-minting token for ${name}..."
-    python3 "${SCRIPT_DIR}/mint-sandbox-token.py" "$name" &&
-        podman stop "openshell-sandbox-${name}" &&
-        podman start "openshell-sandbox-${name}"
+    cid=$(podman ps -a --format json | jq -r --arg n "$name" '.[] | select(.Labels["openshell.ai/sandbox-name"] == $n) | .Id' | head -1)
+    if [[ -z "$cid" ]]; then
+        echo "  WARNING: no container found for ${name}, skipping"
+        continue
+    fi
+    python3 "${SCRIPT_DIR}/mint-sandbox-token.py" "$name"
 done
