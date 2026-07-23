@@ -419,6 +419,24 @@ with open(sys.argv[1], 'w') as f:
         rm -rf "$CLAUDE_TMP"
     fi
 
+    # Upload gitconfig and commit signing key
+    SIGNING_KEY="$(git config --global user.signingkey 2>/dev/null || true)"
+    if [[ -n "$SIGNING_KEY" && -f "$SIGNING_KEY" ]]; then
+        GIT_TMP="$(mktemp -d)"
+        mkdir -p "${GIT_TMP}/.ssh"
+        cp "$SIGNING_KEY" "${GIT_TMP}/.ssh/"
+        chmod 600 "${GIT_TMP}/.ssh/$(basename "$SIGNING_KEY")"
+        # Upload gitconfig with paths rewritten for sandbox
+        if [[ -f "${HOME}/.gitconfig" ]]; then
+            sed "s|${HOME}|/sandbox|g" "${HOME}/.gitconfig" > "${GIT_TMP}/.gitconfig"
+        fi
+        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+            "${GIT_TMP}/.ssh" /sandbox
+        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+            "${GIT_TMP}/.gitconfig" /sandbox
+        rm -rf "$GIT_TMP"
+    fi
+
     # Re-upload bin/
     run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
         "${REPO_ROOT}/bin" /sandbox
