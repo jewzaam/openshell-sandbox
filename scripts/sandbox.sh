@@ -29,7 +29,6 @@ POLICY_FILE=""
 SOURCE_DIR=""
 REPOS=()
 REFS=()
-EXTRA_ARGS=()
 
 # ---------------------------------------------------------------------------
 # Env var groups — add new groups as needed
@@ -148,6 +147,16 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Connect to sandbox via exec
+# ---------------------------------------------------------------------------
+
+connect_sandbox() {
+    local os_name="$1" workdir="$2"
+    run exec openshell sandbox exec --name "${os_name}" "${GW_FLAG[@]}" \
+        --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${workdir} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
+}
+
+# ---------------------------------------------------------------------------
 # Short name for OpenShell (19-char limit from DNS label constraint)
 # ---------------------------------------------------------------------------
 
@@ -169,6 +178,7 @@ resolve_openshell_name() {
             return
         fi
     fi
+    # No manifest — fall back to short_name for pre-existing sandboxes
     short_name "$name"
 }
 
@@ -595,8 +605,8 @@ while [[ $# -gt 0 ]]; do
             usage 1
             ;;
         *)
-            EXTRA_ARGS+=("$1")
-            shift
+            echo "error: unexpected argument: $1" >&2
+            usage 1
             ;;
     esac
 done
@@ -640,8 +650,7 @@ elif [[ -n "$CONNECT_NAME" ]]; then
     if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
         WORKDIR="/sandbox/source/"
     fi
-    run exec openshell sandbox exec --name "${OS_NAME}" "${GW_FLAG[@]}" \
-        --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${WORKDIR} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
+    connect_sandbox "$OS_NAME" "$WORKDIR"
     exit $?
 fi
 
@@ -714,8 +723,7 @@ if [[ "$ENSURE_MODE" == true ]]; then
             WORKDIR="/sandbox/source/"
         fi
         echo "sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
-        run exec openshell sandbox exec --name "${OS_NAME}" "${GW_FLAG[@]}" \
-            --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${WORKDIR} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
+        connect_sandbox "$OS_NAME" "$WORKDIR"
     else
         ENSURE_ARGS=(--create "$SANDBOX_NAME")
         for i in "${!REPOS[@]}"; do
@@ -980,6 +988,5 @@ fi
 # ---------------------------------------------------------------------------
 
 echo "starting claude in ${WORKDIR}..." >&2
-run exec openshell sandbox exec --name "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
-    --tty --timeout 0 -- bash -c "source /sandbox/.bashrc && cd $WORKDIR && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
+connect_sandbox "$SANDBOX_TARGET" "$WORKDIR"
 exit $?
