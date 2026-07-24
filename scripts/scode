@@ -12,19 +12,22 @@ SANDBOXES_DIR="${HOME}/sandboxes"
 
 if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
     cat << 'EOF'
-Usage: scode [--name NAME | SOURCE_PATH [REF]]
+Usage: scode [SANDBOX_DIR | --name NAME | SOURCE_PATH [REF]]
 
 Open a directory in VS Code backed by an OpenShell sandbox running Claude.
 
 Modes:
-  scode SOURCE_PATH [REF]    Auto-name sandbox <repo>-<ref>, clone repo
-  scode --name NAME          Custom name, no repos (add with sandbox.sh --add-repo)
+  scode SANDBOX_DIR           Re-use existing sandbox from manifest.json
+  scode SOURCE_PATH [REF]     Auto-name sandbox <repo>-<ref>, clone repo
+  scode --name NAME           Custom name, no repos (add with sandbox.sh --add-repo)
 
 Arguments:
+  SANDBOX_DIR    Path to existing ~/sandboxes/<name>/ with manifest.json
   SOURCE_PATH    Path to local git repo (e.g., ~/source/nexus)
   REF            Branch, PR, tag, or SHA (default: repo's default branch)
 
 Examples:
+  scode ~/sandboxes/supply-chain
   scode ~/source/nexus pr/1176
   scode ~/source/nexus
   scode --name review-workspace
@@ -33,27 +36,23 @@ EOF
 fi
 
 if [[ $# -lt 1 ]]; then
-    echo "error: requires --name NAME or SOURCE_PATH" >&2
-    echo "usage: scode [--name NAME | SOURCE_PATH [REF]]" >&2
+    echo "error: requires --name NAME, SOURCE_PATH, or SANDBOX_DIR" >&2
+    echo "usage: scode [--name NAME | SOURCE_PATH [REF] | ~/sandboxes/<name>]" >&2
     exit 1
 fi
 
-# --- Name-only mode: custom sandbox, no repos ---
-if [[ "$1" == "--name" ]]; then
-    [[ $# -ge 2 ]] || { echo "error: --name requires NAME" >&2; exit 1; }
-    sandbox_name="$2"
-    sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
-    mkdir -p "${sandbox_dir}/.vscode"
-
-    if [[ ! -f "${sandbox_dir}/.vscode/tasks.json" ]]; then
-        cat > "${sandbox_dir}/.vscode/tasks.json" << TASKS
+write_tasks_and_open() {
+    local dir="$1" cmd="$2"
+    mkdir -p "${dir}/.vscode"
+    if [[ ! -f "${dir}/.vscode/tasks.json" ]]; then
+        cat > "${dir}/.vscode/tasks.json" << TASKS
 {
   "version": "2.0.0",
   "tasks": [
     {
       "label": "sandbox",
       "type": "shell",
-      "command": "${SANDBOX_SH} --ensure ${sandbox_name}",
+      "command": "${cmd}",
       "isBackground": true,
       "problemMatcher": [],
       "presentation": {
@@ -80,8 +79,33 @@ if [[ "$1" == "--name" ]]; then
 }
 TASKS
     fi
+    code "${dir}"
+}
 
-    code "${sandbox_dir}"
+# --- Existing sandbox dir mode: re-use from manifest ---
+target_path="$(realpath "$1" 2>/dev/null || echo "$1")"
+if [[ -f "${target_path}/manifest.json" ]]; then
+    sandbox_name="$(jq -r '.name' "${target_path}/manifest.json")"
+
+    ENSURE_CMD="${SANDBOX_SH} --ensure ${sandbox_name}"
+    while IFS=$'\t' read -r repo_name repo_url repo_ref; do
+        ENSURE_CMD+=" --repo ${repo_url}"
+        if [[ -n "$repo_ref" && "$repo_ref" != "null" ]]; then
+            ENSURE_CMD+=" --ref ${repo_ref}"
+        fi
+    done < <(jq -r '.repos | to_entries[] | [.key, .value.url, .value.ref] | @tsv' "${target_path}/manifest.json")
+
+    write_tasks_and_open "${target_path}" "${ENSURE_CMD}"
+    exit 0
+fi
+
+# --- Name-only mode: custom sandbox, no repos ---
+if [[ "$1" == "--name" ]]; then
+    [[ $# -ge 2 ]] || { echo "error: --name requires NAME" >&2; exit 1; }
+    sandbox_name="$2"
+    sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
+
+    write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}"
     exit 0
 fi
 
@@ -113,42 +137,4 @@ repo_url="$(git -C "$source_path" remote get-url origin 2>/dev/null)" || {
 }
 
 sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
-mkdir -p "${sandbox_dir}/.vscode"
-
-if [[ ! -f "${sandbox_dir}/.vscode/tasks.json" ]]; then
-    cat > "${sandbox_dir}/.vscode/tasks.json" << TASKS
-{
-  "version": "2.0.0",
-  "tasks": [
-    {
-      "label": "sandbox",
-      "type": "shell",
-      "command": "${SANDBOX_SH} --ensure ${sandbox_name} --repo ${repo_url} --ref ${ref} --source-dir ${source_path}",
-      "isBackground": true,
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always",
-        "panel": "new",
-        "group": "sandbox-dev"
-      },
-      "runOptions": {"runOn": "folderOpen"}
-    },
-    {
-      "label": "bash",
-      "type": "shell",
-      "command": "exec bash -li",
-      "isBackground": true,
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always",
-        "panel": "new",
-        "group": "sandbox-dev"
-      },
-      "runOptions": {"runOn": "folderOpen"}
-    }
-  ]
-}
-TASKS
-fi
-
-code "${sandbox_dir}"
+write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name} --repo ${repo_url} --ref ${ref} --source-dir ${source_path}"
