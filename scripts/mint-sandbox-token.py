@@ -5,8 +5,7 @@
 #
 # Usage: python3 scripts/mint-sandbox-token.py <sandbox-name>
 #
-# Requires: PyJWT with Ed25519 support
-#   pip install PyJWT[crypto]
+# Requires: openssl CLI with Ed25519 support
 
 import json
 import os
@@ -82,8 +81,6 @@ def main():
     signing_key_path = os.path.join(gateway_jwt_dir, "signing.pem")
     kid_path = os.path.join(gateway_jwt_dir, "kid")
 
-    with open(signing_key_path, "rb") as f:
-        signing_key = f.read()
     with open(kid_path) as f:
         kid = f.read().strip()
 
