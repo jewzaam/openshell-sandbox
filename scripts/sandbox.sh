@@ -481,15 +481,34 @@ with open(sys.argv[1], 'w') as f:
         rm -rf "$GIT_TMP"
     fi
 
-    # Upload gws (Google Workspace CLI) credentials
-    if [[ -d "${HOME}/.config/gws" ]]; then
-        GWS_TMP="$(mktemp -d)"
-        mkdir -p "${GWS_TMP}/.config"
-        cp -r "${HOME}/.config/gws" "${GWS_TMP}/.config/gws"
-        rm -rf "${GWS_TMP}/.config/gws/cache"
-        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
-            "${GWS_TMP}/.config" /sandbox
-        rm -rf "$GWS_TMP"
+    # Upload gws (Google Workspace CLI) readonly credentials
+    GWS_SANDBOX_DIR="${HOME}/.config/gws-sandbox"
+    if command -v gws &>/dev/null; then
+        # Validate existing sandbox creds
+        if [[ -f "${GWS_SANDBOX_DIR}/credentials.enc" ]]; then
+            gws_valid=$(GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$GWS_SANDBOX_DIR" gws auth status 2>/dev/null | jq -r '.token_valid // false')
+            if [[ "$gws_valid" != "true" ]]; then
+                echo "gws sandbox credentials expired, re-authenticating..." >&2
+                GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$GWS_SANDBOX_DIR" gws auth login --readonly
+            fi
+        else
+            echo "gws sandbox credentials not found, authenticating (readonly)..." >&2
+            mkdir -p "$GWS_SANDBOX_DIR"
+            # Copy client_secret from main config if available
+            if [[ -f "${HOME}/.config/gws/client_secret.json" ]]; then
+                cp "${HOME}/.config/gws/client_secret.json" "${GWS_SANDBOX_DIR}/"
+            fi
+            GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$GWS_SANDBOX_DIR" gws auth login --readonly
+        fi
+        if [[ -d "$GWS_SANDBOX_DIR" ]]; then
+            GWS_TMP="$(mktemp -d)"
+            mkdir -p "${GWS_TMP}/.config"
+            cp -r "$GWS_SANDBOX_DIR" "${GWS_TMP}/.config/gws"
+            rm -rf "${GWS_TMP}/.config/gws/cache"
+            run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+                "${GWS_TMP}/.config" /sandbox
+            rm -rf "$GWS_TMP"
+        fi
     fi
 
     # Re-upload bin/
