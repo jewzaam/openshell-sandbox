@@ -357,6 +357,37 @@ upload_sandbox() {
     fi
 }
 
+download_claude_state() {
+    local sandbox_name="$1" sandbox_dir="$2"
+    local claude_dir="${sandbox_dir}/claude"
+    echo "  downloading claude session state..." >&2
+    local dl_tmp
+    dl_tmp="$(mktemp -d)"
+    mkdir -p "${dl_tmp}/projects"
+    run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+        "/sandbox/.claude/projects" "${dl_tmp}/projects" || true
+    if [[ "$(ls -A "${dl_tmp}/projects" 2>/dev/null)" ]]; then
+        mkdir -p "${claude_dir}"
+        rsync -a "${dl_tmp}/projects/" "${claude_dir}/projects/"
+    fi
+    rm -rf "$dl_tmp"
+}
+
+upload_claude_state() {
+    local sandbox_name="$1" sandbox_dir="$2"
+    local claude_dir="${sandbox_dir}/claude"
+    if [[ -d "${claude_dir}/projects" ]]; then
+        echo "  restoring claude session state..." >&2
+        local stage
+        stage="$(mktemp -d)"
+        mkdir -p "${stage}/.claude"
+        cp -r "${claude_dir}/projects" "${stage}/.claude/projects"
+        run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
+            "${stage}/.claude" /sandbox
+        rm -rf "$stage"
+    fi
+}
+
 upload_config() {
     local sandbox_target="$1"
 
@@ -445,6 +476,17 @@ with open(sys.argv[1], 'w') as f:
         run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
             "${GIT_TMP}/.gitconfig" /sandbox
         rm -rf "$GIT_TMP"
+    fi
+
+    # Upload gws (Google Workspace CLI) credentials
+    if [[ -d "${HOME}/.config/gws" ]]; then
+        GWS_TMP="$(mktemp -d)"
+        mkdir -p "${GWS_TMP}/.config"
+        cp -r "${HOME}/.config/gws" "${GWS_TMP}/.config/gws"
+        rm -rf "${GWS_TMP}/.config/gws/cache"
+        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+            "${GWS_TMP}/.config" /sandbox
+        rm -rf "$GWS_TMP"
     fi
 
     # Re-upload bin/
@@ -694,6 +736,7 @@ if [[ "$DOWNLOAD_MODE" == true ]]; then
 
     echo "downloading from sandbox ${SANDBOX_NAME}..." >&2
     download_sandbox "$OS_NAME" "$SANDBOX_DIR"
+    download_claude_state "$OS_NAME" "$SANDBOX_DIR"
     echo "done. files in ${SANDBOX_DIR}/" >&2
     exit 0
 fi
@@ -946,6 +989,9 @@ if [[ -d "${HOME}/.config/gcloud" ]]; then
 fi
 
 upload_config "${SANDBOX_TARGET}"
+
+# Restore prior claude session state if available
+upload_claude_state "$SANDBOX_TARGET" "${SANDBOXES_DIR}/${SANDBOX_NAME}"
 
 # ---------------------------------------------------------------------------
 # Clone repos on host and upload to sandbox
