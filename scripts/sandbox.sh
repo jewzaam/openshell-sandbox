@@ -19,11 +19,13 @@ CONNECT_NAME=""
 DELETE_NAME=""
 LIST_MODE=false
 NO_CLONE=false
+NO_CONNECT=false
 DOWNLOAD_MODE=false
 UPLOAD_MODE=false
 ADD_REPO_MODE=false
 ENSURE_MODE=false
 REFRESH_MODE=false
+RECREATE_MODE=false
 GATEWAY=""
 POLICY_FILE=""
 SOURCE_DIR=""
@@ -123,6 +125,7 @@ OPTIONS:
     --policy NAME     Policy name or path (e.g. research, work). Standalone: hot-swap on running sandbox
     --gateway NAME    OpenShell gateway (default: \$OPENSHELL_GATEWAY)
     --refresh [NAME]  Re-upload ~/.claude/, bin/, .bashrc, .env, system prompt
+    --recreate [NAME] Download, delete sandbox container, recreate with new image, re-upload repos
     --connect [NAME]  Reconnect to an existing sandbox
     --delete [NAME]   Delete a sandbox and local state
 
@@ -548,6 +551,15 @@ while [[ $# -gt 0 ]]; do
                 shift
             fi
             ;;
+        --recreate)
+            RECREATE_MODE=true
+            if [[ $# -ge 2 && "$2" != --* ]]; then
+                SANDBOX_NAME="$2"; shift 2
+            else
+                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --recreate requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                shift
+            fi
+            ;;
         --source-dir)
             [[ $# -ge 2 ]] || { echo "error: --source-dir requires PATH" >&2; exit 1; }
             SOURCE_DIR="$2"
@@ -635,6 +647,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-clone)
             NO_CLONE=true
+            shift
+            ;;
+        --no-connect)
+            NO_CONNECT=true
             shift
             ;;
         --gateway|-g)
@@ -754,6 +770,31 @@ if [[ "$UPLOAD_MODE" == true ]]; then
     upload_sandbox "$OS_NAME" "$SANDBOX_DIR" "$target_repo"
     echo "done." >&2
     exit 0
+fi
+
+# --- Recreate: download, delete remote, ensure (creates + uploads + connects) ---
+if [[ "$RECREATE_MODE" == true ]]; then
+    COMMON_ARGS=()
+    [[ -n "$GATEWAY" ]] && COMMON_ARGS+=(--gateway "$GATEWAY")
+    [[ "$DRYRUN" == true ]] && COMMON_ARGS+=(--dryrun)
+
+    echo "recreating sandbox ${SANDBOX_NAME}..." >&2
+
+    # 1. Download repos + claude state
+    "$0" --download "$SANDBOX_NAME" "${COMMON_ARGS[@]}"
+
+    # 2. Delete remote sandbox only (preserve local dir)
+    OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
+    run openshell sandbox delete "$OS_NAME" "${GW_FLAG[@]}" || true
+
+    # 3. Create fresh sandbox without connecting
+    "$0" --create "$SANDBOX_NAME" --no-clone --no-connect ${POLICY_FILE:+--policy "$POLICY_FILE"} "${COMMON_ARGS[@]}"
+
+    # 4. Upload local repos
+    "$0" --upload "$SANDBOX_NAME" "${COMMON_ARGS[@]}"
+
+    # 5. Connect
+    exec "$0" --connect "$SANDBOX_NAME" "${COMMON_ARGS[@]}"
 fi
 
 # --- Ensure (create-or-connect) ---
@@ -1032,6 +1073,11 @@ fi
 # ---------------------------------------------------------------------------
 # Start Claude Code
 # ---------------------------------------------------------------------------
+
+if [[ "$NO_CONNECT" == true ]]; then
+    echo "sandbox ready. connect with: sandbox.sh --connect ${SANDBOX_NAME}" >&2
+    exit 0
+fi
 
 echo "starting claude in ${WORKDIR}..." >&2
 connect_sandbox "$SANDBOX_TARGET" "$WORKDIR"
