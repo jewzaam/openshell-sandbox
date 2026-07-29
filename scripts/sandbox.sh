@@ -966,6 +966,7 @@ if [[ -n "$OPENSHELL_NAME" ]]; then
 fi
 
 CREATE_CMD+=(--policy "$POLICY_FILE")
+CREATE_CMD+=(--from "openshell-sandbox:latest")
 CREATE_CMD+=(--label "source.directory=${SANDBOX_NAME}")
 
 SANDBOX_TARGET="${OPENSHELL_NAME:-}"
