@@ -10,6 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SANDBOXES_DIR="${HOME}/sandboxes"
+GWS_SANDBOX_SCOPES="https://www.googleapis.com/auth/calendar.readonly,https://www.googleapis.com/auth/directory.readonly,https://www.googleapis.com/auth/documents.readonly,https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/meetings.space.readonly,https://www.googleapis.com/auth/presentations.readonly,https://www.googleapis.com/auth/spreadsheets.readonly,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/userinfo.profile"
 
 # Defaults
 DRYRUN=false
@@ -147,6 +148,32 @@ EXAMPLES:
     $(basename "$0") --delete nexus
 EOF
     exit "${1:-0}"
+}
+
+# ---------------------------------------------------------------------------
+# Ensure gws sandbox credentials are valid (interactive — may open browser)
+# ---------------------------------------------------------------------------
+
+ensure_gws_creds() {
+    command -v gws &>/dev/null || return 0
+    local gws_dir="${HOME}/.config/gws-sandbox"
+    if [[ -f "${gws_dir}/credentials.enc" ]]; then
+        local valid
+        valid=$(GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$gws_dir" gws auth status 2>/dev/null | jq -r '.token_valid // false')
+        if [[ "$valid" == "true" ]]; then
+            echo "gws sandbox credentials valid" >&2
+        else
+            echo "gws sandbox credentials expired, re-authenticating..." >&2
+            GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$gws_dir" gws auth login --scopes "$GWS_SANDBOX_SCOPES"
+        fi
+    else
+        echo "gws sandbox credentials not found, authenticating (readonly)..." >&2
+        mkdir -p "$gws_dir"
+        if [[ -f "${HOME}/.config/gws/client_secret.json" ]]; then
+            cp "${HOME}/.config/gws/client_secret.json" "${gws_dir}/"
+        fi
+        GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$gws_dir" gws auth login --scopes "$GWS_SANDBOX_SCOPES"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -483,32 +510,14 @@ with open(sys.argv[1], 'w') as f:
 
     # Upload gws (Google Workspace CLI) readonly credentials
     GWS_SANDBOX_DIR="${HOME}/.config/gws-sandbox"
-    if command -v gws &>/dev/null; then
-        # Validate existing sandbox creds
-        if [[ -f "${GWS_SANDBOX_DIR}/credentials.enc" ]]; then
-            gws_valid=$(GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$GWS_SANDBOX_DIR" gws auth status 2>/dev/null | jq -r '.token_valid // false')
-            if [[ "$gws_valid" != "true" ]]; then
-                echo "gws sandbox credentials expired, re-authenticating..." >&2
-                GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$GWS_SANDBOX_DIR" gws auth login --readonly
-            fi
-        else
-            echo "gws sandbox credentials not found, authenticating (readonly)..." >&2
-            mkdir -p "$GWS_SANDBOX_DIR"
-            # Copy client_secret from main config if available
-            if [[ -f "${HOME}/.config/gws/client_secret.json" ]]; then
-                cp "${HOME}/.config/gws/client_secret.json" "${GWS_SANDBOX_DIR}/"
-            fi
-            GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$GWS_SANDBOX_DIR" gws auth login --readonly
-        fi
-        if [[ -d "$GWS_SANDBOX_DIR" ]]; then
-            GWS_TMP="$(mktemp -d)"
-            mkdir -p "${GWS_TMP}/.config"
-            cp -r "$GWS_SANDBOX_DIR" "${GWS_TMP}/.config/gws"
-            rm -rf "${GWS_TMP}/.config/gws/cache"
-            run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
-                "${GWS_TMP}/.config" /sandbox
-            rm -rf "$GWS_TMP"
-        fi
+    if [[ -d "$GWS_SANDBOX_DIR" ]]; then
+        GWS_TMP="$(mktemp -d)"
+        mkdir -p "${GWS_TMP}/.config"
+        cp -r "$GWS_SANDBOX_DIR" "${GWS_TMP}/.config/gws"
+        rm -rf "${GWS_TMP}/.config/gws/cache"
+        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+            "${GWS_TMP}/.config" /sandbox
+        rm -rf "$GWS_TMP"
     fi
 
     # Re-upload bin/
@@ -965,6 +974,7 @@ fi
 
 # --- Refresh config on existing sandbox ---
 if [[ "$REFRESH_MODE" == true ]]; then
+    ensure_gws_creds
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     echo "refreshing config on ${SANDBOX_NAME}..." >&2
     upload_config "$OS_NAME"
@@ -975,6 +985,8 @@ fi
 # ---------------------------------------------------------------------------
 # Create sandbox
 # ---------------------------------------------------------------------------
+
+ensure_gws_creds
 
 OPENSHELL_NAME=$(short_name "$SANDBOX_NAME")
 
