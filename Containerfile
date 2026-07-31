@@ -23,7 +23,7 @@ RUN npm install -g @anthropic-ai/claude-code @googleworkspace/cli
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Python tools
-RUN pip install --no-cache-dir pytest
+RUN pip install --no-cache-dir pytest jsonschema
 
 # Sandbox user (HOME=/sandbox so all exec calls see correct home)
 RUN groupadd -g 1000 sandbox && \
