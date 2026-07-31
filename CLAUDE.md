@@ -45,8 +45,8 @@ Containerfile.
   works), then uploaded to the sandbox via `sandbox upload`. State tracked in
   `~/sandboxes/<name>/manifest.json`. Supports download (pull changes back),
   upload (push rebased code in), and add-repo (add to running sandbox).
-- **Baked-in repos.** `knowledgebase` and `standards` are cloned at image build
-  time into `/sandbox/source/`. Project repos are cloned on host and uploaded.
+- **No baked-in repos.** All repos (including `knowledgebase` and `standards`)
+  are cloned on the host and uploaded. Nothing is baked into the image.
 - **Host-side git operations only.** Sandbox has no GitHub network access and
   no git authentication. All repos are pre-cloned on host.
 - **Containerfile HOME directory.** Use `useradd -d /sandbox` in Containerfile.
