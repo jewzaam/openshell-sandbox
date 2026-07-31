@@ -56,7 +56,9 @@ Containerfile.
   creates if missing (delegates to `--create`), reconnects if exists. Name can
   be inferred from CWD under `~/sandboxes/<name>/`.
 - **`--refresh` (re-upload config).** Re-uploads `~/.claude/`, `bin/`, `.bashrc`,
-  `.env`, and system prompt without recreating sandbox. Does not touch repos.
+  `.env`, and system prompt without recreating sandbox. Generates and uploads
+  `pr-context.md` for PR-based repos. Validates gws credentials (interactive,
+  runs first so browser prompt appears while user is present). Does not touch repos.
 - **`--policy` hot-swap.** Standalone `--policy NAME` sets policy on running
   sandbox. Bare names resolve to `policies/<name>.yaml`. Validates async — polls
   `openshell policy list` for Loaded/Effective/Failed status.
@@ -84,6 +86,57 @@ Containerfile.
   values from `SANDBOX_JIRA_TOKEN`, `SANDBOX_JIRA_EMAIL`, `SANDBOX_JIRA_URL`,
   and `SANDBOX_JIRA_CLOUD_ID`. Last-value-wins when `.env` is sourced. Enables
   read-only scoped Atlassian tokens in sandboxes while host keeps broad credentials.
+- **`--dryrun` flag.** `run()` wrapper prints commands instead of executing.
+  `exec` calls exit cleanly in dryrun. Dryrun propagates through `--ensure`
+  and `--recreate` sub-invocations via `--dryrun` arg forwarding. `.env`
+  content printed with tokens redacted.
+- **`--recreate` (image upgrade workflow).** Downloads repos + claude session
+  state, deletes remote sandbox only (preserves local dir), creates fresh
+  sandbox with `--no-clone --no-connect`, uploads local repos, connects. Used
+  when sandbox image changes.
+- **`--no-connect` flag.** Creates sandbox without auto-starting Claude. Used
+  by `--recreate` to allow upload step before connecting.
+- **`connect_sandbox()` function.** Extracted exec connection command (keepalive
+  + bashrc + claude-wrapper) into reusable function. All connect/ensure/create
+  paths call it.
+- **Hash-based sandbox naming.** OpenShell has a 19-char name limit (DNS label
+  constraint: 19+2+19+2+19=61 < 63). `short_name()` generates `sb-<12-char-md5>`
+  from the full name. `resolve_openshell_name()` reads `openshell_name` from
+  manifest, falls back to `short_name()`. `resolve_full_name()` scans all
+  manifests to reverse-map. `--list` annotates openshell names with full names.
+- **Claude session state preservation.** `~/sandboxes/<name>/claude/projects/`
+  stores session transcripts and project memory downloaded from sandbox.
+  `download_claude_state()` pulls `/sandbox/.claude/projects/`.
+  `upload_claude_state()` restores it at create time. Called during
+  `--download` and uploaded during `--create`. `--refresh` and `--delete` do
+  not touch it.
+- **gws CLI integration.** `@googleworkspace/cli` installed via npm in
+  Containerfile. Sandbox gets readonly OAuth credentials from
+  `~/.config/gws-sandbox/`. `ensure_gws_creds()` validates token via
+  `gws auth status` (`token_valid` field), re-auths with `--scopes` if expired
+  or missing. Scopes defined in `GWS_SANDBOX_SCOPES` (all readonly). Client
+  secret copied from `~/.config/gws/client_secret.json` on first auth.
+- **Git commit signing.** `upload_config()` uploads the SSH signing key
+  referenced by `git config --global user.signingkey` and a path-rewritten
+  `.gitconfig` (`${HOME}` → `/sandbox`). Dedicated signing-only key, not the
+  GitHub SSH auth key.
+- **Custom sandbox image.** `--from openshell-sandbox:latest` in create
+  command. Image must be built with `make build` before creating sandboxes.
+  Previously was using the default NVIDIA base image without the custom tooling.
+- **PR context generation.** `scripts/generate-pr-context.sh` generates
+  `pr-context.md` in repo dirs for repos with `ref=pr/<num>` and GitHub URLs.
+  Fetches PR metadata via `gh pr view` (title, body, branch, base, labels,
+  assignees — no review comments to avoid biasing agent reviews). Extracts
+  `ANSTRAT-\d+` and `AAP-\d+` from title/branch/body, fetches linked Jira
+  issues (summary, description, AC). Called during `--refresh` (generates +
+  uploads pr-context.md per repo) and `--create` (generates between clone and
+  upload loops).
+- **`scode` existing sandbox dir mode.** `scode ~/sandboxes/<name>` detects
+  `manifest.json`, reads repo URLs, builds `--ensure` command with all repos.
+  Supports re-creating sandboxes from pre-existing local state without manually
+  specifying repos.
+- **Debian apt network access.** `policies/code.yaml` includes `deb.debian.org`
+  on ports 80 and 443. Sandbox can install system packages at runtime.
 
 ## OpenShell Policy Gotchas
 
@@ -119,16 +172,14 @@ After system reboot, two things break:
    before starting the gateway. This stops all containers, kills pasta,
    removes the netns dir, restarts podman socket, then restarts the containers.
 
-2. **Sandbox JWTs are expired.** Tokens have a 1-hour TTL. After reboot +
-   gateway restart, all existing sandbox tokens are stale. The supervisor
-   inside each sandbox fails with `Unauthenticated: ExpiredSignature`.
-   Run `scripts/mint-sandbox-token.py <name>` to write a fresh token to the
-   bind-mounted host file, then restart the container.
-
-The JWT claims structure must include `sandbox_id` (denormalized UUID) in
-addition to the SPIFFE `sub` field — omitting it causes `missing field
-sandbox_id` validation error. `iss` and `aud` must be
-`openshell-gateway:<gateway_id>`, not just `openshell-gateway`.
+2. **Sandbox JWTs may be expired.** Gateway now mints tokens with `exp=0` (no
+   expiry) for local single-player mode. New sandboxes do not need post-reboot
+   token refresh. For pre-existing sandboxes with expired tokens:
+   `scripts/mint-sandbox-token.py` mints `exp=0` tokens, finds containers by
+   `openshell.ai/sandbox-name` label (not hardcoded container name), delivers
+   token via `podman cp` into stopped container overlay, then starts it.
+   `scripts/mint-sandbox-tokens.sh` iterates all errored sandboxes from
+   `openshell sandbox list`.
 
 ## Shell Script Gotchas
 
