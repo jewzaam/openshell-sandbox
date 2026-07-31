@@ -197,7 +197,7 @@ while IFS=$'\t' read -r repo_name repo_url repo_ref; do
 
     # Extract Jira keys from title, branch, and body
     jira_keys=$(printf '%s\n%s\n%s' "$pr_title" "$pr_branch" "$pr_body" | \
-        grep -oE '(ANSTRAT|AAP)-[0-9]+' | sort -u || true)
+        grep -ioE '(ANSTRAT|AAP)-[0-9]+' | tr '[:lower:]' '[:upper:]' | sort -u || true)
 
     echo "# Jira Context" >> "$pr_context"
     echo "" >> "$pr_context"
