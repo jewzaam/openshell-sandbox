@@ -110,6 +110,22 @@ network_policies:
     binaries:
       - { path: "/**" }
 
+  debian:
+    name: debian-readonly
+    endpoints:
+      - host: deb.debian.org
+        port: 80
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: deb.debian.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
   pypi:
     name: pypi-readonly
     endpoints:

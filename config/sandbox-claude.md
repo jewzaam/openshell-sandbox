@@ -17,8 +17,9 @@ repo subdirectory before working on it.
 - **No SSH.** Port 22 is not in the network policy.
 - **No git auth.** `gh` CLI and `git push/fetch` will fail. Work with
   what's already cloned.
-- **Read-only package registries.** npm and PyPI are available for
-  installing dependencies. Cannot publish.
+- **Read-only package registries.** npm, PyPI, and Debian apt are available
+  for installing dependencies. Cannot publish. Use `sudo apt-get install`
+  for system packages.
 - **`--dangerously-skip-permissions` is intentional.** The sandbox policy
   is the security boundary, not Claude's permission system.
 
