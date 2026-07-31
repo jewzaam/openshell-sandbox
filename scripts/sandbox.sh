@@ -177,6 +177,17 @@ ensure_gws_creds() {
 }
 
 # ---------------------------------------------------------------------------
+# Generate PR + Jira context for sandbox repos
+# ---------------------------------------------------------------------------
+
+generate_pr_context() {
+    local sandbox_dir="$1"
+    if [[ -f "${sandbox_dir}/manifest.json" ]]; then
+        "${REPO_ROOT}/scripts/generate-pr-context.sh" "$sandbox_dir"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Connect to sandbox via exec
 # ---------------------------------------------------------------------------
 
@@ -977,7 +988,19 @@ if [[ "$REFRESH_MODE" == true ]]; then
     ensure_gws_creds
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     echo "refreshing config on ${SANDBOX_NAME}..." >&2
+    generate_pr_context "${SANDBOXES_DIR}/${SANDBOX_NAME}"
     upload_config "$OS_NAME"
+    # Upload any generated pr-context.md files
+    SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
+    if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
+        for repo_name in $(jq -r '.repos | keys[]' "${SANDBOX_DIR}/manifest.json"); do
+            if [[ -f "${SANDBOX_DIR}/${repo_name}/pr-context.md" ]]; then
+                echo "  uploading pr-context.md for ${repo_name}..." >&2
+                run openshell sandbox upload "$OS_NAME" "${GW_FLAG[@]}" \
+                    "${SANDBOX_DIR}/${repo_name}/pr-context.md" "/sandbox/source/${repo_name}"
+            fi
+        done
+    fi
     echo "done. reconnect to apply (sandbox.sh --connect)" >&2
     exit 0
 fi
@@ -1094,8 +1117,15 @@ if [[ "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
 
         sha=$(git -C "${SANDBOX_DIR}/${repo_name}" rev-parse HEAD)
         write_manifest "$SANDBOX_DIR" "$SANDBOX_NAME" "$repo_name" "$repo" "$ref" "$sha"
+    done
 
-        echo "  uploading ${repo_name} to sandbox..." >&2
+    generate_pr_context "$SANDBOX_DIR"
+
+    echo "uploading repos to sandbox..." >&2
+    for i in "${!REPOS[@]}"; do
+        repo="${REPOS[$i]}"
+        repo_name=$(basename "$repo" .git)
+        echo "  uploading ${repo_name}..." >&2
         upload_repo "$SANDBOX_TARGET" "$SANDBOX_DIR" "$repo_name"
     done
 
