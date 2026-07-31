@@ -36,8 +36,5 @@ USER sandbox
 
 RUN mkdir -p /sandbox/bin /sandbox/source /sandbox/.config
 
-# Bake in reference repos
-RUN git clone https://github.com/jewzaam/knowledgebase.git /sandbox/source/knowledgebase \
-    && git clone https://github.com/jewzaam/standards.git /sandbox/source/standards
 
 WORKDIR /sandbox
