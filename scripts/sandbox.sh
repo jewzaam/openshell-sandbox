@@ -29,6 +29,7 @@ REFRESH_MODE=false
 RECREATE_MODE=false
 GATEWAY=""
 POLICY_FILE=""
+SANDBOX_PROFILE=""
 SOURCE_DIR=""
 REPOS=()
 REFS=()
@@ -124,6 +125,7 @@ OPTIONS:
     --download [NAME] Download repos from sandbox to ~/sandboxes/<name>/
     --upload [NAME]   Upload local repo changes back into sandbox
     --policy NAME     Policy name or path (e.g. research, work). Standalone: hot-swap on running sandbox
+    --profile NAME    Credential profile (e.g. personal). Controls env vars, uploads, and default policy
     --gateway NAME    OpenShell gateway (default: \$OPENSHELL_GATEWAY)
     --refresh [NAME]  Re-upload ~/.claude/, bin/, .bashrc, .env, system prompt
     --recreate [NAME] Download, delete sandbox container, recreate with new image, re-upload repos
@@ -194,7 +196,7 @@ generate_pr_context() {
 connect_sandbox() {
     local os_name="$1" workdir="$2"
     run exec openshell sandbox exec --name "${os_name}" "${GW_FLAG[@]}" \
-        --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${workdir} && /sandbox/bin/claude-wrapper.sh -c || /sandbox/bin/claude-wrapper.sh"
+        --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${workdir} && /sandbox/bin/claude-wrapper.sh"
 }
 
 # ---------------------------------------------------------------------------
@@ -325,12 +327,24 @@ write_manifest() {
     if [[ ! -f "$manifest" ]]; then
         local os_name
         os_name=$(short_name "$sandbox_name")
-        jq -n \
-            --arg name "$sandbox_name" \
-            --arg os_name "$os_name" \
-            --arg created "$now" \
-            '{name: $name, openshell_name: $os_name, created: $created, repos: {}}' \
-            > "${manifest}.tmp"
+        local manifest_args=(
+            --arg name "$sandbox_name"
+            --arg os_name "$os_name"
+            --arg created "$now"
+        )
+        local manifest_expr='{name: $name, openshell_name: $os_name, created: $created, repos: {}}'
+        if [[ -n "$SANDBOX_PROFILE" ]]; then
+            manifest_args+=(--arg profile "$SANDBOX_PROFILE")
+            manifest_expr='{name: $name, openshell_name: $os_name, profile: $profile, created: $created, repos: {}}'
+        fi
+        jq -n "${manifest_args[@]}" "$manifest_expr" > "${manifest}.tmp"
+        mv "${manifest}.tmp" "$manifest"
+    fi
+
+    # Update profile if specified (handles recreate with different profile)
+    if [[ -n "$SANDBOX_PROFILE" ]]; then
+        jq --arg profile "$SANDBOX_PROFILE" '.profile = $profile' \
+            "$manifest" > "${manifest}.tmp"
         mv "${manifest}.tmp" "$manifest"
     fi
 
@@ -447,6 +461,7 @@ upload_config() {
             --exclude=claude-dashboard \
             --exclude=.git \
             --exclude=.venv \
+            --exclude=.credentials.json \
             "${HOME}/.claude/" "${CLAUDE_TMP}/.claude/"
 
         # Strip settings.json: remove allow permissions, keep only OTEL dummy hooks
@@ -459,6 +474,12 @@ raw = raw.replace(sys.argv[2], '/sandbox')
 s = json.loads(raw)
 if isinstance(s.get('permissions'), dict):
     s['permissions'].pop('allow', None)
+profile = sys.argv[3] if len(sys.argv) > 3 else ''
+if profile == 'personal':
+    import re
+    strip_re = re.compile(r'^(CLAUDE_CODE_USE_VERTEX|ANTHROPIC_VERTEX|GOOGLE|CLOUDSDK|CLOUD_ML|JIRA|ATLASSIAN)', re.I)
+    if isinstance(s.get('env'), dict):
+        s['env'] = {k: v for k, v in s['env'].items() if not strip_re.match(k)}
 hooks = s.get('hooks')
 if isinstance(hooks, dict):
     for event in list(hooks.keys()):
@@ -478,7 +499,7 @@ else:
     s.pop('hooks', None)
 with open(sys.argv[1], 'w') as f:
     json.dump(s, f, indent=2)
-" "${CLAUDE_TMP}/.claude/settings.json" "${HOME}"
+" "${CLAUDE_TMP}/.claude/settings.json" "${HOME}" "${SANDBOX_PROFILE}"
         fi
 
         # Rewrite host HOME paths to /sandbox in all plugin config files
@@ -519,26 +540,33 @@ with open(sys.argv[1], 'w') as f:
         rm -rf "$GIT_TMP"
     fi
 
-    # Upload gws (Google Workspace CLI) readonly credentials
-    GWS_SANDBOX_DIR="${HOME}/.config/gws-sandbox"
-    if [[ -d "$GWS_SANDBOX_DIR" ]]; then
-        GWS_TMP="$(mktemp -d)"
-        mkdir -p "${GWS_TMP}/.config"
-        cp -r "$GWS_SANDBOX_DIR" "${GWS_TMP}/.config/gws"
-        rm -rf "${GWS_TMP}/.config/gws/cache"
-        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
-            "${GWS_TMP}/.config" /sandbox
-        rm -rf "$GWS_TMP"
+    # Upload gws (Google Workspace CLI) readonly credentials (skip for personal profile)
+    if [[ "$SANDBOX_PROFILE" != "personal" ]]; then
+        GWS_SANDBOX_DIR="${HOME}/.config/gws-sandbox"
+        if [[ -d "$GWS_SANDBOX_DIR" ]]; then
+            GWS_TMP="$(mktemp -d)"
+            mkdir -p "${GWS_TMP}/.config"
+            cp -r "$GWS_SANDBOX_DIR" "${GWS_TMP}/.config/gws"
+            rm -rf "${GWS_TMP}/.config/gws/cache"
+            run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+                "${GWS_TMP}/.config" /sandbox
+            rm -rf "$GWS_TMP"
+        fi
     fi
 
     # Re-upload bin/
     run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
         "${REPO_ROOT}/bin" /sandbox
 
-    # Upload sandbox system prompt
+    # Upload sandbox system prompt (filter work-specific sections for personal profile)
     PROMPT_TMP="$(mktemp -d)"
     mkdir -p "${PROMPT_TMP}/source"
     cp "${REPO_ROOT}/config/sandbox-claude.md" "${PROMPT_TMP}/source/CLAUDE.md"
+    if [[ "$SANDBOX_PROFILE" == "personal" ]]; then
+        # Strip Jira section and Prometheus/Loki from Observability
+        sed -i '/^## Jira$/,/^## /{ /^## Jira$/d; /^## /!d; }' "${PROMPT_TMP}/source/CLAUDE.md"
+        sed -i '/^- \*\*Prometheus:\*\*/d; /^- \*\*Loki:\*\*/d' "${PROMPT_TMP}/source/CLAUDE.md"
+    fi
     run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
         "${PROMPT_TMP}/source" /sandbox
     rm -rf "$PROMPT_TMP"
@@ -684,6 +712,11 @@ while [[ $# -gt 0 ]]; do
             LIST_MODE=true
             shift
             ;;
+        --profile)
+            [[ $# -ge 2 ]] || { echo "error: --profile requires NAME" >&2; exit 1; }
+            SANDBOX_PROFILE="$2"
+            shift 2
+            ;;
         --no-clone)
             NO_CLONE=true
             shift
@@ -827,7 +860,7 @@ if [[ "$RECREATE_MODE" == true ]]; then
     run openshell sandbox delete "$OS_NAME" "${GW_FLAG[@]}" || true
 
     # 3. Create fresh sandbox without connecting
-    "$0" --create "$SANDBOX_NAME" --no-clone --no-connect ${POLICY_FILE:+--policy "$POLICY_FILE"} "${COMMON_ARGS[@]}"
+    "$0" --create "$SANDBOX_NAME" --no-clone --no-connect ${POLICY_FILE:+--policy "$POLICY_FILE"} ${SANDBOX_PROFILE:+--profile "$SANDBOX_PROFILE"} "${COMMON_ARGS[@]}"
 
     # 4. Upload local repos
     "$0" --upload "$SANDBOX_NAME" "${COMMON_ARGS[@]}"
@@ -857,6 +890,7 @@ if [[ "$ENSURE_MODE" == true ]]; then
         done
         [[ -n "$GATEWAY" ]] && ENSURE_ARGS+=(--gateway "$GATEWAY")
         [[ -n "$POLICY_FILE" ]] && ENSURE_ARGS+=(--policy "$POLICY_FILE")
+        [[ -n "$SANDBOX_PROFILE" ]] && ENSURE_ARGS+=(--profile "$SANDBOX_PROFILE")
         [[ -n "$SOURCE_DIR" ]] && ENSURE_ARGS+=(--source-dir "$SOURCE_DIR")
         [[ "$DRYRUN" == true ]] && ENSURE_ARGS+=(--dryrun)
         exec "$0" "${ENSURE_ARGS[@]}"
@@ -909,59 +943,86 @@ if [[ -z "$SANDBOX_NAME" && "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Resolve profile from manifest (for --refresh when --profile not on CLI)
+# ---------------------------------------------------------------------------
+
+if [[ -z "$SANDBOX_PROFILE" && -n "$SANDBOX_NAME" && -f "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json" ]]; then
+    SANDBOX_PROFILE=$(jq -r '.profile // empty' "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json" 2>/dev/null || true)
+    if [[ -n "$SANDBOX_PROFILE" ]]; then
+        echo "using profile '${SANDBOX_PROFILE}' from manifest" >&2
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Resolve policy
 # ---------------------------------------------------------------------------
 
 if [[ -z "$POLICY_FILE" ]]; then
-    POLICY_FILE="$(resolve_policy "code")" || exit 1
+    case "$SANDBOX_PROFILE" in
+        personal) POLICY_FILE="$(resolve_policy "personal")" || exit 1 ;;
+        *)        POLICY_FILE="$(resolve_policy "code")" || exit 1 ;;
+    esac
 fi
 
 # ---------------------------------------------------------------------------
 # Generate /sandbox/.env content (runtime env vars)
 # ---------------------------------------------------------------------------
 
+# Build active var list based on profile
+ACTIVE_VARS=()
+case "$SANDBOX_PROFILE" in
+    personal)
+        ACTIVE_VARS+=("${ANTHROPIC_VARS[@]}" "${CLAUDE_VARS[@]}" "${OTEL_VARS[@]}")
+        ;;
+    *)
+        ACTIVE_VARS+=("${ALL_VARS[@]}")
+        ;;
+esac
+
 ENV_CONTENT=""
 captured=0
-for var in "${ALL_VARS[@]}"; do
+for var in "${ACTIVE_VARS[@]}"; do
     if [[ -n "${!var+x}" ]]; then
         ENV_CONTENT+="$(printf '%s=%q' "$var" "${!var}")"$'\n'
         captured=$((captured + 1))
     fi
 done
 
-# JIRA env var aliases — tools use inconsistent names
-if [[ -n "${JIRA_USERNAME+x}" && -z "${JIRA_EMAIL+x}" ]]; then
-    ENV_CONTENT+="$(printf 'JIRA_EMAIL=%q' "${JIRA_USERNAME}")"$'\n'
-fi
-if [[ -n "${JIRA_EMAIL+x}" && -z "${JIRA_USERNAME+x}" ]]; then
-    ENV_CONTENT+="$(printf 'JIRA_USERNAME=%q' "${JIRA_EMAIL}")"$'\n'
-fi
-if [[ -n "${JIRA_TOKEN+x}" && -z "${JIRA_API_TOKEN+x}" ]]; then
-    ENV_CONTENT+="$(printf 'JIRA_API_TOKEN=%q' "${JIRA_TOKEN}")"$'\n'
-fi
-if [[ -n "${JIRA_API_TOKEN+x}" && -z "${JIRA_TOKEN+x}" ]]; then
-    ENV_CONTENT+="$(printf 'JIRA_TOKEN=%q' "${JIRA_API_TOKEN}")"$'\n'
-fi
+if [[ "$SANDBOX_PROFILE" != "personal" ]]; then
+    # JIRA env var aliases — tools use inconsistent names
+    if [[ -n "${JIRA_USERNAME+x}" && -z "${JIRA_EMAIL+x}" ]]; then
+        ENV_CONTENT+="$(printf 'JIRA_EMAIL=%q' "${JIRA_USERNAME}")"$'\n'
+    fi
+    if [[ -n "${JIRA_EMAIL+x}" && -z "${JIRA_USERNAME+x}" ]]; then
+        ENV_CONTENT+="$(printf 'JIRA_USERNAME=%q' "${JIRA_EMAIL}")"$'\n'
+    fi
+    if [[ -n "${JIRA_TOKEN+x}" && -z "${JIRA_API_TOKEN+x}" ]]; then
+        ENV_CONTENT+="$(printf 'JIRA_API_TOKEN=%q' "${JIRA_TOKEN}")"$'\n'
+    fi
+    if [[ -n "${JIRA_API_TOKEN+x}" && -z "${JIRA_TOKEN+x}" ]]; then
+        ENV_CONTENT+="$(printf 'JIRA_TOKEN=%q' "${JIRA_API_TOKEN}")"$'\n'
+    fi
 
-# Sandbox-scoped JIRA credentials override (read-only scoped token via gateway)
-if [[ -n "${SANDBOX_JIRA_TOKEN+x}" ]]; then
-    ENV_CONTENT+="$(printf 'JIRA_TOKEN=%q' "${SANDBOX_JIRA_TOKEN}")"$'\n'
-    ENV_CONTENT+="$(printf 'JIRA_API_TOKEN=%q' "${SANDBOX_JIRA_TOKEN}")"$'\n'
-    if [[ -n "${SANDBOX_JIRA_EMAIL+x}" ]]; then
-        ENV_CONTENT+="$(printf 'JIRA_EMAIL=%q' "${SANDBOX_JIRA_EMAIL}")"$'\n'
-        ENV_CONTENT+="$(printf 'JIRA_USERNAME=%q' "${SANDBOX_JIRA_EMAIL}")"$'\n'
+    # Sandbox-scoped JIRA credentials override (read-only scoped token via gateway)
+    if [[ -n "${SANDBOX_JIRA_TOKEN+x}" ]]; then
+        ENV_CONTENT+="$(printf 'JIRA_TOKEN=%q' "${SANDBOX_JIRA_TOKEN}")"$'\n'
+        ENV_CONTENT+="$(printf 'JIRA_API_TOKEN=%q' "${SANDBOX_JIRA_TOKEN}")"$'\n'
+        if [[ -n "${SANDBOX_JIRA_EMAIL+x}" ]]; then
+            ENV_CONTENT+="$(printf 'JIRA_EMAIL=%q' "${SANDBOX_JIRA_EMAIL}")"$'\n'
+            ENV_CONTENT+="$(printf 'JIRA_USERNAME=%q' "${SANDBOX_JIRA_EMAIL}")"$'\n'
+        fi
+        if [[ -n "${SANDBOX_JIRA_URL+x}" ]]; then
+            ENV_CONTENT+="$(printf 'JIRA_URL=%q' "${SANDBOX_JIRA_URL}")"$'\n'
+        fi
+        if [[ -n "${SANDBOX_JIRA_CLOUD_ID+x}" ]]; then
+            ENV_CONTENT+="$(printf 'JIRA_CLOUD_ID=%q' "${SANDBOX_JIRA_CLOUD_ID}")"$'\n'
+        fi
     fi
-    if [[ -n "${SANDBOX_JIRA_URL+x}" ]]; then
-        ENV_CONTENT+="$(printf 'JIRA_URL=%q' "${SANDBOX_JIRA_URL}")"$'\n'
-    fi
-    if [[ -n "${SANDBOX_JIRA_CLOUD_ID+x}" ]]; then
-        ENV_CONTENT+="$(printf 'JIRA_CLOUD_ID=%q' "${SANDBOX_JIRA_CLOUD_ID}")"$'\n'
-    fi
-fi
 
-# Remap credential file paths for sandbox
-if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS+x}" ]]; then
-    ENV_CONTENT+=$'\n'"GOOGLE_APPLICATION_CREDENTIALS=/sandbox/.config/gcloud/application_default_credentials.json"
+    # Remap credential file paths for sandbox
+    if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS+x}" ]]; then
+        ENV_CONTENT+=$'\n'"GOOGLE_APPLICATION_CREDENTIALS=/sandbox/.config/gcloud/application_default_credentials.json"
+    fi
 fi
 
 # Dashboard hooks: relay to host dashboard via container gateway
@@ -969,6 +1030,11 @@ ENV_CONTENT+="CLAUDE_DASHBOARD_HOST=host.containers.internal"$'\n'
 
 # Sandbox source directory name for OTEL enrichment
 ENV_CONTENT+="$(printf 'SANDBOX_SOURCE_NAME=%q' "${SANDBOX_NAME}")"$'\n'
+
+# Profile-specific OTEL resource attribute tagging
+if [[ "$SANDBOX_PROFILE" == "personal" ]]; then
+    ENV_CONTENT+="SANDBOX_PROFILE=personal"$'\n'
+fi
 
 if [[ $captured -eq 0 ]]; then
     echo "warning: no env vars captured, sandbox will have no credentials" >&2
@@ -985,7 +1051,9 @@ fi
 
 # --- Refresh config on existing sandbox ---
 if [[ "$REFRESH_MODE" == true ]]; then
-    ensure_gws_creds
+    if [[ "$SANDBOX_PROFILE" != "personal" ]]; then
+        ensure_gws_creds
+    fi
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     echo "refreshing config on ${SANDBOX_NAME}..." >&2
     generate_pr_context "${SANDBOXES_DIR}/${SANDBOX_NAME}"
@@ -1009,7 +1077,9 @@ fi
 # Create sandbox
 # ---------------------------------------------------------------------------
 
-ensure_gws_creds
+if [[ "$SANDBOX_PROFILE" != "personal" ]]; then
+    ensure_gws_creds
+fi
 
 OPENSHELL_NAME=$(short_name "$SANDBOX_NAME")
 
@@ -1073,13 +1143,20 @@ if [[ -n "$SANDBOX_NAME" ]]; then
     mkdir -p "${SANDBOXES_DIR}/${SANDBOX_NAME}"
 fi
 
+# Update profile in manifest (handles --recreate with --no-clone where write_manifest is never called)
+if [[ -n "$SANDBOX_PROFILE" && -f "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json" ]]; then
+    jq --arg profile "$SANDBOX_PROFILE" '.profile = $profile' \
+        "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json" > "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json.tmp"
+    mv "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json.tmp" "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json"
+fi
+
 # ---------------------------------------------------------------------------
 # Upload credentials
 # ---------------------------------------------------------------------------
 
 echo "uploading credentials..." >&2
 
-if [[ -d "${HOME}/.config/gcloud" ]]; then
+if [[ "$SANDBOX_PROFILE" != "personal" && -d "${HOME}/.config/gcloud" ]]; then
     run openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
         "${HOME}/.config/gcloud" /sandbox/.config
 fi

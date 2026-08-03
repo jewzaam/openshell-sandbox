@@ -34,9 +34,9 @@ in the environment. Do not claim Jira is inaccessible.
 Prometheus, Loki, and an OTEL collector run on the host and are reachable
 from the sandbox:
 
-- **Prometheus:** `http://host.containers.internal:9090` — PromQL queries via `/api/v1/query`
-- **Loki:** `http://host.containers.internal:3100` — LogQL queries via `/loki/api/v1/query_range`
-- **OTEL collector:** `http://host.containers.internal:4318` — receives telemetry from this sandbox
+- **Prometheus:** `http://172.30.0.11:9090` — PromQL queries via `/api/v1/query`
+- **Loki:** `http://172.30.0.12:3100` — LogQL queries via `/loki/api/v1/query_range`
+- **OTEL collector:** `http://172.30.0.10:4318` — receives telemetry from this sandbox
 
 Claude Code emits OTEL metrics, logs, and traces. If the knowledgebase repo
 is available at `/sandbox/source/knowledgebase/`, read
