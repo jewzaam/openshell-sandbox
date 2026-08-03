@@ -1,10 +1,6 @@
-# OpenShell sandbox policy: research profile
-# Vertex AI + Claude platform — no Jira, no Atlassian
-#
-# NOTE: Open web egress blocked by OpenShell L7 policy (no wildcard host support).
-# WebSearch works (Anthropic API-side). WebFetch blocked for non-allowlisted domains.
-# Full research profile requires native provider support (issue #3) to remove creds
-# from sandbox, making open egress safe.
+# OpenShell sandbox policy: personal profile
+# Personal Claude subscription (API key, not Vertex) — no work credentials
+# OTEL push-only (no Prometheus/Loki read access)
 
 version: 1
 
@@ -34,26 +30,15 @@ process:
   run_as_group: sandbox
 
 network_policies:
-  vertex_ai:
-    name: vertex-ai-inference
+  anthropic_api:
+    name: anthropic-api
     endpoints:
-      - host: "**.googleapis.com"
+      - host: api.anthropic.com
         port: 443
         protocol: rest
         enforcement: enforce
         access: full
-      - host: oauth2.googleapis.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: full
-    binaries:
-      - { path: "/**" }
-
-  claude_platform:
-    name: claude-platform
-    endpoints:
-      - host: claude.ai
+      - host: console.anthropic.com
         port: 443
         protocol: rest
         enforcement: enforce
@@ -63,7 +48,7 @@ network_policies:
         protocol: rest
         enforcement: enforce
         access: full
-      - host: api.anthropic.com
+      - host: claude.ai
         port: 443
         protocol: rest
         enforcement: enforce
@@ -84,6 +69,33 @@ network_policies:
         protocol: rest
         enforcement: enforce
         access: full
+    binaries:
+      - { path: "/**" }
+
+  npm:
+    name: npm-readonly
+    endpoints:
+      - host: registry.npmjs.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
+  debian:
+    name: debian-readonly
+    endpoints:
+      - host: deb.debian.org
+        port: 80
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: deb.debian.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
     binaries:
       - { path: "/**" }
 

@@ -10,11 +10,14 @@ set -euo pipefail
 SANDBOX_SH="${SANDBOX_SH:-${HOME}/source/openshell-sandbox/scripts/sandbox.sh}"
 SANDBOXES_DIR="${HOME}/sandboxes"
 
-if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
+if [[ " $* " == *" --help "* ]] || [[ " $* " == *" -h "* ]]; then
     cat << 'EOF'
-Usage: scode [SANDBOX_DIR | --name NAME | SOURCE_PATH [REF]]
+Usage: scode [OPTIONS] [SANDBOX_DIR | --name NAME | SOURCE_PATH [REF]]
 
 Open a directory in VS Code backed by an OpenShell sandbox running Claude.
+
+Options:
+  --profile NAME   Credential profile (e.g., personal). Passed to sandbox.sh.
 
 Modes:
   scode SANDBOX_DIR           Re-use existing sandbox from manifest.json
@@ -29,16 +32,39 @@ Arguments:
 Examples:
   scode ~/sandboxes/supply-chain
   scode ~/source/nexus pr/1176
-  scode ~/source/nexus
+  scode --profile personal ~/source/my-project
   scode --name review-workspace
 EOF
     exit 0
 fi
 
+SCODE_PROFILE=""
+POSITIONAL=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --profile)
+            [[ $# -ge 2 ]] || { echo "error: --profile requires NAME" >&2; exit 1; }
+            SCODE_PROFILE="$2"
+            shift 2
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
+
 if [[ $# -lt 1 ]]; then
     echo "error: requires --name NAME, SOURCE_PATH, or SANDBOX_DIR" >&2
-    echo "usage: scode [--name NAME | SOURCE_PATH [REF] | ~/sandboxes/<name>]" >&2
+    echo "usage: scode [--profile NAME] [--name NAME | SOURCE_PATH [REF] | ~/sandboxes/<name>]" >&2
     exit 1
+fi
+
+PROFILE_FLAG=""
+if [[ -n "$SCODE_PROFILE" ]]; then
+    PROFILE_FLAG=" --profile ${SCODE_PROFILE}"
 fi
 
 write_tasks_and_open() {
@@ -87,7 +113,15 @@ target_path="$(realpath "$1" 2>/dev/null || echo "$1")"
 if [[ -f "${target_path}/manifest.json" ]]; then
     sandbox_name="$(jq -r '.name' "${target_path}/manifest.json")"
 
-    ENSURE_CMD="${SANDBOX_SH} --ensure ${sandbox_name}"
+    # Read profile from manifest if not specified on CLI
+    if [[ -z "$SCODE_PROFILE" ]]; then
+        manifest_profile="$(jq -r '.profile // empty' "${target_path}/manifest.json" 2>/dev/null)" || true
+        if [[ -n "$manifest_profile" ]]; then
+            PROFILE_FLAG=" --profile ${manifest_profile}"
+        fi
+    fi
+
+    ENSURE_CMD="${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}"
     while IFS=$'\t' read -r repo_name repo_url repo_ref; do
         ENSURE_CMD+=" --repo ${repo_url}"
         if [[ -n "$repo_ref" && "$repo_ref" != "null" ]]; then
@@ -105,7 +139,7 @@ if [[ "$1" == "--name" ]]; then
     sandbox_name="$2"
     sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
 
-    write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}"
+    write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}"
     exit 0
 fi
 
@@ -137,4 +171,4 @@ repo_url="$(git -C "$source_path" remote get-url origin 2>/dev/null)" || {
 }
 
 sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
-write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name} --repo ${repo_url} --ref ${ref} --source-dir ${source_path}"
+write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG} --repo ${repo_url} --ref ${ref} --source-dir ${source_path}"

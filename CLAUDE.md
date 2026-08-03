@@ -15,8 +15,9 @@ Containerfile.
 - `config/bashrc` — base `.bashrc` baked into image, sources `/sandbox/.env`
 - `config/sandbox-claude.md` — sandbox system prompt, uploaded to `/sandbox/source/CLAUDE.md`
 - `policies/` — network + filesystem policies per profile
-- `policies/code.yaml` — default profile
-- `policies/research.yaml` — web access profile
+- `policies/code.yaml` — default profile (work: Vertex AI + Jira + OTEL + observability)
+- `policies/research.yaml` — web access profile (Claude platform, no Jira)
+- `policies/personal.yaml` — personal profile (Anthropic API, no Vertex/Jira/gcloud, OTEL push-only)
 - `policies/local.yaml` — gitignored, for custom overrides
 - `scripts/sandbox.sh` — main entry point: create, upload, clone, start Claude
 - `scripts/scode` — VS Code launcher for sandbox-backed sessions
@@ -86,6 +87,29 @@ Containerfile.
   values from `SANDBOX_JIRA_TOKEN`, `SANDBOX_JIRA_EMAIL`, `SANDBOX_JIRA_URL`,
   and `SANDBOX_JIRA_CLOUD_ID`. Last-value-wins when `.env` is sourced. Enables
   read-only scoped Atlassian tokens in sandboxes while host keeps broad credentials.
+- **`--profile` credential profiles.** `--profile <name>` controls which env
+  var groups, credential uploads, and default policy a sandbox gets. Stored in
+  `manifest.json` so `--refresh` inherits it. Profile `personal` uses
+  `ANTHROPIC_API_KEY` (subscription, not Vertex), skips JIRA/gcloud/gws
+  credentials, defaults to `policies/personal.yaml`, strips Jira and
+  Prometheus/Loki sections from sandbox system prompt, and disables OTEL
+  entirely. No profile (default) = current behavior.
+- **Personal profile has no OTEL.** OpenShell cannot selectively block ports
+  on `host.containers.internal` — the container gateway host is implicitly
+  allowed on all ports regardless of policy. This means a personal sandbox
+  with OTEL collector access (port 4318) can also reach Prometheus (9090)
+  and Loki (3100), which contain work session telemetry. To prevent work
+  data leakage, personal profile skips OTEL entirely: no OTEL env vars
+  captured, `claude.env` not sourced in `claude-wrapper.sh`, and OTEL
+  collector removed from `personal.yaml`. `validate-profile.sh` documents
+  the gap — `host.containers.internal` ports show FAIL because they're
+  reachable despite not being in policy.
+- **`validate-profile.sh` bootstrap gate.** `claude-wrapper.sh` runs
+  `validate-profile.sh` before launching Claude CLI. Displays profile,
+  check table (expected vs actual), and summary. User must ACK (Enter)
+  or abort (Ctrl-C). Validates auth, credentials, OTEL, network
+  reachability, and git auth symmetrically — each profile checks both
+  presence of its own config and absence of the other's.
 - **`--dryrun` flag.** `run()` wrapper prints commands instead of executing.
   `exec` calls exit cleanly in dryrun. Dryrun propagates through `--ensure`
   and `--recreate` sub-invocations via `--dryrun` arg forwarding. `.env`
