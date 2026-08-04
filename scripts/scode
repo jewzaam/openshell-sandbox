@@ -170,5 +170,9 @@ repo_url="$(git -C "$source_path" remote get-url origin 2>/dev/null)" || {
     exit 1
 }
 
+# Block private repos for personal profile before opening VS Code
+source "$(dirname "$SANDBOX_SH")/lib.sh"
+SANDBOX_PROFILE="$SCODE_PROFILE" guard_private_repo "$repo_url"
+
 sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
 write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG} --repo ${repo_url} --ref ${ref} --source-dir ${source_path}"
