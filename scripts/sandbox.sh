@@ -261,6 +261,35 @@ run() {
 # Helper functions
 # ---------------------------------------------------------------------------
 
+# Check if repo is private via gh CLI. Returns 0 if private, 1 if public.
+is_private_repo() {
+    local url="${1%/}"
+    local private
+    private=$(gh repo view "$url" --json isPrivate -q '.isPrivate' 2>/dev/null) || return 1
+    [[ "$private" == "true" ]]
+}
+
+# Warn and confirm if personal profile is adding a private repo
+guard_private_repo() {
+    local url="$1"
+    if [[ "$SANDBOX_PROFILE" != "personal" ]]; then
+        return 0
+    fi
+    if is_private_repo "$url"; then
+        local repo_name
+        repo_name=$(basename "$url" .git)
+        echo "" >&2
+        echo "WARNING: '${repo_name}' is a private repo." >&2
+        echo "Personal sandboxes should only use public repos." >&2
+        echo "" >&2
+        read -rp "Continue anyway? [y/N]: " confirm
+        if [[ "${confirm:-N}" != [yY] ]]; then
+            echo "aborted." >&2
+            exit 1
+        fi
+    fi
+}
+
 clone_repo_host() {
     local url="$1" ref="$2" sandbox_dir="$3" source_dir="${4:-}"
     local repo_name
@@ -274,6 +303,7 @@ clone_repo_host() {
 
     # Strip trailing slash — gh CLI fails to resolve repo name with it
     local clean_url="${url%/}"
+    guard_private_repo "$clean_url"
     run git clone "$clean_url" "$target"
 
     # Copy remotes from source repo and fetch (sandbox has no git auth)
@@ -309,6 +339,19 @@ upload_repo() {
     if [[ -z "$repo_name" ]]; then
         echo "error: upload_repo called with empty repo_name" >&2
         return 1
+    fi
+    # Resolve profile from manifest if not set (covers --upload sub-invocations)
+    local effective_profile="$SANDBOX_PROFILE"
+    if [[ -z "$effective_profile" && -f "${sandbox_dir}/manifest.json" ]]; then
+        effective_profile=$(jq -r '.profile // empty' "${sandbox_dir}/manifest.json" 2>/dev/null || true)
+    fi
+    # Personal profile: block private repos
+    if [[ "$effective_profile" == "personal" && -d "${sandbox_dir}/${repo_name}/.git" ]]; then
+        local origin_url
+        origin_url=$(git -C "${sandbox_dir}/${repo_name}" remote get-url origin 2>/dev/null || true)
+        if [[ -n "$origin_url" ]]; then
+            guard_private_repo "$origin_url"
+        fi
     fi
     run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
         -- rm -rf "/sandbox/source/${repo_name}" 2>/dev/null || true
@@ -798,6 +841,11 @@ if [[ "$ADD_REPO_MODE" == true ]]; then
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
     mkdir -p "$SANDBOX_DIR"
 
+    # Read profile from manifest for repo visibility check
+    if [[ -z "$SANDBOX_PROFILE" && -f "${SANDBOX_DIR}/manifest.json" ]]; then
+        SANDBOX_PROFILE=$(jq -r '.profile // empty' "${SANDBOX_DIR}/manifest.json" 2>/dev/null || true)
+    fi
+
     for i in "${!REPOS[@]}"; do
         repo="${REPOS[$i]}"
         ref="${REFS[$i]:-}"
@@ -851,6 +899,19 @@ if [[ "$RECREATE_MODE" == true ]]; then
     [[ "$DRYRUN" == true ]] && COMMON_ARGS+=(--dryrun)
 
     echo "recreating sandbox ${SANDBOX_NAME}..." >&2
+
+    # Pre-flight: check all repos before touching anything
+    SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
+    if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
+        for repo_name in $(jq -r '.repos | keys[]' "${SANDBOX_DIR}/manifest.json"); do
+            if [[ -d "${SANDBOX_DIR}/${repo_name}/.git" ]]; then
+                origin_url=$(git -C "${SANDBOX_DIR}/${repo_name}" remote get-url origin 2>/dev/null || true)
+                if [[ -n "$origin_url" ]]; then
+                    guard_private_repo "$origin_url"
+                fi
+            fi
+        done
+    fi
 
     # 1. Download repos + claude state
     "$0" --download "$SANDBOX_NAME" "${COMMON_ARGS[@]}"
