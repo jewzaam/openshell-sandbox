@@ -426,6 +426,15 @@ upload_sandbox() {
             fi
         done
     fi
+
+    # Re-upload manifest so sandbox has current repo list
+    local manifest_tmp
+    manifest_tmp="$(mktemp -d)"
+    mkdir -p "${manifest_tmp}/source"
+    cp "$manifest" "${manifest_tmp}/source/manifest.json"
+    run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
+        "${manifest_tmp}/source" /sandbox
+    rm -rf "$manifest_tmp"
 }
 
 download_claude_state() {
@@ -461,6 +470,7 @@ upload_claude_state() {
 
 upload_config() {
     local sandbox_target="$1"
+    local sandbox_dir="${2:-}"
 
     echo "uploading claude config..." >&2
     if [[ -d "${HOME}/.claude" ]]; then
@@ -574,7 +584,7 @@ with open(sys.argv[1], 'w') as f:
     run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
         "${REPO_ROOT}/bin" /sandbox
 
-    # Upload sandbox system prompt (filter work-specific sections for personal profile)
+    # Upload sandbox system prompt and manifest
     PROMPT_TMP="$(mktemp -d)"
     mkdir -p "${PROMPT_TMP}/source"
     cp "${REPO_ROOT}/config/sandbox-claude.md" "${PROMPT_TMP}/source/CLAUDE.md"
@@ -582,6 +592,10 @@ with open(sys.argv[1], 'w') as f:
         # Strip Jira section and Prometheus/Loki from Observability
         sed -i '/^## Jira$/,/^## /{ /^## Jira$/d; /^## /!d; }' "${PROMPT_TMP}/source/CLAUDE.md"
         sed -i '/^- \*\*Prometheus:\*\*/d; /^- \*\*Loki:\*\*/d' "${PROMPT_TMP}/source/CLAUDE.md"
+    fi
+    # Upload manifest so session knows sandbox name and repo list
+    if [[ -n "$sandbox_dir" && -f "${sandbox_dir}/manifest.json" ]]; then
+        cp "${sandbox_dir}/manifest.json" "${PROMPT_TMP}/source/manifest.json"
     fi
     run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
         "${PROMPT_TMP}/source" /sandbox
@@ -833,6 +847,17 @@ if [[ "$ADD_REPO_MODE" == true ]]; then
         echo "uploading ${repo_name}..." >&2
         upload_repo "$OS_NAME" "$SANDBOX_DIR" "$repo_name"
     done
+
+    # Re-upload manifest so sandbox has updated repo list
+    if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
+        local manifest_tmp
+        manifest_tmp="$(mktemp -d)"
+        mkdir -p "${manifest_tmp}/source"
+        cp "${SANDBOX_DIR}/manifest.json" "${manifest_tmp}/source/manifest.json"
+        run openshell sandbox upload "$OS_NAME" "${GW_FLAG[@]}" \
+            "${manifest_tmp}/source" /sandbox
+        rm -rf "$manifest_tmp"
+    fi
 
     echo "done." >&2
     exit 0
@@ -1091,7 +1116,7 @@ if [[ "$REFRESH_MODE" == true ]]; then
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     echo "refreshing config on ${SANDBOX_NAME}..." >&2
     generate_pr_context "${SANDBOXES_DIR}/${SANDBOX_NAME}"
-    upload_config "$OS_NAME"
+    upload_config "$OS_NAME" "${SANDBOXES_DIR}/${SANDBOX_NAME}"
     # Upload any generated pr-context.md files
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
     if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
@@ -1195,7 +1220,7 @@ if [[ "$SANDBOX_PROFILE" != "personal" && -d "${HOME}/.config/gcloud" ]]; then
         "${HOME}/.config/gcloud" /sandbox/.config
 fi
 
-upload_config "${SANDBOX_TARGET}"
+upload_config "${SANDBOX_TARGET}" "${SANDBOXES_DIR}/${SANDBOX_NAME}"
 
 # Restore prior claude session state if available
 upload_claude_state "$SANDBOX_TARGET" "${SANDBOXES_DIR}/${SANDBOX_NAME}"
