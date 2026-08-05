@@ -11,12 +11,13 @@
 
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-    echo "Usage: $0 <sandbox-dir>" >&2
+if [[ $# -lt 1 ]]; then
+    echo "Usage: $0 <sandbox-dir> [profile]" >&2
     exit 1
 fi
 
 SANDBOX_DIR="$1"
+PROFILE="${2:-}"
 MANIFEST="${SANDBOX_DIR}/manifest.json"
 
 if [[ ! -f "$MANIFEST" ]]; then
@@ -194,6 +195,12 @@ while IFS=$'\t' read -r repo_name repo_url repo_ref; do
         echo "$pr_body"
         echo ""
     } > "$pr_context"
+
+    # Skip Jira context for personal profile
+    if [[ "$PROFILE" == "personal" ]]; then
+        echo "  wrote ${pr_context}" >&2
+        continue
+    fi
 
     # Extract Jira keys from title, branch, and body
     jira_keys=$(printf '%s\n%s\n%s' "$pr_title" "$pr_branch" "$pr_body" | \

@@ -185,7 +185,7 @@ ensure_gws_creds() {
 generate_pr_context() {
     local sandbox_dir="$1"
     if [[ -f "${sandbox_dir}/manifest.json" ]]; then
-        "${REPO_ROOT}/scripts/generate-pr-context.sh" "$sandbox_dir"
+        "${REPO_ROOT}/scripts/generate-pr-context.sh" "$sandbox_dir" "${SANDBOX_PROFILE:-}"
     fi
 }
 
