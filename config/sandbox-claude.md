@@ -51,6 +51,14 @@ on the host from the GitHub PR and linked Jira issues. It contains PR metadata
 (summary, description, acceptance criteria) for any referenced ANSTRAT or AAP
 tickets. Read this file before reviewing or working on the PR.
 
+## Completion gate
+
+Before claiming work is complete on any repo that has a Makefile with a
+`check` target: run the `/fix` skill. It runs `make check`, then
+iteratively fixes failures (formatting, lint, type errors, test failures).
+A commit cannot succeed if `make check` fails — do the work upfront, not
+after the user asks why the commit was rejected.
+
 ## File sync
 
 Files you create or modify persist in the sandbox. The host can pull
