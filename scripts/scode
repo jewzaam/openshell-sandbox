@@ -12,7 +12,7 @@ SANDBOXES_DIR="${HOME}/sandboxes"
 
 if [[ " $* " == *" --help "* ]] || [[ " $* " == *" -h "* ]]; then
     cat << 'EOF'
-Usage: scode [OPTIONS] [SANDBOX_DIR | --name NAME | SOURCE_PATH [REF]]
+Usage: scode [OPTIONS] [PR_URL | SANDBOX_DIR | --name NAME | SOURCE_PATH [REF]]
 
 Open a directory in VS Code backed by an OpenShell sandbox running Claude.
 
@@ -20,16 +20,19 @@ Options:
   --profile NAME   Credential profile (e.g., personal). Passed to sandbox.sh.
 
 Modes:
+  scode PR_URL                GitHub PR URL — clone via SSH, checkout PR
   scode SANDBOX_DIR           Re-use existing sandbox from manifest.json
   scode SOURCE_PATH [REF]     Auto-name sandbox <repo>-<ref>, clone repo
   scode --name NAME           Custom name, no repos (add with sandbox.sh --add-repo)
 
 Arguments:
+  PR_URL         https://github.com/org/repo/pull/123
   SANDBOX_DIR    Path to existing ~/sandboxes/<name>/ with manifest.json
   SOURCE_PATH    Path to local git repo (e.g., ~/source/nexus)
   REF            Branch, PR, tag, or SHA (default: repo's default branch)
 
 Examples:
+  scode https://github.com/automation-nexus/nexus-combined/pull/1109
   scode ~/sandboxes/supply-chain
   scode ~/source/nexus pr/1176
   scode --profile personal ~/source/my-project
@@ -107,6 +110,24 @@ TASKS
     fi
     code "${dir}"
 }
+
+# --- PR URL mode: scode https://github.com/org/repo/pull/123 ---
+if [[ "$1" =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)$ ]]; then
+    gh_repo="${BASH_REMATCH[1]}"
+    pr_num="${BASH_REMATCH[2]}"
+    repo_url="git@github.com:${gh_repo}.git"
+    repo_name="$(basename "$gh_repo")"
+    ref="pr/${pr_num}"
+    ref_normalized="pr-${pr_num}"
+    sandbox_name="${repo_name}-${ref_normalized}"
+
+    source "$(dirname "$SANDBOX_SH")/lib.sh"
+    SANDBOX_PROFILE="$SCODE_PROFILE" guard_private_repo "$repo_url"
+
+    sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
+    write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG} --repo ${repo_url} --ref ${ref}"
+    exit 0
+fi
 
 # --- Existing sandbox dir mode: re-use from manifest ---
 target_path="$(realpath "$1" 2>/dev/null || echo "$1")"
