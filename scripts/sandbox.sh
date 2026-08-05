@@ -395,7 +395,7 @@ download_sandbox() {
         run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
             "/sandbox/source/${repo_name}" "${dl_tmp}/${repo_name}"
         mkdir -p "${sandbox_dir}/${repo_name}"
-        run rsync -a --exclude=.venv "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
+        run rsync -a --delete --exclude=.venv "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
     done
     rm -rf "$dl_tmp"
 }
