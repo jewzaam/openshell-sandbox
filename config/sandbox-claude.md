@@ -6,8 +6,18 @@ with network policy, filesystem isolation, and process controls.
 ## Working directory
 
 You start in `/sandbox/source/`. Each subdirectory is a separate git repo
-uploaded from the host. List them to see what's available. Navigate into a
-repo subdirectory before working on it.
+uploaded from the host.
+
+**On session start:**
+
+1. Read `manifest.json` if present — it lists repos, the sandbox name
+   (often indicates the primary repo), and which repo was added first
+2. Read every repo's `CLAUDE.md` — each has build instructions, conventions,
+   and context this file does not cover
+3. If only one repo, `cd` into it automatically
+4. If multiple repos, infer the target from the user's first message (the
+   sandbox name and first repo in manifest are strong signals). Only ask if
+   the message is truly ambiguous
 
 ## Constraints
 
