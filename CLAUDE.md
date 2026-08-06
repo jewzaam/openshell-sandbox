@@ -63,9 +63,9 @@ Containerfile.
 - **`--policy` hot-swap.** Standalone `--policy NAME` sets policy on running
   sandbox. Bare names resolve to `policies/<name>.yaml`. Validates async — polls
   `openshell policy list` for Loaded/Effective/Failed status.
-- **`--source-dir` remote copying.** Copies non-origin remotes from local checkout
-  and fetches them on host before upload. Sandbox has no git auth — all branches
-  must be pre-fetched.
+- **`--source-dir` origin derivation.** Derives origin URL from local checkout
+  when `--repo` is not specified. Does not copy additional remotes — sandbox
+  gets only the origin remote from the fresh clone.
 - **`.venv` exclusion.** Upload: rsync excludes `.venv` from `~/.claude/` upload.
   Download: downloads to staging dir, rsyncs to target with `--exclude=.venv`.
   Prevents Python version mismatch (host 3.14 vs sandbox 3.13).

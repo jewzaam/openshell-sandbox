@@ -120,7 +120,7 @@ OPTIONS:
     --ensure [NAME]   Create sandbox if missing, reconnect if exists (use with --repo/--ref)
     --repo URL        Git repo to clone on host and upload (repeatable)
     --ref REF         Ref for preceding --repo: branch, pr/<num>, tag/<name>, or SHA
-    --source-dir DIR  Copy remotes from local repo and fetch (sandbox has no git auth)
+    --source-dir DIR  Derive origin URL from local repo checkout
     --add-repo [NAME] Add repo(s) to existing sandbox (use --repo for URL)
     --download [NAME] Download repos from sandbox to ~/sandboxes/<name>/
     --upload [NAME]   Upload local repo changes back into sandbox
@@ -264,7 +264,7 @@ run() {
 source "${SCRIPT_DIR}/lib.sh"
 
 clone_repo_host() {
-    local url="$1" ref="$2" sandbox_dir="$3" source_dir="${4:-}"
+    local url="$1" ref="$2" sandbox_dir="$3"
     local repo_name
     repo_name=$(basename "$url" .git)
     local target="${sandbox_dir}/${repo_name}"
@@ -278,18 +278,6 @@ clone_repo_host() {
     local clean_url="${url%/}"
     guard_private_repo "$clean_url"
     run git clone "$clean_url" "$target"
-
-    # Copy remotes from source repo and fetch (sandbox has no git auth)
-    if [[ -n "$source_dir" && -d "$source_dir/.git" ]]; then
-        local remote remote_url
-        while IFS= read -r remote; do
-            [[ "$remote" == "origin" ]] && continue
-            remote_url="$(git -C "$source_dir" remote get-url "$remote")"
-            run git -C "$target" remote add "$remote" "$remote_url" 2>/dev/null || true
-            echo "  fetching remote ${remote}..." >&2
-            run git -C "$target" fetch "$remote"
-        done < <(git -C "$source_dir" remote)
-    fi
 
     if [[ -n "$ref" ]]; then
         if [[ "$ref" =~ ^pr/([0-9]+)$ ]]; then
@@ -839,7 +827,7 @@ if [[ "$ADD_REPO_MODE" == true ]]; then
         repo_name=$(basename "$repo" .git)
 
         echo "adding ${repo_name} to sandbox ${SANDBOX_NAME}..." >&2
-        clone_repo_host "$repo" "$ref" "$SANDBOX_DIR" "$SOURCE_DIR"
+        clone_repo_host "$repo" "$ref" "$SANDBOX_DIR"
 
         sha=$(git -C "${SANDBOX_DIR}/${repo_name}" rev-parse HEAD)
         write_manifest "$SANDBOX_DIR" "$SANDBOX_NAME" "$repo_name" "$repo" "$ref" "$sha"
@@ -1249,7 +1237,7 @@ if [[ "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
         repo_name=$(basename "$repo" .git)
 
         echo "  ${repo_name}${ref:+ (${ref})}" >&2
-        clone_repo_host "$repo" "$ref" "$SANDBOX_DIR" "$SOURCE_DIR"
+        clone_repo_host "$repo" "$ref" "$SANDBOX_DIR"
 
         sha=$(git -C "${SANDBOX_DIR}/${repo_name}" rev-parse HEAD)
         write_manifest "$SANDBOX_DIR" "$SANDBOX_NAME" "$repo_name" "$repo" "$ref" "$sha"
