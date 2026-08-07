@@ -12,7 +12,7 @@ SESSION_NAME="claude"
 if screen -list "$SESSION_NAME" 2>/dev/null | grep -q "\.${SESSION_NAME}[[:space:]]"; then
     cmd="screen -x $SESSION_NAME"
 else
-    cmd="claude --dangerously-skip-permissions"
+    cmd="screen -S $SESSION_NAME claude --dangerously-skip-permissions"
     if [[ -d /sandbox/.claude/projects ]]; then
         cmd="$cmd -c"
     fi
