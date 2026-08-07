@@ -70,11 +70,19 @@ Containerfile.
   Download: downloads to staging dir, rsyncs to target with `--exclude=.venv`.
   Prevents Python version mismatch (host 3.14 vs sandbox 3.13).
 - **Sandbox system prompt.** `config/sandbox-claude.md` uploaded as
-  `/sandbox/source/CLAUDE.md`. Documents constraints (no GitHub, no SSH, no git auth).
+  `/sandbox/source/CLAUDE.md`. Documents constraints (no GitHub, no SSH, no git
+  auth). Startup instructions tell sessions to: (1) read `manifest.json` if
+  present, (2) read every repo's `CLAUDE.md`, (3) auto-cd into single repo,
+  (4) infer primary repo from user's first message using sandbox name and first
+  repo in manifest as signals — only ask if truly ambiguous.
 - **Keepalive.** Background process sends ENQ (`\005`) to stdout every 30s to
   prevent gRPC idle stream reaping.
 - **`upload_config()` function.** Extracted upload logic (claude config, bin/,
-  bashrc, env, system prompt) into reusable function called by `--create` and `--refresh`.
+  bashrc, env, system prompt) into reusable function called by `--create` and
+  `--refresh`. Takes a second `sandbox_dir` parameter. Also uploads
+  `manifest.json` to `/sandbox/source/manifest.json` so sandbox sessions know
+  the sandbox name, repo list, and which repo was added first. Uses staged
+  directory upload to avoid single-file tar gotcha (#12).
 - **`upload_repo()` pre-delete on re-upload.** Deletes existing sandbox copy
   (`rm -rf /sandbox/source/<repo>`) before uploading to avoid tar type conflicts.
   Symlinks are preserved as-is (no `rsync -rL`). Without pre-delete, re-uploading
@@ -135,6 +143,15 @@ Containerfile.
   state, deletes remote sandbox only (preserves local dir), creates fresh
   sandbox with `--no-clone --no-connect`, uploads local repos, connects. Used
   when sandbox image changes.
+- **OAuth credential preservation across `--recreate`.** `download_claude_state()`
+  downloads `/sandbox/.claude/.credentials.json` and `/sandbox/.claude.json`
+  before deletion. `upload_claude_state()` restores both after creating the
+  fresh sandbox. `.credentials.json` goes into the staged `.claude/` directory.
+  `.claude.json` also goes into `.claude/` then gets `exec mv`'d to
+  `/sandbox/.claude.json` (workaround: cannot upload single file to `/sandbox`
+  due to gotcha #12, and cannot upload to `/` due to permission denied).
+  See [knowledgebase: oauth-tokens](https://github.com/jewzaam/knowledgebase/blob/main/claude-code/oauth-tokens.md)
+  for why both files are required.
 - **`--no-connect` flag.** Creates sandbox without auto-starting Claude. Used
   by `--recreate` to allow upload step before connecting.
 - **`connect_sandbox()` function.** Extracted exec connection command (keepalive
@@ -166,16 +183,24 @@ Containerfile.
   Previously was using the default NVIDIA base image without the custom tooling.
 - **PR context generation.** `scripts/generate-pr-context.sh` generates
   `pr-context.md` in repo dirs for repos with `ref=pr/<num>` and GitHub URLs.
-  Fetches PR metadata via `gh pr view` (title, body, branch, base, labels,
-  assignees — no review comments to avoid biasing agent reviews). Extracts
-  `ANSTRAT-\d+` and `AAP-\d+` from title/branch/body, fetches linked Jira
-  issues (summary, description, AC). Called during `--refresh` (generates +
-  uploads pr-context.md per repo) and `--create` (generates between clone and
-  upload loops).
+  Accepts optional second argument for profile name. When profile is `personal`,
+  skips entire Jira section (no header, no key extraction, no auth attempt); PR
+  metadata from `gh` still generated. `generate_pr_context()` wrapper in
+  `sandbox.sh` passes `${SANDBOX_PROFILE:-}`. Fetches PR metadata via `gh pr
+  view` (title, body, branch, base, labels, assignees — no review comments to
+  avoid biasing agent reviews). Extracts `ANSTRAT-\d+` and `AAP-\d+` from
+  title/branch/body, fetches linked Jira issues (summary, description, AC).
+  Called during `--refresh` (generates + uploads pr-context.md per repo) and
+  `--create` (generates between clone and upload loops).
 - **`scode` existing sandbox dir mode.** `scode ~/sandboxes/<name>` detects
   `manifest.json`, reads repo URLs, builds `--ensure` command with all repos.
   Supports re-creating sandboxes from pre-existing local state without manually
   specifying repos.
+- **`scode` PR URL mode.** `scode https://github.com/org/repo/pull/123` parses
+  the GitHub PR URL via regex, extracts org/repo and PR number, constructs SSH
+  clone URL (`git@github.com:org/repo.git`), sets ref to `pr/<num>`, names
+  sandbox `<repo>-pr-<num>`, and runs `--ensure` with those args. No
+  `--source-dir` since there is no local checkout.
 - **Debian apt network access.** `policies/code.yaml` includes `deb.debian.org`
   on ports 80 and 443. Sandbox can install system packages at runtime.
 
@@ -203,6 +228,7 @@ These are hard-won — do not simplify or remove:
 18. OpenShell injects `ALL_PROXY=http://10.200.0.1:3128` and lowercase `http_proxy`/`https_proxy`/`no_proxy` into sandbox processes. `ALL_PROXY` overrides user-set `HTTPS_PROXY`. Must unset `ALL_PROXY` and set lowercase variants to override.
 19. `host.containers.internal` resolves to `169.254.1.2` but is NOT directly reachable from sandbox. All traffic forced through L7 proxy at `10.200.0.1:3128`. Cannot bypass the proxy for direct host access.
 20. `sandbox exec` connections drop during idle. No gRPC keepalive configuration exposed. Workaround: background ENQ keepalive in the exec bash command.
+21. `openshell sandbox exec` requires `--name` flag. The sandbox name is not positional for exec. Pattern: `openshell sandbox exec --name "$name" "${GW_FLAG[@]}" -- command`.
 
 ## Reboot Recovery
 
