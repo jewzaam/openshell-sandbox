@@ -6,28 +6,18 @@ source "${SCRIPT_DIR}/claude.env"
 # Validate profile before launching Claude
 "${SCRIPT_DIR}/validate-profile.sh"
 
-# Check for existing sessions
-has_sessions=false
+# Build default command: continue previous session if one exists
+cmd="claude --dangerously-skip-permissions"
 if [[ -d /sandbox/.claude/projects ]]; then
-    has_sessions=true
+    cmd="$cmd -c"
 fi
 
 echo ""
-echo "  1) Abort"
-echo "  2) New session"
-if [[ "$has_sessions" == true ]]; then
-    echo "  3) Continue previous session (-c)"
-    echo ""
-    read -rp "Select [1/2/3] (default: 3): " choice
-    default=3
-else
-    echo ""
-    read -rp "Select [1/2] (default: 2): " choice
-    default=2
+echo "Edit command below (empty = bash shell, Ctrl+C = abort):"
+read -erp "> " -i "$cmd" user_cmd
+
+if [[ -z "$user_cmd" ]]; then
+    exec bash
 fi
 
-case "${choice:-$default}" in
-    2) exec claude --dangerously-skip-permissions ;;
-    3) exec claude --dangerously-skip-permissions -c ;;
-    *) echo "aborted." && exit 1 ;;
-esac
+exec $user_cmd
