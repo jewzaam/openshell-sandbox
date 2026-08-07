@@ -438,22 +438,59 @@ download_claude_state() {
         mkdir -p "${claude_dir}"
         rsync -a "${dl_tmp}/projects/" "${claude_dir}/projects/"
     fi
+    # Preserve OAuth credentials from sandbox
+    run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+        "/sandbox/.claude/.credentials.json" "${dl_tmp}/" || true
+    if [[ -f "${dl_tmp}/.credentials.json" ]]; then
+        mkdir -p "${claude_dir}"
+        cp "${dl_tmp}/.credentials.json" "${claude_dir}/.credentials.json"
+        echo "  preserved OAuth credentials" >&2
+    fi
+    # Preserve .claude.json (auth state)
+    run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+        "/sandbox/.claude.json" "${dl_tmp}/" || true
+    if [[ -f "${dl_tmp}/.claude.json" ]]; then
+        mkdir -p "${claude_dir}"
+        cp "${dl_tmp}/.claude.json" "${claude_dir}/.claude.json"
+        echo "  preserved .claude.json" >&2
+    fi
     rm -rf "$dl_tmp"
 }
 
 upload_claude_state() {
     local sandbox_name="$1" sandbox_dir="$2"
     local claude_dir="${sandbox_dir}/claude"
+    local has_state=false
+    local stage
+    stage="$(mktemp -d)"
+    mkdir -p "${stage}/.claude"
     if [[ -d "${claude_dir}/projects" ]]; then
-        echo "  restoring claude session state..." >&2
-        local stage
-        stage="$(mktemp -d)"
-        mkdir -p "${stage}/.claude"
         cp -r "${claude_dir}/projects" "${stage}/.claude/projects"
+        has_state=true
+    fi
+    if [[ -f "${claude_dir}/.credentials.json" ]]; then
+        cp "${claude_dir}/.credentials.json" "${stage}/.claude/.credentials.json"
+        has_state=true
+        echo "  restoring OAuth credentials..." >&2
+    fi
+    # Stage .claude.json inside .claude/ dir, move after upload
+    local restore_claude_json=false
+    if [[ -f "${claude_dir}/.claude.json" ]]; then
+        cp "${claude_dir}/.claude.json" "${stage}/.claude/.claude.json"
+        has_state=true
+        restore_claude_json=true
+        echo "  restoring .claude.json..." >&2
+    fi
+    if [[ "$has_state" == true ]]; then
+        echo "  restoring claude session state..." >&2
         run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
             "${stage}/.claude" /sandbox
-        rm -rf "$stage"
+        if [[ "$restore_claude_json" == true ]]; then
+            run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+                -- mv /sandbox/.claude/.claude.json /sandbox/.claude.json
+        fi
     fi
+    rm -rf "$stage"
 }
 
 upload_config() {
