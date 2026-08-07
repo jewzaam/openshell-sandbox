@@ -104,19 +104,23 @@ Containerfile.
   collector removed from `personal.yaml`. `validate-profile.sh` documents
   the gap — `host.containers.internal` ports show FAIL because they're
   reachable despite not being in policy.
-- **Screen session persistence.** `claude-wrapper.sh` uses GNU screen
-  (package added to Containerfile apt install). On connect, if a screen
-  session named `claude` exists, default command is `screen -x claude`
-  (reattach). Reconnecting reattaches to the running Claude process —
-  no new launch, no context reload, no token burn. User can edit the
-  command to override.
+- **dtach session persistence.** `claude-wrapper.sh` uses dtach for raw
+  PTY session persistence (no terminal emulation layer). Socket at
+  `/sandbox/.dtach-claude`. On connect, if socket exists, default command
+  is `dtach -a /sandbox/.dtach-claude` (reattach). Reconnecting reattaches
+  to the running Claude process — no new launch, no context reload, no
+  token burn. Detach key: `Ctrl+\`. Requires `/dev/pts` in policy
+  `read_write` (added to all three policy YAML files). screen and tmux
+  were evaluated and rejected — both mangle Claude Code's TUI rendering
+  through their terminal emulation layers. See
+  `knowledgebase/containers/terminal-multiplexers-in-sandboxes.md`.
 - **Editable command prompt.** `claude-wrapper.sh` presents the launch
   command via `read -e -i` (readline-editable with seeded default).
   Replaces the old 3-option abort/new/continue menu. Default reflects
-  state: `screen -x claude` if session exists, else
-  `claude --dangerously-skip-permissions [-c]`. User can edit to any
-  command (e.g., remove `--dangerously-skip-permissions`). Empty = bash
-  shell. Ctrl+C = abort.
+  state: `dtach -a /sandbox/.dtach-claude` if session exists, else
+  `dtach -c /sandbox/.dtach-claude claude --dangerously-skip-permissions [-c]`.
+  User can edit to any command (e.g., remove `--dangerously-skip-permissions`).
+  Empty = bash shell. Ctrl+C = abort.
 - **`validate-profile.sh` runs every connect.** `claude-wrapper.sh` runs
   `validate-profile.sh` before showing the command prompt — on every
   connect, not just first launch. No ACK gate; validation output is

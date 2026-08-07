@@ -6,16 +6,17 @@ source "${SCRIPT_DIR}/claude.env"
 # Always validate profile
 "${SCRIPT_DIR}/validate-profile.sh"
 
-SESSION_NAME="claude"
+SOCKET="/sandbox/.dtach-claude"
 
 # Default command reflects current state
-if screen -list "$SESSION_NAME" 2>/dev/null | grep -q "\.${SESSION_NAME}[[:space:]]"; then
-    cmd="screen -x $SESSION_NAME"
+if [[ -S "$SOCKET" ]]; then
+    cmd="dtach -a $SOCKET"
 else
-    cmd="screen -S $SESSION_NAME claude --dangerously-skip-permissions"
+    claude_cmd="claude --dangerously-skip-permissions"
     if [[ -d /sandbox/.claude/projects ]]; then
-        cmd="$cmd -c"
+        claude_cmd="$claude_cmd -c"
     fi
+    cmd="dtach -c $SOCKET $claude_cmd"
 fi
 
 echo ""
