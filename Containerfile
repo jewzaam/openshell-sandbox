@@ -8,7 +8,7 @@ ARG BASE_IMAGE=python:3.13-slim
 FROM ${BASE_IMAGE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl git gawk iproute2 nftables make jq vim-nox \
+        curl git gawk iproute2 nftables make jq vim-nox python3-tk \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js (Claude Code, MCP servers)
