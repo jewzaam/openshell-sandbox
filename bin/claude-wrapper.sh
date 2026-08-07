@@ -3,13 +3,19 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/claude.env"
 
-# Validate profile before launching Claude
+# Always validate profile
 "${SCRIPT_DIR}/validate-profile.sh"
 
-# Build default command: continue previous session if one exists
-cmd="claude --dangerously-skip-permissions"
-if [[ -d /sandbox/.claude/projects ]]; then
-    cmd="$cmd -c"
+SESSION_NAME="claude"
+
+# Default command reflects current state
+if screen -list "$SESSION_NAME" 2>/dev/null | grep -q "\.${SESSION_NAME}[[:space:]]"; then
+    cmd="screen -x $SESSION_NAME"
+else
+    cmd="claude --dangerously-skip-permissions"
+    if [[ -d /sandbox/.claude/projects ]]; then
+        cmd="$cmd -c"
+    fi
 fi
 
 echo ""

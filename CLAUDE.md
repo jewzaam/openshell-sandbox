@@ -104,10 +104,23 @@ Containerfile.
   collector removed from `personal.yaml`. `validate-profile.sh` documents
   the gap — `host.containers.internal` ports show FAIL because they're
   reachable despite not being in policy.
-- **`validate-profile.sh` bootstrap gate.** `claude-wrapper.sh` runs
-  `validate-profile.sh` before launching Claude CLI. Displays profile,
-  check table (expected vs actual), and summary. User must ACK (Enter)
-  or abort (Ctrl-C). Validates auth, credentials, OTEL, network
+- **Screen session persistence.** `claude-wrapper.sh` uses GNU screen
+  (package added to Containerfile apt install). On connect, if a screen
+  session named `claude` exists, default command is `screen -x claude`
+  (reattach). Reconnecting reattaches to the running Claude process —
+  no new launch, no context reload, no token burn. User can edit the
+  command to override.
+- **Editable command prompt.** `claude-wrapper.sh` presents the launch
+  command via `read -e -i` (readline-editable with seeded default).
+  Replaces the old 3-option abort/new/continue menu. Default reflects
+  state: `screen -x claude` if session exists, else
+  `claude --dangerously-skip-permissions [-c]`. User can edit to any
+  command (e.g., remove `--dangerously-skip-permissions`). Empty = bash
+  shell. Ctrl+C = abort.
+- **`validate-profile.sh` runs every connect.** `claude-wrapper.sh` runs
+  `validate-profile.sh` before showing the command prompt — on every
+  connect, not just first launch. No ACK gate; validation output is
+  informational. Validates auth, credentials, OTEL, network
   reachability, and git auth symmetrically — each profile checks both
   presence of its own config and absence of the other's.
 - **`--dryrun` flag.** `run()` wrapper prints commands instead of executing.
