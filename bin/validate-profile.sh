@@ -33,7 +33,9 @@ isset() { [[ -n "${!1+x}" && -n "${!1}" ]]; }
 
 net_check() {
     local code
-    code=$(curl -so /dev/null -w '%{http_code}' --connect-timeout 3 "$1" 2>/dev/null) || code="000"
+    # --max-time is required, not just --connect-timeout: the OpenShell L7 proxy
+    # can accept the TCP connection and then never respond, which stalls curl forever.
+    code=$(curl -so /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 8 "$1" 2>/dev/null) || code="000"
     # 403 = OpenShell L7 proxy rejected the request (blocked by policy)
     if [[ "$code" == "403" || "$code" == "000" ]]; then
         echo "blocked"
@@ -129,10 +131,23 @@ if command -v curl &>/dev/null; then
 fi
 
 # --- Git auth (no sandbox should have git auth) ---
-ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -T git@github.com 2>&1 | grep -qi "successfully authenticated" && git_ssh="authed" || git_ssh="blocked"
+# ConnectTimeout only bounds the TCP handshake, so wrap in `timeout` for the
+# case where the proxy connects and then hangs.
+# Capture output instead of piping to grep: `ssh -T git@github.com` exits 1 even
+# when auth SUCCEEDS (GitHub prints the greeting, then closes — no shell access).
+# Under `set -o pipefail` that non-zero sank the whole pipeline, so the check
+# reported "blocked" unconditionally and could never detect leaked SSH auth.
+ssh_out=$(timeout 8 ssh -o ConnectTimeout=3 -o BatchMode=yes \
+    -o StrictHostKeyChecking=no -T git@github.com 2>&1 || true)
+if [[ "$ssh_out" == *"successfully authenticated"* ]]; then
+    git_ssh="authed"
+else
+    git_ssh="blocked"
+fi
 check "GitHub SSH" "blocked" "$git_ssh"
 
-git ls-remote https://github.com/jewzaam/openshell-sandbox.git HEAD &>/dev/null && git_https="authed" || git_https="blocked"
+# GIT_TERMINAL_PROMPT=0 stops git from blocking on a credential prompt.
+GIT_TERMINAL_PROMPT=0 timeout 8 git ls-remote https://github.com/jewzaam/openshell-sandbox.git HEAD &>/dev/null && git_https="authed" || git_https="blocked"
 check "GitHub HTTPS" "blocked" "$git_https"
 
 # --- Output ---
