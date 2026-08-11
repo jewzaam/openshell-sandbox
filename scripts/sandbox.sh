@@ -871,7 +871,6 @@ if [[ "$ADD_REPO_MODE" == true ]]; then
 
     # Re-upload manifest so sandbox has updated repo list
     if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
-        local manifest_tmp
         manifest_tmp="$(mktemp -d)"
         mkdir -p "${manifest_tmp}/source"
         cp "${SANDBOX_DIR}/manifest.json" "${manifest_tmp}/source/manifest.json"
