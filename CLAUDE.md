@@ -181,26 +181,39 @@ Containerfile.
 - **Custom sandbox image.** `--from openshell-sandbox:latest` in create
   command. Image must be built with `make build` before creating sandboxes.
   Previously was using the default NVIDIA base image without the custom tooling.
-- **PR context generation.** `scripts/generate-pr-context.sh` generates
-  `pr-context.md` in repo dirs for repos with `ref=pr/<num>` and GitHub URLs.
-  Accepts optional second argument for profile name. When profile is `personal`,
-  skips entire Jira section (no header, no key extraction, no auth attempt); PR
-  metadata from `gh` still generated. `generate_pr_context()` wrapper in
-  `sandbox.sh` passes `${SANDBOX_PROFILE:-}`. Fetches PR metadata via `gh pr
-  view` (title, body, branch, base, labels, assignees — no review comments to
-  avoid biasing agent reviews). Extracts `ANSTRAT-\d+` and `AAP-\d+` from
-  title/branch/body, fetches linked Jira issues (summary, description, AC).
-  Called during `--refresh` (generates + uploads pr-context.md per repo) and
-  `--create` (generates between clone and upload loops).
+- **Automatic context generation.** `generate_repo_context()` in `lib.sh`
+  generates `pr-context.md` (PR metadata) and `jira-context.md` (linked Jira
+  issues) as separate files. Detects PRs from the current git branch via
+  `gh pr view <branch> --repo <org/repo>` on the host — does not rely on
+  manifest ref. If branch has a PR, generates context and updates manifest
+  ref to match. If branch is not a PR, cleans up stale context files.
+  Called automatically from `upload_repo()` before every repo upload — works
+  for `--create`, `--add-repo`, and `--upload`. Also called per-repo during
+  `--refresh`. Switching branches locally (e.g., `gh pr checkout 99`) and
+  re-uploading automatically regenerates context for the new PR. Fetches PR
+  metadata via `gh pr view` (title, body, branch, base, labels, assignees —
+  no review comments to avoid biasing agent reviews). Extracts `ANSTRAT-\d+`
+  and `AAP-\d+` from title/branch/body, fetches linked Jira issues (summary,
+  description, AC). When profile is `personal`, generates `pr-context.md`
+  but skips `jira-context.md`. `generate-pr-context.sh` is a thin wrapper
+  that loops all repos in manifest.
 - **`scode` existing sandbox dir mode.** `scode ~/sandboxes/<name>` detects
   `manifest.json`, reads repo URLs, builds `--ensure` command with all repos.
   Supports re-creating sandboxes from pre-existing local state without manually
   specifying repos.
+- **`scode` Jira URL mode.** `scode https://redhat.atlassian.net/browse/AAP-87003`
+  parses Jira URL, extracts key, fetches issue context (summary, description, AC)
+  into `jira-context.md`, creates sandbox named `aap-87003` (lowercased key) with
+  no repos. `sandbox.sh` uploads `jira-context.md` to `/sandbox/source/` during
+  create and refresh. Requires `JIRA_USERNAME`/`JIRA_TOKEN`.
 - **`scode` PR URL mode.** `scode https://github.com/org/repo/pull/123` parses
   the GitHub PR URL via regex, extracts org/repo and PR number, constructs SSH
   clone URL (`git@github.com:org/repo.git`), sets ref to `pr/<num>`, names
-  sandbox `<repo>-pr-<num>`, and runs `--ensure` with those args. No
-  `--source-dir` since there is no local checkout.
+  sandbox `<repo>-pr-<num>`, and runs `--ensure` with those args. Supports
+  multiple PR URLs for multi-repo review: `scode PR_URL1 PR_URL2` — each PR
+  becomes a separate `--repo`/`--ref` pair, sandbox named after first PR.
+  Context files (`pr-context.md`, `jira-context.md`) generated automatically
+  per repo during upload. No `--source-dir` since there is no local checkout.
 - **Debian apt network access.** `policies/code.yaml` includes `deb.debian.org`
   on ports 80 and 443. Sandbox can install system packages at runtime.
 

@@ -12,7 +12,7 @@ SANDBOXES_DIR="${HOME}/sandboxes"
 
 if [[ " $* " == *" --help "* ]] || [[ " $* " == *" -h "* ]]; then
     cat << 'EOF'
-Usage: scode [OPTIONS] [PR_URL | SANDBOX_DIR | --name NAME | SOURCE_PATH [REF]]
+Usage: scode [OPTIONS] [JIRA_URL | PR_URL... | SANDBOX_DIR | --name NAME | SOURCE_PATH [REF]]
 
 Open a directory in VS Code backed by an OpenShell sandbox running Claude.
 
@@ -20,19 +20,23 @@ Options:
   --profile NAME   Credential profile (e.g., personal). Passed to sandbox.sh.
 
 Modes:
-  scode PR_URL                GitHub PR URL — clone via SSH, checkout PR
+  scode JIRA_URL              Jira issue URL — fetch context, no repos
+  scode PR_URL [PR_URL ...]   GitHub PR URL(s) — multi-repo review
   scode SANDBOX_DIR           Re-use existing sandbox from manifest.json
   scode SOURCE_PATH [REF]     Auto-name sandbox <repo>-<ref>, clone repo
   scode --name NAME           Custom name, no repos (add with sandbox.sh --add-repo)
 
 Arguments:
+  JIRA_URL       https://redhat.atlassian.net/browse/AAP-87003
   PR_URL         https://github.com/org/repo/pull/123
   SANDBOX_DIR    Path to existing ~/sandboxes/<name>/ with manifest.json
   SOURCE_PATH    Path to local git repo (e.g., ~/source/nexus)
   REF            Branch, PR, tag, or SHA (default: repo's default branch)
 
 Examples:
+  scode https://redhat.atlassian.net/browse/AAP-87003
   scode https://github.com/automation-nexus/nexus-combined/pull/1109
+  scode https://github.com/org/repo1/pull/42 https://github.com/org/repo2/pull/99
   scode ~/sandboxes/supply-chain
   scode ~/source/nexus pr/1176
   scode --profile personal ~/source/my-project
@@ -111,21 +115,61 @@ TASKS
     code "${dir}"
 }
 
-# --- PR URL mode: scode https://github.com/org/repo/pull/123 ---
-if [[ "$1" =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)$ ]]; then
-    gh_repo="${BASH_REMATCH[1]}"
-    pr_num="${BASH_REMATCH[2]}"
-    repo_url="git@github.com:${gh_repo}.git"
-    repo_name="$(basename "$gh_repo")"
-    ref="pr/${pr_num}"
-    ref_normalized="pr-${pr_num}"
-    sandbox_name="${repo_name}-${ref_normalized}"
+# --- Jira URL mode: scode https://redhat.atlassian.net/browse/AAP-87003 ---
+if [[ "$1" =~ ^https://[^/]+/browse/([A-Za-z]+-[0-9]+)$ ]]; then
+    jira_key="${BASH_REMATCH[1]}"
+    sandbox_name="${jira_key,,}"
 
     source "$(dirname "$SANDBOX_SH")/lib.sh"
-    SANDBOX_PROFILE="$SCODE_PROFILE" guard_private_repo "$repo_url"
 
     sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
-    write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG} --repo ${repo_url} --ref ${ref}"
+    mkdir -p "${sandbox_dir}"
+
+    echo "fetching Jira context for ${jira_key}..." >&2
+    auth=$(jira_auth) || { echo "error: JIRA_USERNAME/JIRA_TOKEN not set" >&2; exit 1; }
+    {
+        echo "# Jira Context"
+        echo ""
+        fetch_jira_context "$jira_key" "$auth"
+    } > "${sandbox_dir}/jira-context.md"
+    echo "  wrote ${sandbox_dir}/jira-context.md" >&2
+
+    write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}"
+    exit 0
+fi
+
+# --- PR URL mode: scode PR_URL [PR_URL ...] ---
+# Check if all positional args are PR URLs (supports multi-repo review)
+_all_prs=true
+for _arg in "$@"; do
+    [[ "$_arg" =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]] || { _all_prs=false; break; }
+done
+
+if [[ "$_all_prs" == true ]]; then
+    source "$(dirname "$SANDBOX_SH")/lib.sh"
+
+    ENSURE_CMD=""
+    for _pr_url in "$@"; do
+        [[ "$_pr_url" =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)$ ]]
+        gh_repo="${BASH_REMATCH[1]}"
+        pr_num="${BASH_REMATCH[2]}"
+        repo_url="git@github.com:${gh_repo}.git"
+        repo_name="$(basename "$gh_repo")"
+        ref="pr/${pr_num}"
+
+        SANDBOX_PROFILE="$SCODE_PROFILE" guard_private_repo "$repo_url"
+
+        # Name sandbox after first PR
+        if [[ -z "$ENSURE_CMD" ]]; then
+            sandbox_name="${repo_name}-pr-${pr_num}"
+            ENSURE_CMD="${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}"
+        fi
+
+        ENSURE_CMD+=" --repo ${repo_url} --ref ${ref}"
+    done
+
+    sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
+    write_tasks_and_open "${sandbox_dir}" "${ENSURE_CMD}"
     exit 0
 fi
 
