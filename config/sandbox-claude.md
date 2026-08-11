@@ -56,10 +56,18 @@ label taxonomies, and query patterns.
 ## PR context
 
 A repo may contain `pr-context.md` in its root. If present, it was generated
-on the host from the GitHub PR and linked Jira issues. It contains PR metadata
-(title, branch, labels, assignees), the PR description, and Jira issue context
-(summary, description, acceptance criteria) for any referenced ANSTRAT or AAP
-tickets. Read this file before reviewing or working on the PR.
+on the host from the GitHub PR. It contains PR metadata (title, branch,
+labels, assignees) and the PR description. Read this file before reviewing
+or working on the PR.
+
+## Jira context
+
+A repo or `/sandbox/source/` may contain `jira-context.md`. If present, it
+was generated on the host from linked Jira issues — summary, description,
+and acceptance criteria for referenced ANSTRAT or AAP tickets. For PR-based
+repos, Jira keys are extracted from the PR title, branch, and body.
+For Jira-seeded sandboxes (no repos), the file is at `/sandbox/source/jira-context.md`.
+Read this file for requirements context.
 
 ## Completion gate
 
