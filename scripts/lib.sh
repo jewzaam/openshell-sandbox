@@ -145,11 +145,17 @@ generate_repo_context() {
     gh_repo=$(echo "$repo_url" | sed -E 's|.*github\.com[:/]||; s|\.git/?$||')
 
     # Detect PR from current branch (git state is source of truth, not manifest ref)
-    local branch
+    local branch pr_arg
     branch=$(git -C "$repo_dir" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 0
+    # clone_repo_host creates local branches named pr-<num> — gh pr view needs
+    # the number, not the local branch name (no such branch exists on remote)
+    pr_arg="$branch"
+    if [[ "$branch" =~ ^pr-([0-9]+)$ ]]; then
+        pr_arg="${BASH_REMATCH[1]}"
+    fi
 
     local pr_json
-    pr_json=$(gh pr view "$branch" --repo "$gh_repo" \
+    pr_json=$(gh pr view "$pr_arg" --repo "$gh_repo" \
         --json number,title,body,headRefName,baseRefName,labels,assignees 2>/dev/null) || {
         # Not a PR branch — clean up stale context files
         rm -f "${repo_dir}/pr-context.md" "${repo_dir}/jira-context.md"
