@@ -12,7 +12,12 @@ SOCKET="/sandbox/.dtach-claude"
 if [[ -S "$SOCKET" ]]; then
     cmd="dtach -a $SOCKET"
 else
-    claude_cmd="claude --dangerously-skip-permissions"
+    claude_cmd="claude"
+    if [[ -f /sandbox/source/manifest.json ]] && \
+       [[ "$(jq -r '.profile // empty' /sandbox/source/manifest.json 2>/dev/null)" == "personal" ]]; then
+        claude_cmd="$claude_cmd --model claude-opus-5[1m]"
+    fi
+    claude_cmd="$claude_cmd --dangerously-skip-permissions"
     if [[ -d /sandbox/.claude/projects ]]; then
         claude_cmd="$claude_cmd -c"
     fi
