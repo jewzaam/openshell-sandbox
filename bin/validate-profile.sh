@@ -118,16 +118,32 @@ if command -v curl &>/dev/null; then
     actual=$(net_check https://redhat.atlassian.net)
     [[ "$PROFILE" == "personal" ]] && check "redhat.atlassian.net" "blocked" "$actual" || check "redhat.atlassian.net" "reachable" "$actual"
 
-    [[ "$PROFILE" == "personal" ]] && prom_expect="blocked" || prom_expect="reachable"
-    actual=$(net_check http://172.30.0.11:9090/-/healthy)
-    check "prometheus:9090" "$prom_expect" "$actual"
+    # Telemetry query endpoints are site-specific and arrive via /sandbox/.env.
+    # A missing URL fails rather than skips: a skipped check reads the same as
+    # a passing one, so an endpoint that is actually reachable would go unseen.
+    [[ "$PROFILE" == "personal" ]] && query_expect="blocked" || query_expect="reachable"
+    if isset SANDBOX_PROMETHEUS_URL; then
+        actual=$(net_check "$SANDBOX_PROMETHEUS_URL")
+    else
+        actual="no SANDBOX_PROMETHEUS_URL in .env"
+    fi
+    check "prometheus" "$query_expect" "$actual"
 
-    [[ "$PROFILE" == "personal" ]] && loki_expect="blocked" || loki_expect="reachable"
-    actual=$(net_check http://172.30.0.12:3100/ready)
-    check "loki:3100" "$loki_expect" "$actual"
+    if isset SANDBOX_LOKI_URL; then
+        actual=$(net_check "$SANDBOX_LOKI_URL")
+    else
+        actual="no SANDBOX_LOKI_URL in .env"
+    fi
+    check "loki" "$query_expect" "$actual"
 
-    actual=$(net_check http://172.30.0.10:4318/v1/logs)
-    check "OTEL collector:4318" "reachable" "$actual"
+    # Collector endpoint comes from the same env var Claude Code exports to.
+    # A GET on an OTLP receiver returns 405; that still proves reachability.
+    if isset OTEL_EXPORTER_OTLP_ENDPOINT; then
+        actual=$(net_check "${OTEL_EXPORTER_OTLP_ENDPOINT%/}/v1/logs")
+    else
+        actual="no OTEL_EXPORTER_OTLP_ENDPOINT set in .env"
+    fi
+    check "OTEL collector" "reachable" "$actual"
 fi
 
 # --- Git auth (no sandbox should have git auth) ---

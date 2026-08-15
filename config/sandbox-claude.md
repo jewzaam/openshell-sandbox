@@ -33,6 +33,22 @@ uploaded from the host.
 - **`--dangerously-skip-permissions` is intentional.** The sandbox policy
   is the security boundary, not Claude's permission system.
 
+## Network policy
+
+`/sandbox/source/openshell-policy.yaml` is the effective OpenShell policy for this
+sandbox — which hosts and ports are reachable, and which filesystem paths are
+writable.
+
+- **Read-only.** It is uploaded from the host and never downloaded back.
+  Editing it changes nothing; enforcement lives outside the sandbox.
+- **Check it before concluding a host is unreachable**, and before working
+  around a blocked request. A `403` from the egress proxy means the host is
+  not in the policy — no retry, mirror, or alternate flag will change that.
+- **It can change while this session runs.** If told the policy or network
+  access changed, re-read the file rather than trusting an earlier read.
+  Changes both add and remove hosts and can change ports.  All is mutable by 
+  user from the host.
+
 ## Jira
 
 Use the `docs-tools:jira-reader` skill for reading Jira issues. It works
@@ -41,12 +57,29 @@ in the environment. Do not claim Jira is inaccessible.
 
 ## Observability
 
-Prometheus, Loki, and an OTEL collector run on the host and are reachable
-from the sandbox:
+Endpoints are site-specific: a container stack on the host machine for some
+sandboxes, a k3s cluster over Tailscale for others. Never assume an address —
+read one of these, both of which are current for this sandbox:
 
-- **Prometheus:** `http://172.30.0.11:9090` — PromQL queries via `/api/v1/query`
-- **Loki:** `http://172.30.0.12:3100` — LogQL queries via `/loki/api/v1/query_range`
-- **OTEL collector:** `http://172.30.0.10:4318` — receives telemetry from this sandbox
+- `$OTEL_EXPORTER_OTLP_ENDPOINT` — where this session ships telemetry.
+- `/sandbox/source/openshell-policy.yaml` — what is reachable at all. Under
+  `network_policies:`, each block has a `name:` and `endpoints:` carrying
+  `host:` and `port:`. The telemetry blocks are named `otel-collector`
+  (push), `prometheus-read`, and `loki-read` (PromQL via `/api/v1/query`,
+  LogQL via `/loki/api/v1/query_range`). A block that is absent means that
+  service is not reachable from here — do not try it.
+
+`yq` is installed. It is the kislyuk build, so filters are jq syntax:
+
+```bash
+# every reachable host:port, by policy name
+yq -r '.network_policies[] | .name as $n | .endpoints[] | "\($n)\t\(.host):\(.port)"' \
+    /sandbox/source/openshell-policy.yaml
+
+# just the collector
+yq -r '.network_policies.otel.endpoints[0] | "\(.host):\(.port)"' \
+    /sandbox/source/openshell-policy.yaml
+```
 
 Claude Code emits OTEL metrics, logs, and traces. If the knowledgebase repo
 is available at `/sandbox/source/knowledgebase/`, read

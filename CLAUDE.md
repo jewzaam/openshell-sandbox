@@ -99,19 +99,25 @@ Containerfile.
   var groups, credential uploads, and default policy a sandbox gets. Stored in
   `manifest.json` so `--refresh` inherits it. Profile `personal` uses
   `ANTHROPIC_API_KEY` (subscription, not Vertex), skips JIRA/gcloud/gws
-  credentials, defaults to `policies/personal.yaml`, strips Jira and
-  Prometheus/Loki sections from sandbox system prompt, and disables OTEL
-  entirely. No profile (default) = current behavior.
-- **Personal profile has no OTEL.** OpenShell cannot selectively block ports
-  on `host.containers.internal` — the container gateway host is implicitly
-  allowed on all ports regardless of policy. This means a personal sandbox
-  with OTEL collector access (port 4318) can also reach Prometheus (9090)
-  and Loki (3100), which contain work session telemetry. To prevent work
-  data leakage, personal profile skips OTEL entirely: no OTEL env vars
-  captured, `claude.env` not sourced in `claude-wrapper.sh`, and OTEL
-  collector removed from `personal.yaml`. `validate-profile.sh` documents
-  the gap — `host.containers.internal` ports show FAIL because they're
-  reachable despite not being in policy.
+  credentials, defaults to `policies/personal.yaml`, and strips Jira and
+  Prometheus/Loki sections from sandbox system prompt. No profile
+  (default) = current behavior.
+- **Personal profile has OTEL, push-only.** `policies/personal.yaml` allows
+  the collector at `172.30.0.10:4318` but not Prometheus (`172.30.0.11:9090`)
+  or Loki (`172.30.0.12:3100`), so a personal sandbox can write telemetry
+  but cannot read work session data back. `OTEL_VARS` are captured into
+  `.env` and sessions are tagged `SANDBOX_PROFILE=personal`, which
+  `claude.env` turns into the `sandbox.profile` resource attribute — the
+  dashboards split personal from work cost on that label.
+  `validate-profile.sh` asserts the asymmetry: collector reachable,
+  Prometheus and Loki blocked.
+- **`host.containers.internal` is implicitly allowed on all ports.**
+  OpenShell cannot selectively block ports on the container gateway host,
+  regardless of policy. Anything reached through that name is unpoliced —
+  currently the dashboard hook relay (`CLAUDE_DASHBOARD_HOST`,
+  `sandbox.sh:1113`). Keep services that need port-level policy on their own
+  addresses (as the observability stack is, on `172.30.0.10-12`) rather than
+  behind the gateway host.
 - **dtach session persistence.** `claude-wrapper.sh` uses dtach for raw
   PTY session persistence (no terminal emulation layer). Socket at
   `/sandbox/.dtach-claude`. On connect, if socket exists, default command

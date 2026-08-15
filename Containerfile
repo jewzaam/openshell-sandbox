@@ -23,7 +23,9 @@ RUN npm install -g @anthropic-ai/claude-code @googleworkspace/cli
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Python tools
-RUN pip install --no-cache-dir pytest jsonschema
+# yq (kislyuk) wraps the jq installed above and takes jq filter syntax — not
+# the Go mikefarah/yq, whose expression language differs.
+RUN pip install --no-cache-dir pytest jsonschema yq
 
 # Sandbox user (HOME=/sandbox so all exec calls see correct home)
 RUN groupadd -g 1000 sandbox && \

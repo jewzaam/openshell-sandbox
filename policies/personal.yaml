@@ -1,6 +1,10 @@
 # OpenShell sandbox policy: personal profile
 # Personal Claude subscription (API key, not Vertex) — no work credentials
 # OTEL push-only (no Prometheus/Loki read access)
+#
+# ${OTEL_HOST} and ${OTEL_PORT} are substituted from config/site.env by
+# resolve_policy() in scripts/sandbox.sh. This file is a template — do not
+# pass it to `openshell` directly.
 
 version: 1
 
@@ -65,8 +69,8 @@ network_policies:
   otel:
     name: otel-collector
     endpoints:
-      - host: 172.30.0.10
-        port: 4318
+      - host: ${OTEL_HOST}
+        port: ${OTEL_PORT}
         protocol: rest
         enforcement: enforce
         access: full
