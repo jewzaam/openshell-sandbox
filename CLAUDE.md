@@ -99,8 +99,11 @@ Containerfile.
   `pr-context.md` for PR-based repos. Validates gws credentials (interactive,
   runs first so browser prompt appears while user is present). Does not touch repos.
 - **`--policy` hot-swap.** Standalone `--policy NAME` sets policy on running
-  sandbox. Bare names resolve to `policies/<name>.yaml`. Validates async — polls
-  `openshell policy list` for Loaded/Effective/Failed status.
+  sandbox. Bare names resolve to `policies/<name>.yaml`. Order: render →
+  `openshell policy set` → poll `openshell policy list` for Loaded/Effective/
+  Failed status → `upload_static`. Validates async — see
+  `docs/troubleshooting.md` for how the artifact can disagree with the
+  enforcer.
 - **`--source-dir` origin derivation.** Derives origin URL from local checkout
   when `--repo` is not specified. Does not copy additional remotes — sandbox
   gets only the origin remote from the fresh clone.
@@ -325,6 +328,7 @@ These are hard-won — do not simplify or remove:
 19. `host.containers.internal` resolves to `169.254.1.2` but is NOT directly reachable from sandbox. All traffic forced through L7 proxy at `10.200.0.1:3128`. Cannot bypass the proxy for direct host access.
 20. `sandbox exec` connections drop during idle. No gRPC keepalive configuration exposed. Workaround: background ENQ keepalive in the exec bash command.
 21. `openshell sandbox exec` requires `--name` flag. The sandbox name is not positional for exec. Pattern: `openshell sandbox exec --name "$name" "${GW_FLAG[@]}" -- command`.
+22. A policy endpoint needs both `protocol: rest` and `enforcement: enforce` for CONNECT to work. Omitting them (e.g. for intended L4-only passthrough) forwards an absolute-URI `GET` to that host:port but returns 403 on `CONNECT` to the same host:port. Match every working endpoint in `policies/` — both fields are always present together.
 
 ## Reboot Recovery
 

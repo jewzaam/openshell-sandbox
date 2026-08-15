@@ -1107,7 +1107,14 @@ if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_
     if ! echo "$set_output" | grep -qi "unchanged"; then
         elapsed=0
     while true; do
-        latest_status=$(openshell policy list "${GW_FLAG[@]}" "$OS_NAME" 2>/dev/null | tail -1 | awk '{print $3}')
+        # Highest VERSION wins, not the last row. `openshell policy list` prints
+        # newest-first under a header, so `tail -1` read the OLDEST row — always
+        # Superseded — and the poll timed out on every real change. The failure
+        # is worse than it looks: the timeout exits before the artifact upload,
+        # so the enforcer gets the new policy while /sandbox/source keeps
+        # advertising the old one.
+        latest_status=$(openshell policy list "${GW_FLAG[@]}" "$OS_NAME" 2>/dev/null \
+            | awk 'NR>1 && $1 ~ /^[0-9]+$/ {print $1, $3}' | sort -rn | head -1 | awk '{print $2}')
         if [[ "$latest_status" == "Failed" ]]; then
             echo "error: policy validation failed" >&2
             openshell policy list "${GW_FLAG[@]}" "$OS_NAME" >&2
