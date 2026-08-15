@@ -27,6 +27,8 @@ Containerfile.
 - `scripts/mint-sandbox-tokens.sh` — wait for gateway, re-mint all errored sandbox JWTs
 - `scripts/reset-rootless-netns.sh` — reset rootless podman network namespace after reboot/interface change
 - `docs/troubleshooting.md` — known issues, triage, policy reference
+- `docs/fetch-service.md` — how a session inside a sandbox reads web pages; feed to skills that need URLs
+- `fetchsvc/` — the fetch service itself (host-side): service, Containerfile, lifecycle script
 
 ## Key Concepts
 
