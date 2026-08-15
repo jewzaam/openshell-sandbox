@@ -15,6 +15,25 @@ Look for `NET:OPEN [MED] DENIED` lines — they show the host, port, and binary 
 
 **Fix:** Add the endpoint to your policy, recreate the sandbox.
 
+### `openshell-policy.yaml` disagrees with what is enforced
+
+The uploaded `/sandbox/source/openshell-policy.yaml` is written by
+`upload_static()`, which runs *after* the `--policy` status poll. It can drift
+from the effective policy in either direction:
+
+- **Poll fails, artifact stale.** The poll exits non-zero before the upload, so
+  the enforcer takes the new policy while the artifact still shows the old one.
+- **`Policy unchanged`, artifact fresh.** That branch skips the poll and
+  uploads regardless, so the artifact updates while the enforcer does not.
+
+**Triage:** do not trust the file. Probe the endpoint instead — `403` means the
+enforcer denies it, so the artifact is ahead; a response from the service means
+it permits it.
+
+```bash
+openshell policy list <sandbox>    # highest VERSION row is the live one
+```
+
 ### `POST /token not permitted by policy`
 
 L7 proxy blocking an HTTP method.

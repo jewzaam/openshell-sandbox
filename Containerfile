@@ -4,7 +4,10 @@
 # Build: make build
 # Usage: openshell sandbox create --from <image> ...
 
-ARG BASE_IMAGE=python:3.13-slim
+# Fully qualified: an unqualified name resolves through podman's
+# unqualified-search-registries list, so which registry serves the base image
+# becomes a matter of local configuration rather than something stated here.
+ARG BASE_IMAGE=docker.io/library/python:3.13-slim
 FROM ${BASE_IMAGE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
