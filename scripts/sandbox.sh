@@ -65,6 +65,7 @@ SANDBOX_NAME=""
 CONNECT_NAME=""
 DELETE_NAME=""
 LIST_MODE=false
+FETCH_SERVICE_MODE=false
 NO_CLONE=false
 NO_CONNECT=false
 DOWNLOAD_MODE=false
@@ -181,6 +182,7 @@ OPTIONS:
     NAME is optional for commands marked [NAME] when CWD is under ~/sandboxes/<name>/.
     --no-clone        Skip repo cloning (create sandbox with env + config only)
     --list            List sandboxes
+    --fetch-service   Start the outbound fetch service, follow its log, stop it on exit
     --dryrun          Print commands instead of running them
     --debug           Show all commands as they run (set -x)
     --help            Show this help
@@ -658,6 +660,28 @@ with open(sys.argv[1], 'w') as f:
 # Resolve policy file from bare name or path
 # ---------------------------------------------------------------------------
 
+fetch_service_teardown() {
+    # Stop the service first, then decide the policy: with the service down the
+    # grant points at nothing, so there is no rush and no unsafe interval.
+    "${REPO_ROOT}/fetchsvc/fetchsvc.sh" down
+
+    local revert="personal"
+    if [[ -t 0 ]]; then
+        echo "" >&2
+        echo "Revert policy (empty = leave fetch-service applied):" >&2
+        read -erp "> " -i "$revert" revert
+    else
+        echo "not a terminal — reverting policy to ${revert}" >&2
+    fi
+
+    if [[ -z "$revert" ]]; then
+        echo "policy left as fetch-service — the sandbox keeps a grant to a" >&2
+        echo "service that is no longer running" >&2
+        return 0
+    fi
+    "$0" --policy "$revert" ${GATEWAY:+--gateway "$GATEWAY"}
+}
+
 render_policy() {
     # Substitute site.env values into a policy template, writing the effective
     # policy next to manifest.json in the sandbox dir. That file is what
@@ -885,6 +909,10 @@ while [[ $# -gt 0 ]]; do
             LIST_MODE=true
             shift
             ;;
+        --fetch-service)
+            FETCH_SERVICE_MODE=true
+            shift
+            ;;
         --profile)
             [[ $# -ge 2 ]] || { echo "error: --profile requires NAME" >&2; exit 1; }
             SANDBOX_PROFILE="$2"
@@ -925,6 +953,29 @@ fi
 GW_FLAG=()
 if [[ -n "$GATEWAY" ]]; then
     GW_FLAG=(--gateway "$GATEWAY")
+fi
+
+# --- Fetch service: run in the foreground, tear down on exit ---
+if [[ "$FETCH_SERVICE_MODE" == true ]]; then
+    FETCHSVC="${REPO_ROOT}/fetchsvc/fetchsvc.sh"
+    [[ -x "$FETCHSVC" ]] || { echo "error: ${FETCHSVC} not executable" >&2; exit 1; }
+
+    if "$FETCHSVC" running; then
+        echo "fetch service already running — will stop it on exit" >&2
+    else
+        "$FETCHSVC" up || exit 1
+    fi
+
+    # Foreground on purpose: the service widens what a sandbox can read, so it
+    # lives exactly as long as this terminal does. The policy grant is applied
+    # and reverted alongside it, so the sandbox cannot reach a service that is
+    # not running and cannot keep the grant after it stops.
+    trap 'trap - INT TERM EXIT; fetch_service_teardown' INT TERM EXIT
+    "$0" --policy fetch-service ${GATEWAY:+--gateway "$GATEWAY"} || exit 1
+
+    echo "following log — Ctrl-C stops the service" >&2
+    "$FETCHSVC" logs
+    exit 0
 fi
 
 if [[ "$LIST_MODE" == true ]]; then

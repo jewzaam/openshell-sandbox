@@ -1,0 +1,142 @@
+# OpenShell sandbox policy: personal + outbound fetch service
+#
+# personal.yaml plus one endpoint: the fetch service on the host, which
+# performs HTTPS requests on the sandbox's behalf. That makes every public URL
+# readable from this sandbox, including hosts named nowhere in this file —
+# the fetch service's own validation is what constrains it, not this policy.
+#
+# Applied and reverted by `sandbox.sh --fetch-service`, so the grant lives only
+# as long as the service does. Do not set this as a profile default.
+#
+# The address must match FETCHSVC_IP/FETCHSVC_PORT in fetchsvc/fetchsvc.sh.
+#
+# ${OTEL_HOST} and ${OTEL_PORT} are substituted from config/site.env by
+# resolve_policy() in scripts/sandbox.sh. This file is a template — do not
+# pass it to `openshell` directly.
+
+version: 1
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /lib64
+    - /proc
+    - /sys
+    - /dev/urandom
+    - /app
+    - /etc
+    - /var/log
+  read_write:
+    - /sandbox
+    - /tmp
+    - /dev/null
+    - /dev/pts
+    - /home
+
+landlock:
+  compatibility: best_effort
+
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+network_policies:
+  anthropic_api:
+    name: anthropic-api
+    endpoints:
+      - host: api.anthropic.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+      - host: console.anthropic.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+      - host: platform.claude.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+      - host: claude.ai
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+      - host: statsig.anthropic.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+    binaries:
+      - { path: "/**" }
+
+  otel:
+    name: otel-collector
+    endpoints:
+      - host: ${OTEL_HOST}
+        port: ${OTEL_PORT}
+        protocol: rest
+        enforcement: enforce
+        access: full
+    binaries:
+      - { path: "/**" }
+
+  npm:
+    name: npm-readonly
+    endpoints:
+      - host: registry.npmjs.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
+  debian:
+    name: debian-readonly
+    endpoints:
+      - host: deb.debian.org
+        port: 80
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: deb.debian.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
+  pypi:
+    name: pypi-readonly
+    endpoints:
+      - host: pypi.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: files.pythonhosted.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
+  fetch_service:
+    name: fetch-service
+    endpoints:
+      # protocol/enforcement are required for anything beyond a plain
+      # absolute-URI GET; omitting them returns 403 on CONNECT.
+      - host: 172.30.0.21
+        port: 8090
+        protocol: rest
+        enforcement: enforce
+        access: full
+    binaries:
+      - { path: "/**" }
