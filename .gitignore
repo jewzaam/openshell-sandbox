@@ -1,5 +1,6 @@
 # Local config (copy from .example files)
 policies/local.yaml
+config/site.env
 
 # Build artifacts
 .tmp-*/

@@ -10,6 +10,39 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SANDBOXES_DIR="${HOME}/sandboxes"
+
+# ---------------------------------------------------------------------------
+# Site config — where this host sends telemetry. See config/site.env.example.
+# Loaded before anything resolves a policy, because policies reference it.
+# ---------------------------------------------------------------------------
+
+SITE_ENV="${REPO_ROOT}/config/site.env"
+if [[ ! -f "$SITE_ENV" ]]; then
+    cat >&2 <<EOF
+error: ${SITE_ENV} does not exist.
+
+    cp ${REPO_ROOT}/config/site.env.example ${SITE_ENV}
+    \$EDITOR ${SITE_ENV}
+
+It describes where THIS HOST sends and reads Claude Code telemetry. It is not
+created automatically: the template's values are one site's, and silently
+adopting them would point a sandbox at a collector that may not exist here.
+EOF
+    exit 1
+fi
+set -a
+# shellcheck disable=SC1090
+source "$SITE_ENV"
+set +a
+
+# All four are required. A missing query URL would make validate-profile.sh
+# skip that check, and a skipped check is indistinguishable from a passing one.
+for site_var in OTEL_HOST OTEL_PORT PROMETHEUS_URL LOKI_URL; do
+    if [[ -z "${!site_var:-}" ]]; then
+        echo "error: ${site_var} not set in ${SITE_ENV} (all values are required)" >&2
+        exit 1
+    fi
+done
 GWS_SANDBOX_SCOPES="https://www.googleapis.com/auth/calendar.readonly,https://www.googleapis.com/auth/directory.readonly,https://www.googleapis.com/auth/documents.readonly,https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/meetings.space.readonly,https://www.googleapis.com/auth/presentations.readonly,https://www.googleapis.com/auth/spreadsheets.readonly,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/userinfo.profile"
 
 # Defaults
@@ -491,7 +524,7 @@ upload_claude_state() {
 
 upload_config() {
     local sandbox_target="$1"
-    local sandbox_dir="${2:-}"
+    local sandbox_dir="$2"
 
     echo "uploading claude config..." >&2
     if [[ -d "${HOME}/.claude" ]]; then
@@ -605,27 +638,101 @@ with open(sys.argv[1], 'w') as f:
     run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
         "${REPO_ROOT}/bin" /sandbox
 
-    # Upload sandbox system prompt and manifest
-    PROMPT_TMP="$(mktemp -d)"
-    mkdir -p "${PROMPT_TMP}/source"
-    cp "${REPO_ROOT}/config/sandbox-claude.md" "${PROMPT_TMP}/source/CLAUDE.md"
-    if [[ "$SANDBOX_PROFILE" == "personal" ]]; then
-        # Strip Jira section and Prometheus/Loki from Observability
-        sed -i '/^## Jira$/,/^## /{ /^## Jira$/d; /^## /!d; }' "${PROMPT_TMP}/source/CLAUDE.md"
-        sed -i '/^- \*\*Prometheus:\*\*/d; /^- \*\*Loki:\*\*/d' "${PROMPT_TMP}/source/CLAUDE.md"
-    fi
-    # Upload manifest so session knows sandbox name and repo list
-    if [[ -n "$sandbox_dir" && -f "${sandbox_dir}/manifest.json" ]]; then
-        cp "${sandbox_dir}/manifest.json" "${PROMPT_TMP}/source/manifest.json"
-    fi
-    run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
-        "${PROMPT_TMP}/source" /sandbox
-    rm -rf "$PROMPT_TMP"
+    upload_static "$sandbox_target" "$sandbox_dir"
 }
 
 # ---------------------------------------------------------------------------
 # Resolve policy file from bare name or path
 # ---------------------------------------------------------------------------
+
+render_policy() {
+    # Substitute site.env values into a policy template, writing the effective
+    # policy next to manifest.json in the sandbox dir. That file is what
+    # `openshell` receives and what gets uploaded into the sandbox.
+    # ponytail: sed over two known placeholders; switch to a real templating
+    # pass if the placeholder set grows past a handful.
+    local src="$1" sandbox_dir="$2"
+    local dest="${sandbox_dir}/openshell-policy.yaml"
+    mkdir -p "$sandbox_dir"
+    sed -e "s|\${OTEL_HOST}|${OTEL_HOST}|g" \
+        -e "s|\${OTEL_PORT}|${OTEL_PORT}|g" \
+        "$src" > "$dest"
+    if grep -q '\${' "$dest"; then
+        echo "error: unresolved placeholder in ${src} after rendering:" >&2
+        grep -n '\${' "$dest" >&2
+        rm -f "$dest"
+        return 1
+    fi
+    echo "$dest"
+}
+
+upload_static() {
+    # Everything in /sandbox/source that is host-owned and not a repo: the
+    # system prompt, manifest.json (sandbox name, repo list), and
+    # openshell-policy.yaml (what this sandbox may reach). All three go in one
+    # staged-directory upload (#12) — they are inert once written, so
+    # re-sending an unchanged one costs nothing and there is no reason to
+    # decide per file. The only path that uploads any of them; called on
+    # create, refresh, and policy hot-swap.
+    #
+    # None is ever downloaded: download_sandbox() pulls only the repo
+    # directories named in the manifest, so the host copies stay authoritative.
+    local sandbox_target="$1" sandbox_dir="$2"
+    local tmp profile="$SANDBOX_PROFILE"
+    tmp="$(mktemp -d)"
+    mkdir -p "${tmp}/source"
+
+    ensure_policy "$sandbox_dir"
+
+    # Profile from the manifest when the caller has not resolved it — the
+    # policy hot-swap path runs before --profile is read.
+    if [[ -z "$profile" && -f "${sandbox_dir}/manifest.json" ]]; then
+        profile=$(jq -r '.profile // empty' "${sandbox_dir}/manifest.json" 2>/dev/null || true)
+    fi
+
+    # copy: system prompt
+    cp "${REPO_ROOT}/config/sandbox-claude.md" "${tmp}/source/CLAUDE.md"
+    if [[ "$profile" == "personal" ]]; then
+        # Strip the Jira section. Observability needs no stripping — the prompt
+        # names no endpoints, it points at openshell-policy.yaml, which already
+        # omits whatever this profile cannot reach.
+        sed -i '/^## Jira$/,/^## /{ /^## Jira$/d; /^## /!d; }' "${tmp}/source/CLAUDE.md"
+    fi
+
+    # copy: manifest — absent on the first create, written by the repo loop
+    if [[ -f "${sandbox_dir}/manifest.json" ]]; then
+        cp "${sandbox_dir}/manifest.json" "${tmp}/source/manifest.json"
+    fi
+
+    # copy: openshell policy — ensure_policy above guarantees it exists
+    cp "${sandbox_dir}/openshell-policy.yaml" "${tmp}/source/openshell-policy.yaml"
+
+    # do: upload
+    run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+        "${tmp}/source" /sandbox
+    rm -rf "$tmp"
+}
+
+policy_for_profile() {
+    case "$1" in
+        personal) resolve_policy "personal" ;;
+        *)        resolve_policy "code" ;;
+    esac
+}
+
+ensure_policy() {
+    # Render the effective policy if it is not already on disk, so paths that
+    # do not resolve a policy themselves (--upload, --add-repo) still have one
+    # to upload. Sandboxes created before openshell-policy.yaml existed have
+    # none; without this they would silently upload nothing.
+    local sandbox_dir="$1" profile="" template
+    [[ -f "${sandbox_dir}/openshell-policy.yaml" ]] && return 0
+    if [[ -f "${sandbox_dir}/manifest.json" ]]; then
+        profile=$(jq -r '.profile // empty' "${sandbox_dir}/manifest.json" 2>/dev/null || true)
+    fi
+    template="$(policy_for_profile "$profile")" || return 1
+    render_policy "$template" "$sandbox_dir" >/dev/null
+}
 
 resolve_policy() {
     local input="$1"
@@ -869,15 +976,8 @@ if [[ "$ADD_REPO_MODE" == true ]]; then
         upload_repo "$OS_NAME" "$SANDBOX_DIR" "$repo_name"
     done
 
-    # Re-upload manifest so sandbox has updated repo list
-    if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
-        manifest_tmp="$(mktemp -d)"
-        mkdir -p "${manifest_tmp}/source"
-        cp "${SANDBOX_DIR}/manifest.json" "${manifest_tmp}/source/manifest.json"
-        run openshell sandbox upload "$OS_NAME" "${GW_FLAG[@]}" \
-            "${manifest_tmp}/source" /sandbox
-        rm -rf "$manifest_tmp"
-    fi
+    # Re-upload so the sandbox has the updated repo list
+    upload_static "$OS_NAME" "$SANDBOX_DIR"
 
     echo "done." >&2
     exit 0
@@ -906,6 +1006,7 @@ if [[ "$UPLOAD_MODE" == true ]]; then
 
     echo "uploading to sandbox ${SANDBOX_NAME}..." >&2
     upload_sandbox "$OS_NAME" "$SANDBOX_DIR" "$target_repo"
+    upload_static "$OS_NAME" "$SANDBOX_DIR"
     echo "done." >&2
     exit 0
 fi
@@ -980,6 +1081,7 @@ fi
 if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_MODE" != true ]]; then
     POLICY_TARGET="$(infer_sandbox_name)" || { echo "error: --policy requires sandbox NAME or CWD under ~/sandboxes/<name>/" >&2; exit 1; }
     OS_NAME=$(resolve_openshell_name "$POLICY_TARGET")
+    POLICY_FILE="$(render_policy "$POLICY_FILE" "${SANDBOXES_DIR}/${POLICY_TARGET}")" || exit 1
     echo "setting policy on ${POLICY_TARGET}..." >&2
     if [[ "$DRYRUN" == true ]]; then
         run openshell policy set "${GW_FLAG[@]}" --policy "$POLICY_FILE" "$OS_NAME"
@@ -1008,6 +1110,8 @@ if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_
         fi
     done
     fi
+    # Refresh the sandbox's copy so it does not describe the previous policy.
+    upload_static "$OS_NAME" "${SANDBOXES_DIR}/${POLICY_TARGET}"
     echo "done." >&2
     exit 0
 fi
@@ -1037,10 +1141,13 @@ fi
 # ---------------------------------------------------------------------------
 
 if [[ -z "$POLICY_FILE" ]]; then
-    case "$SANDBOX_PROFILE" in
-        personal) POLICY_FILE="$(resolve_policy "personal")" || exit 1 ;;
-        *)        POLICY_FILE="$(resolve_policy "code")" || exit 1 ;;
-    esac
+    POLICY_FILE="$(policy_for_profile "$SANDBOX_PROFILE")" || exit 1
+fi
+
+# Render the template into ~/sandboxes/<name>/openshell-policy.yaml. From here
+# on POLICY_FILE is the effective policy, not the template.
+if [[ -n "$SANDBOX_NAME" ]]; then
+    POLICY_FILE="$(render_policy "$POLICY_FILE" "${SANDBOXES_DIR}/${SANDBOX_NAME}")" || exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -1106,6 +1213,16 @@ fi
 
 # Dashboard hooks: relay to host dashboard via container gateway
 ENV_CONTENT+="CLAUDE_DASHBOARD_HOST=host.containers.internal"$'\n'
+
+# Telemetry egress. Always written from site.env, overriding anything captured
+# from the host env: the host reaches its collector on a host-local address
+# and over gRPC, neither of which works from inside a sandbox (gotcha 13).
+ENV_CONTENT+="OTEL_EXPORTER_OTLP_ENDPOINT=http://${OTEL_HOST}:${OTEL_PORT}"$'\n'
+ENV_CONTENT+="OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf"$'\n'
+
+# Telemetry query endpoints — consumed only by validate-profile.sh.
+ENV_CONTENT+="$(printf 'SANDBOX_PROMETHEUS_URL=%q' "$PROMETHEUS_URL")"$'\n'
+ENV_CONTENT+="$(printf 'SANDBOX_LOKI_URL=%q' "$LOKI_URL")"$'\n'
 
 # Sandbox source directory name for OTEL enrichment
 ENV_CONTENT+="$(printf 'SANDBOX_SOURCE_NAME=%q' "${SANDBOX_NAME}")"$'\n'
