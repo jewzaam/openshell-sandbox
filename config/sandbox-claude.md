@@ -27,9 +27,24 @@ uploaded from the host.
 - **No SSH.** Port 22 is not in the network policy.
 - **No git auth.** `gh` CLI and `git push/fetch` will fail. Work with
   what's already cloned.
-- **Read-only package registries.** npm, PyPI, and Debian apt are available
-  for installing dependencies. Cannot publish. Use `sudo apt-get install`
-  for system packages.
+- **Read-only package registries.** npm, PyPI, and Debian apt are reachable.
+  Cannot publish. There is no `sudo`, and `/usr` and `/var` are read-only, so
+  nothing installs system-wide. Project-local does work: `pip install --user`,
+  `npm install` in a project directory. For a Debian package, point apt at a
+  writable state directory and extract it yourself:
+
+  ```bash
+  mkdir -p /tmp/apt/lists/partial /tmp/apt/cache/archives/partial
+  A="-o Dir::State=/tmp/apt -o Dir::State::Lists=/tmp/apt/lists
+     -o Dir::Cache=/tmp/apt/cache -o Dir::State::status=/tmp/apt/status
+     -o Debug::NoLocking=1"
+  apt-get $A update && apt-cache $A search <name>
+  cd /tmp/apt && apt-get $A download <name> && dpkg -x ./*.deb /tmp/apt/root
+  # binary is at /tmp/apt/root/usr/bin/<name>
+  ```
+
+  If a package is worth having permanently, say so — it belongs in the
+  image's Containerfile, not in a per-session workaround.
 - **`--dangerously-skip-permissions` is intentional.** The sandbox policy
   is the security boundary, not Claude's permission system.
 

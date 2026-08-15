@@ -1,5 +1,10 @@
 # OpenShell sandbox policy: code profile (default)
 # Vertex AI (Google Cloud) + Jira
+#
+# ${OTEL_HOST}, ${OTEL_PORT}, ${PROMETHEUS_HOST}, ${PROMETHEUS_PORT},
+# ${LOKI_HOST}, and ${LOKI_PORT} are substituted from config/site.env by
+# render_policy() in scripts/sandbox.sh. This file is a template — do not
+# pass it to `openshell` directly.
 
 version: 1
 
@@ -81,8 +86,8 @@ network_policies:
   otel:
     name: otel-collector
     endpoints:
-      - host: 172.30.0.10
-        port: 4318
+      - host: ${OTEL_HOST}
+        port: ${OTEL_PORT}
         protocol: rest
         enforcement: enforce
         access: full
@@ -92,8 +97,8 @@ network_policies:
   prometheus:
     name: prometheus-read
     endpoints:
-      - host: 172.30.0.11
-        port: 9090
+      - host: ${PROMETHEUS_HOST}
+        port: ${PROMETHEUS_PORT}
         protocol: rest
         enforcement: enforce
         access: read-only
@@ -103,8 +108,8 @@ network_policies:
   loki:
     name: loki-read
     endpoints:
-      - host: 172.30.0.12
-        port: 3100
+      - host: ${LOKI_HOST}
+        port: ${LOKI_PORT}
         protocol: rest
         enforcement: enforce
         access: read-only

@@ -35,14 +35,27 @@ set -a
 source "$SITE_ENV"
 set +a
 
-# All four are required. A missing query URL would make validate-profile.sh
-# skip that check, and a skipped check is indistinguishable from a passing one.
-for site_var in OTEL_HOST OTEL_PORT PROMETHEUS_URL LOKI_URL; do
+# All three are required. A missing URL would make validate-profile.sh skip
+# that check, and a skipped check is indistinguishable from a passing one.
+for site_var in OTEL_URL PROMETHEUS_URL LOKI_URL; do
     if [[ -z "${!site_var:-}" ]]; then
         echo "error: ${site_var} not set in ${SITE_ENV} (all values are required)" >&2
         exit 1
     fi
 done
+
+# Policy blocks need a host and a port. site.env stores URLs — the richer
+# form, carrying scheme and path — and the pair is derived from it. Storing
+# both would be the same value twice, free to drift, with nothing checking it.
+eval "$(python3 - "$OTEL_URL" "$PROMETHEUS_URL" "$LOKI_URL" <<'PY'
+import sys, urllib.parse
+for name, url in (("OTEL", sys.argv[1]), ("PROMETHEUS", sys.argv[2]), ("LOKI", sys.argv[3])):
+    parts = urllib.parse.urlsplit(url)
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    print(f"{name}_HOST={parts.hostname}")
+    print(f"{name}_PORT={port}")
+PY
+)"
 GWS_SANDBOX_SCOPES="https://www.googleapis.com/auth/calendar.readonly,https://www.googleapis.com/auth/directory.readonly,https://www.googleapis.com/auth/documents.readonly,https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/meetings.space.readonly,https://www.googleapis.com/auth/presentations.readonly,https://www.googleapis.com/auth/spreadsheets.readonly,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/userinfo.profile"
 
 # Defaults
@@ -649,14 +662,16 @@ render_policy() {
     # Substitute site.env values into a policy template, writing the effective
     # policy next to manifest.json in the sandbox dir. That file is what
     # `openshell` receives and what gets uploaded into the sandbox.
-    # ponytail: sed over two known placeholders; switch to a real templating
-    # pass if the placeholder set grows past a handful.
+    # ponytail: sed over a fixed placeholder list; switch to a real templating
+    # pass if this outgrows simple name substitution.
     local src="$1" sandbox_dir="$2"
     local dest="${sandbox_dir}/openshell-policy.yaml"
     mkdir -p "$sandbox_dir"
-    sed -e "s|\${OTEL_HOST}|${OTEL_HOST}|g" \
-        -e "s|\${OTEL_PORT}|${OTEL_PORT}|g" \
-        "$src" > "$dest"
+    local expr=() v
+    for v in OTEL_HOST OTEL_PORT PROMETHEUS_HOST PROMETHEUS_PORT LOKI_HOST LOKI_PORT; do
+        expr+=(-e "s|\${${v}}|${!v}|g")
+    done
+    sed "${expr[@]}" "$src" > "$dest"
     if grep -q '\${' "$dest"; then
         echo "error: unresolved placeholder in ${src} after rendering:" >&2
         grep -n '\${' "$dest" >&2
@@ -1217,7 +1232,7 @@ ENV_CONTENT+="CLAUDE_DASHBOARD_HOST=host.containers.internal"$'\n'
 # Telemetry egress. Always written from site.env, overriding anything captured
 # from the host env: the host reaches its collector on a host-local address
 # and over gRPC, neither of which works from inside a sandbox (gotcha 13).
-ENV_CONTENT+="OTEL_EXPORTER_OTLP_ENDPOINT=http://${OTEL_HOST}:${OTEL_PORT}"$'\n'
+ENV_CONTENT+="$(printf 'OTEL_EXPORTER_OTLP_ENDPOINT=%q' "$OTEL_URL")"$'\n'
 ENV_CONTENT+="OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf"$'\n'
 
 # Telemetry query endpoints — consumed only by validate-profile.sh.
