@@ -13,6 +13,8 @@ Containerfile.
 - `Makefile` — `make build` (podman), `make clean`
 - `bin/` — user scripts copied to `/sandbox/bin/` at image build time
 - `config/bashrc` — base `.bashrc` baked into image, sources `/sandbox/.env`
+- `config/site.env` — gitignored, host-specific telemetry destination (`OTEL_URL`, `PROMETHEUS_URL`, `LOKI_URL`); sourced by `sandbox.sh` before policy rendering
+- `config/site.env.example` — template for `config/site.env`; not auto-copied
 - `config/sandbox-claude.md` — sandbox system prompt, uploaded to `/sandbox/source/CLAUDE.md`
 - `policies/` — network + filesystem policies per profile
 - `policies/code.yaml` — default profile (work: Vertex AI + Jira + OTEL + observability)
@@ -34,6 +36,42 @@ Containerfile.
 - **Two-file env var split.** `.bashrc` is baked into the image (static).
   `.env` is written at sandbox creation (runtime credentials). `.bashrc`
   sources `.env`.
+- **Site config (`config/site.env`).** Telemetry destination is a property of
+  the host machine, not of the Claude account — one machine runs a local
+  container stack, another reaches a k3s cluster over Tailscale. Gitignored
+  (this repo is public — no tailnet hostnames in git) and sourced by
+  `sandbox.sh` before any policy is resolved. Supplies `OTEL_URL`,
+  `PROMETHEUS_URL`, `LOKI_URL` — all three required, `sandbox.sh` exits if any
+  is empty. Deliberately not auto-created from
+  `config/site.env.example`: silently adopting the template's values would
+  point a sandbox at a collector that may not exist on this machine. Missing
+  file exits 1 with the `cp` command in the message.
+- **Policies are templates, rendered before use.** `policies/*.yaml` contain
+  `${OTEL_HOST}`, `${OTEL_PORT}`, `${PROMETHEUS_HOST}`, `${PROMETHEUS_PORT}`,
+  `${LOKI_HOST}`, `${LOKI_PORT}`, all derived from the `site.env` URLs. `render_policy()` substitutes them from
+  `site.env` and writes the effective policy to
+  `~/sandboxes/<name>/openshell-policy.yaml` — what `openshell` actually
+  receives. Errors on any unresolved placeholder: an unsubstituted
+  `${OTEL_HOST}` is valid YAML and OpenShell would accept it as a literal
+  hostname, silently denying all traffic. Never hand `policies/*.yaml` to
+  `openshell` directly. All three policies (code, personal, research) are
+  parameterized.
+- **Endpoint host/port are derived, not declared.** `site.env` stores every
+  endpoint as a URL — the richer form, carrying scheme and path — and
+  `sandbox.sh` splits host and port off each with `urllib.parse` to feed the
+  policy placeholders. Do not add `*_HOST`/`*_PORT` keys: that is the same
+  value in two places, free to drift, with nothing checking it. A URL with no
+  explicit port derives to 80 (http) or 443 (https), which is how the Loki
+  tailnet endpoint resolves. `OTEL_URL` doubles as
+  `OTEL_EXPORTER_OTLP_ENDPOINT` verbatim.
+- **Telemetry env comes from `/sandbox/.env`, not `bin/claude.env`.**
+  `sandbox.sh` always writes `OTEL_EXPORTER_OTLP_ENDPOINT` and
+  `OTEL_EXPORTER_OTLP_PROTOCOL` (`http/protobuf` — gotcha 13) from
+  `site.env`, overriding whatever the host exported: the host reaches its own
+  collector on a host-local address, often over gRPC, and neither works from
+  inside a sandbox. `bin/claude.env` no longer sets either one — it used to,
+  and because `claude-wrapper.sh` sources it after `.bashrc` sources `.env`,
+  it silently won. That was the hard-to-reason-about part.
 - **Symlink resolution.** `~/.claude/skills/` contains symlinks to `~/source/`
   repos. `rsync -rL` resolves them before upload so content works inside the sandbox.
 - **settings.json stripping.** Allow permissions nested under `permissions.allow`
@@ -83,6 +121,27 @@ Containerfile.
   `manifest.json` to `/sandbox/source/manifest.json` so sandbox sessions know
   the sandbox name, repo list, and which repo was added first. Uses staged
   directory upload to avoid single-file tar gotcha (#12).
+- **`upload_static()` is the only path that writes host-owned files into
+  `/sandbox/source`.** Stages the system prompt, `manifest.json`, and
+  `openshell-policy.yaml` into one directory and uploads once — called from
+  `upload_config()` (create, refresh), `--upload`, `--add-repo`, and the
+  `--policy` hot-swap. These files are inert once written, so re-sending an
+  unchanged one costs nothing; no reason to decide per file. Reads
+  `SANDBOX_PROFILE` from the manifest when the global var is unset — the
+  `--policy` hot-swap path runs before `--profile` is resolved, so relying on
+  the global there would push an unstripped system prompt (Jira section
+  intact) into a personal sandbox. Earlier revisions had four separate
+  staging implementations; do not reintroduce one.
+- **These files are uploaded, never downloaded.** `download_sandbox()` pulls
+  only the repo directories named in the manifest, so loose files in
+  `/sandbox/source/` never travel back. Host copies of the system prompt,
+  manifest, and policy stay authoritative — a session cannot widen its own
+  policy or rewrite its repo list by editing the sandbox copy.
+- **`ensure_policy()` renders the effective policy if it is not already on
+  disk.** Called from inside `upload_static()`, not wired separately at each
+  call site. Needed because paths that do not resolve a policy themselves —
+  `--upload`, `--add-repo` — would otherwise upload nothing and silently
+  report success.
 - **`upload_repo()` pre-delete on re-upload.** Deletes existing sandbox copy
   (`rm -rf /sandbox/source/<repo>`) before uploading to avoid tar type conflicts.
   Symlinks are preserved as-is (no `rsync -rL`). Without pre-delete, re-uploading
@@ -140,7 +199,14 @@ Containerfile.
   connect, not just first launch. No ACK gate; validation output is
   informational. Validates auth, credentials, OTEL, network
   reachability, and git auth symmetrically — each profile checks both
-  presence of its own config and absence of the other's.
+  presence of its own config and absence of the other's. Endpoints come from
+  the environment — `$OTEL_EXPORTER_OTLP_ENDPOINT`, `$SANDBOX_PROMETHEUS_URL`,
+  `$SANDBOX_LOKI_URL` — not hardcoded addresses. A missing URL is a FAIL, not
+  a skip: a skipped check reads identically to a passing one, so an endpoint
+  that is actually reachable would go unnoticed. `net_check` needs
+  `--max-time`, not just `--connect-timeout` — the latter only bounds the TCP
+  connect to the L7 proxy, which always succeeds, so a stalled upstream hangs
+  indefinitely.
 - **`--dryrun` flag.** `run()` wrapper prints commands instead of executing.
   `exec` calls exit cleanly in dryrun. Dryrun propagates through `--ensure`
   and `--recreate` sub-invocations via `--dryrun` arg forwarding. `.env`
@@ -220,8 +286,19 @@ Containerfile.
   becomes a separate `--repo`/`--ref` pair, sandbox named after first PR.
   Context files (`pr-context.md`, `jira-context.md`) generated automatically
   per repo during upload. No `--source-dir` since there is no local checkout.
-- **Debian apt network access.** `policies/code.yaml` includes `deb.debian.org`
-  on ports 80 and 443. Sandbox can install system packages at runtime.
+- **Debian apt network access.** All three policies include `deb.debian.org`
+  on ports 80 and 443. This does **not** allow system-wide installs — there is
+  no `sudo` in the image, `/usr` is `read_only`, and `/var` is in neither
+  filesystem list. What it does allow, verified: `apt-get update` and
+  `apt-cache search`/`show` with `Dir::State`/`Dir::Cache` pointed at `/tmp`,
+  then `apt-get download` plus `dpkg -x` to extract a working binary under
+  `/sandbox` or `/tmp`. Discovery is the point — a session can find a package,
+  prove it is the right one, and recommend adding it to the Containerfile.
+  The recipe is in `config/sandbox-claude.md`.
+- **The `yq` in the image is the kislyuk build, installed via pip.** Filters
+  are jq syntax; it wraps the `jq` already installed. Not mikefarah/yq (Go) —
+  the two share a name but the expression language differs. Check which one
+  before writing a filter.
 
 ## OpenShell Policy Gotchas
 

@@ -5,6 +5,11 @@
 # WebSearch works (Anthropic API-side). WebFetch blocked for non-allowlisted domains.
 # Full research profile requires native provider support (issue #3) to remove creds
 # from sandbox, making open egress safe.
+#
+# ${OTEL_HOST}, ${OTEL_PORT}, ${PROMETHEUS_HOST}, ${PROMETHEUS_PORT},
+# ${LOKI_HOST}, and ${LOKI_PORT} are substituted from config/site.env by
+# render_policy() in scripts/sandbox.sh. This file is a template — do not
+# pass it to `openshell` directly.
 
 version: 1
 
@@ -80,11 +85,38 @@ network_policies:
   otel:
     name: otel-collector
     endpoints:
-      - host: 172.30.0.10
-        port: 4318
+      - host: ${OTEL_HOST}
+        port: ${OTEL_PORT}
         protocol: rest
         enforcement: enforce
         access: full
+    binaries:
+      - { path: "/**" }
+
+  npm:
+    name: npm-readonly
+    endpoints:
+      - host: registry.npmjs.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
+  debian:
+    name: debian-readonly
+    endpoints:
+      - host: deb.debian.org
+        port: 80
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: deb.debian.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
     binaries:
       - { path: "/**" }
 
