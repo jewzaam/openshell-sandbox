@@ -1,358 +1,103 @@
 # Claude Agent Instructions
 
-## Project Overview
-
 OpenShell sandbox configuration for running Claude Code in auto mode inside
-rootless Podman containers. One default profile (`code`), plus `research` for
-web access. Not a Python project — shell scripts, YAML policies, and a
-Containerfile.
+rootless Podman containers. Shell scripts, YAML policies, and a Containerfile —
+not a Python project. Profiles: `code` (default, work), `personal`, `research`,
+and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
 
-## Repository Layout
+> This file loads into every session in this repo. It holds only what costs real
+> time to rediscover — external tool behavior, and places where the obvious
+> change is silently wrong. Anything derivable from reading the code belongs in
+> a comment at the code, not here.
 
-- `Containerfile` — sandbox image (python:3.13-slim base, installs Claude Code, node, uv, git)
-- `Makefile` — `make build` (podman), `make clean`
-- `bin/` — user scripts copied to `/sandbox/bin/` at image build time
-- `config/bashrc` — base `.bashrc` baked into image, sources `/sandbox/.env`
-- `config/site.env` — gitignored, host-specific telemetry destination (`OTEL_URL`, `PROMETHEUS_URL`, `LOKI_URL`) plus optional `DEFAULT_PROFILE`; sourced by `sandbox.sh` before policy rendering
-- `config/site.env.example` — template for `config/site.env`; not auto-copied
-- `config/sandbox-claude.md` — sandbox system prompt, uploaded to `/sandbox/source/CLAUDE.md`
-- `policies/` — network + filesystem policies per profile
-- `policies/code.yaml` — default profile (work: Vertex AI + Jira + OTEL + observability)
-- `policies/research.yaml` — web access profile (Claude platform, no Jira)
-- `policies/personal.yaml` — personal profile (Anthropic API, no Vertex/Jira/gcloud, OTEL push-only)
-- `policies/local.yaml` — gitignored, for custom overrides
-- `scripts/sandbox.sh` — main entry point: create, upload, clone, start Claude
-- `scripts/scode` — VS Code launcher for sandbox-backed sessions
-- `scripts/mint-sandbox-token.py` — re-mint a single sandbox JWT using gateway signing key
-- `scripts/mint-sandbox-tokens.sh` — wait for gateway, re-mint all errored sandbox JWTs
-- `scripts/reset-rootless-netns.sh` — reset rootless podman network namespace after reboot/interface change
-- `scripts/test-scode-naming.sh` — self-check for scode's REF-vs-LABEL split and `site_default_profile()`
-- `docs/troubleshooting.md` — known issues, triage, policy reference
-- `docs/fetch-service.md` — how a session inside a sandbox reads web pages; feed to skills that need URLs
-- `fetchsvc/` — the fetch service itself (host-side): service, Containerfile, lifecycle script
+## Not obvious from the file tree
 
-## Key Concepts
+- `config/site.env` — gitignored, per-machine (this repo is public; no tailnet
+  hostnames in git). Deliberately **not** auto-created from
+  `config/site.env.example`: silently adopting the template's collector address
+  would point a sandbox at a host that may not exist here. Do not add a `cp`
+  fallback. Supplies `OTEL_URL`, `PROMETHEUS_URL`, `LOKI_URL` (all required)
+  and optional `DEFAULT_PROFILE`.
+- `policies/local.yaml` — gitignored, for local overrides.
+- `docs/configuration-model.md` — a **draft** proposal, not implemented. Do not
+  read it as current behavior.
+- `scripts/test-*.sh` — runnable self-checks, no framework. Run after touching
+  scode naming or the policy path.
 
-- **Sandbox is the security boundary.** `--dangerously-skip-permissions` is
-  intentional. Network policy (L4/L7), Landlock filesystem, and process
-  isolation replace Claude's permission system.
-- **Two-file env var split.** `.bashrc` is baked into the image (static).
-  `.env` is written at sandbox creation (runtime credentials). `.bashrc`
-  sources `.env`.
-- **Site config (`config/site.env`).** Telemetry destination is a property of
-  the host machine, not of the Claude account — one machine runs a local
-  container stack, another reaches a k3s cluster over Tailscale. Gitignored
-  (this repo is public — no tailnet hostnames in git) and sourced by
-  `sandbox.sh` before any policy is resolved. Supplies `OTEL_URL`,
-  `PROMETHEUS_URL`, `LOKI_URL` — all three required, `sandbox.sh` exits if any
-  is empty. Deliberately not auto-created from
-  `config/site.env.example`: silently adopting the template's values would
-  point a sandbox at a collector that may not exist on this machine. Missing
-  file exits 1 with the `cp` command in the message.
-- **Policies are templates, rendered before use.** `policies/*.yaml` contain
-  `${OTEL_HOST}`, `${OTEL_PORT}`, `${PROMETHEUS_HOST}`, `${PROMETHEUS_PORT}`,
-  `${LOKI_HOST}`, `${LOKI_PORT}`, all derived from the `site.env` URLs. `render_policy()` substitutes them from
-  `site.env` and writes the effective policy to
-  `~/sandboxes/<name>/openshell-policy.yaml` — what `openshell` actually
-  receives. Errors on any unresolved placeholder: an unsubstituted
-  `${OTEL_HOST}` is valid YAML and OpenShell would accept it as a literal
-  hostname, silently denying all traffic. Never hand `policies/*.yaml` to
-  `openshell` directly. All three policies (code, personal, research) are
-  parameterized.
-- **Endpoint host/port are derived, not declared.** `site.env` stores every
-  endpoint as a URL — the richer form, carrying scheme and path — and
-  `sandbox.sh` splits host and port off each with `urllib.parse` to feed the
-  policy placeholders. Do not add `*_HOST`/`*_PORT` keys: that is the same
-  value in two places, free to drift, with nothing checking it. A URL with no
-  explicit port derives to 80 (http) or 443 (https), which is how the Loki
-  tailnet endpoint resolves. `OTEL_URL` doubles as
-  `OTEL_EXPORTER_OTLP_ENDPOINT` verbatim.
-- **Telemetry env comes from `/sandbox/.env`, not `bin/claude.env`.**
-  `sandbox.sh` always writes `OTEL_EXPORTER_OTLP_ENDPOINT` and
-  `OTEL_EXPORTER_OTLP_PROTOCOL` (`http/protobuf` — gotcha 13) from
-  `site.env`, overriding whatever the host exported: the host reaches its own
-  collector on a host-local address, often over gRPC, and neither works from
-  inside a sandbox. `bin/claude.env` no longer sets either one — it used to,
-  and because `claude-wrapper.sh` sources it after `.bashrc` sources `.env`,
-  it silently won. That was the hard-to-reason-about part.
-- **Symlink resolution.** `~/.claude/skills/` contains symlinks to `~/source/`
-  repos. `rsync -rL` resolves them before upload so content works inside the sandbox.
-- **settings.json stripping.** Allow permissions nested under `permissions.allow`
-  dict are removed from uploaded settings.json. Only OTEL dummy hooks
-  (`python3 -c ""`) are preserved; all others stripped. Deny permissions and
-  marketplace config are kept. The dummy hooks are critical — without a
-  registered hook, Claude Code does not emit OTEL events for that hook type.
-  The dummy hooks exist solely to trigger OTEL telemetry.
-- **Host-side repo management.** Repos are cloned on the host (where SSH
-  works), then uploaded to the sandbox via `sandbox upload`. State tracked in
-  `~/sandboxes/<name>/manifest.json`. Supports download (pull changes back),
-  upload (push rebased code in), and add-repo (add to running sandbox).
-- **No baked-in repos.** All repos (including `knowledgebase` and `standards`)
-  are cloned on the host and uploaded. Nothing is baked into the image.
-- **Host-side git operations only.** Sandbox has no GitHub network access and
-  no git authentication. All repos are pre-cloned on host.
-- **Containerfile HOME directory.** Use `useradd -d /sandbox` in Containerfile.
-  Default HOME is `/home/sandbox`, causing gitconfig and env sourcing mismatches
-  across `sandbox exec` calls. The `-d /sandbox` flag sets HOME correctly from passwd.
-- **`--ensure` (create-or-connect).** Checks if sandbox exists via `openshell sandbox list`,
-  creates if missing (delegates to `--create`), reconnects if exists. Name can
-  be inferred from CWD under `~/sandboxes/<name>/`.
-- **`--refresh` (re-upload config).** Re-uploads `~/.claude/`, `bin/`, `.bashrc`,
-  `.env`, and system prompt without recreating sandbox. Generates and uploads
-  `pr-context.md` for PR-based repos. Validates gws credentials (interactive,
-  runs first so browser prompt appears while user is present). Does not touch repos.
-- **`--policy` hot-swap.** Standalone `--policy NAME` sets policy on running
-  sandbox. Bare names resolve to `policies/<name>.yaml`. Order: render →
-  `openshell policy set` → poll `openshell policy list` for Loaded/Effective/
-  Failed status → `upload_static`. Validates async — see
-  `docs/troubleshooting.md` for how the artifact can disagree with the
-  enforcer.
-- **`--source-dir` origin derivation.** Derives origin URL from local checkout
-  when `--repo` is not specified. Does not copy additional remotes — sandbox
-  gets only the origin remote from the fresh clone.
-- **`.venv` exclusion.** Upload: rsync excludes `.venv` from `~/.claude/` upload.
-  Download: downloads to staging dir, rsyncs to target with `--exclude=.venv`.
-  Prevents Python version mismatch (host 3.14 vs sandbox 3.13).
-- **Sandbox system prompt.** `config/sandbox-claude.md` uploaded as
-  `/sandbox/source/CLAUDE.md`. Documents constraints (no GitHub, no SSH, no git
-  auth). Startup instructions tell sessions to: (1) read `manifest.json` if
-  present, (2) read every repo's `CLAUDE.md`, (3) auto-cd into single repo,
-  (4) infer primary repo from user's first message using sandbox name and first
-  repo in manifest as signals — only ask if truly ambiguous.
-- **Keepalive.** Background process sends ENQ (`\005`) to stdout every 30s to
-  prevent gRPC idle stream reaping.
-- **`upload_config()` function.** Extracted upload logic (claude config, bin/,
-  bashrc, env, system prompt) into reusable function called by `--create` and
-  `--refresh`. Takes a second `sandbox_dir` parameter. Also uploads
-  `manifest.json` to `/sandbox/source/manifest.json` so sandbox sessions know
-  the sandbox name, repo list, and which repo was added first. Uses staged
-  directory upload to avoid single-file tar gotcha (#12).
-- **`upload_static()` is the only path that writes host-owned files into
-  `/sandbox/source`.** Stages the system prompt, `manifest.json`, and
-  `openshell-policy.yaml` into one directory and uploads once — called from
-  `upload_config()` (create, refresh), `--upload`, `--add-repo`, and the
-  `--policy` hot-swap. These files are inert once written, so re-sending an
-  unchanged one costs nothing; no reason to decide per file. Reads
-  `SANDBOX_PROFILE` from the manifest when the global var is unset — the
-  `--policy` hot-swap path runs before `--profile` is resolved, so relying on
-  the global there would push an unstripped system prompt (Jira section
-  intact) into a personal sandbox. Earlier revisions had four separate
-  staging implementations; do not reintroduce one.
-- **These files are uploaded, never downloaded.** `download_sandbox()` pulls
-  only the repo directories named in the manifest, so loose files in
-  `/sandbox/source/` never travel back. Host copies of the system prompt,
-  manifest, and policy stay authoritative — a session cannot widen its own
-  policy or rewrite its repo list by editing the sandbox copy.
-- **`ensure_policy()` renders the effective policy if it is not already on
-  disk.** Called from inside `upload_static()`, not wired separately at each
-  call site. Needed because paths that do not resolve a policy themselves —
-  `--upload`, `--add-repo` — would otherwise upload nothing and silently
-  report success.
-- **`upload_repo()` pre-delete on re-upload.** Deletes existing sandbox copy
-  (`rm -rf /sandbox/source/<repo>`) before uploading to avoid tar type conflicts.
-  Symlinks are preserved as-is (no `rsync -rL`). Without pre-delete, re-uploading
-  a repo where a path changed between symlink and directory causes tar "Cannot
-  open: File exists" failures.
-- **`SANDBOX_JIRA_*` env var override.** `sandbox.sh` supports sandbox-specific
-  scoped Jira credentials via separate env vars. When `SANDBOX_JIRA_TOKEN` is
-  set, `sandbox.sh` overrides `JIRA_TOKEN`, `JIRA_API_TOKEN`, `JIRA_EMAIL`,
-  `JIRA_USERNAME`, `JIRA_URL`, and `JIRA_CLOUD_ID` in the sandbox `.env` with
-  values from `SANDBOX_JIRA_TOKEN`, `SANDBOX_JIRA_EMAIL`, `SANDBOX_JIRA_URL`,
-  and `SANDBOX_JIRA_CLOUD_ID`. Last-value-wins when `.env` is sourced. Enables
-  read-only scoped Atlassian tokens in sandboxes while host keeps broad credentials.
-- **`--profile` credential profiles.** `--profile <name>` controls which env
-  var groups, credential uploads, and default policy a sandbox gets. Stored in
-  `manifest.json` so `--refresh` inherits it. Profile `personal` uses
-  `ANTHROPIC_API_KEY` (subscription, not Vertex), skips JIRA/gcloud/gws
-  credentials, defaults to `policies/personal.yaml`, and strips Jira and
-  Prometheus/Loki sections from sandbox system prompt. No profile
-  (default) = current behavior.
-- **`--profile` is build-time only, and the script enforces it.** Valid with
-  `--create`, `--recreate`, and `--ensure`; every other mode exits 1. Profile
-  decides four things at once — `.env` contents, credential uploads, rendered
-  policy, and whether the system prompt keeps its Jira section — and only the
-  create path writes all four. `--refresh --profile` was the trap: it wrote
-  the new `.env` and left policy, system prompt, and manifest on the old
-  profile, and half-applied reads as applied. To switch an existing sandbox,
-  `--recreate NAME --profile <name>` is the only complete path. `--ensure` is
-  allowed because it delegates to `--create` when the sandbox is missing, but
-  its connect branch drops `--profile`, so it errors when the requested
-  profile disagrees with `manifest.json`. `scode` passes `--profile` on every
-  `--ensure` (`scode:137,165,189,207,243`), so a match must stay silent —
-  only a mismatch is an error.
-- **`DEFAULT_PROFILE` in `site.env` sets the machine default.** Optional,
-  unlike the three URLs. Precedence is CLI `--profile` > `manifest.json` >
-  `DEFAULT_PROFILE` > work default, and the order is enforced by placement:
-  the default is applied *after* the manifest lookup, so an existing sandbox
-  keeps the profile it was built with on a machine that defaults to another.
-  It lives in `site.env` because it describes the machine, not the account —
-  a laptop that only does personal work. It is a profile name, never a
-  credential. Renaming `site.env` to something broader was considered and
-  dropped: the working copy is gitignored and per-machine, so a rename is
-  manual work on every host and buys nothing.
-  `scode` does not source `site.env`; it calls `site_default_profile()`
-  (`lib.sh`) so `guard_private_repo` sees the profile the sandbox will be
-  built with. `scode` deliberately does **not** forward the default as
-  `--profile` — precedence stays in one place, in `sandbox.sh`, and
-  forwarding it would trip the `--ensure` profile-mismatch check on every
-  pre-existing sandbox. The friction this removes is concrete:
-  `ensure_gws_creds` runs whenever the profile is not `personal`, so on a
-  personal machine every bare `--create` used to stop at a `gws auth setup`
-  wall.
-- **Personal profile has OTEL, push-only.** `policies/personal.yaml` allows
-  the collector at `172.30.0.10:4318` but not Prometheus (`172.30.0.11:9090`)
-  or Loki (`172.30.0.12:3100`), so a personal sandbox can write telemetry
-  but cannot read work session data back. `OTEL_VARS` are captured into
-  `.env` and sessions are tagged `SANDBOX_PROFILE=personal`, which
-  `claude.env` turns into the `sandbox.profile` resource attribute — the
-  dashboards split personal from work cost on that label.
-  `validate-profile.sh` asserts the asymmetry: collector reachable,
-  Prometheus and Loki blocked.
-- **`host.containers.internal` is implicitly allowed on all ports.**
-  OpenShell cannot selectively block ports on the container gateway host,
-  regardless of policy. Anything reached through that name is unpoliced —
-  currently the dashboard hook relay (`CLAUDE_DASHBOARD_HOST`,
-  `sandbox.sh:1113`). Keep services that need port-level policy on their own
-  addresses (as the observability stack is, on `172.30.0.10-12`) rather than
-  behind the gateway host.
-- **dtach session persistence.** `claude-wrapper.sh` uses dtach for raw
-  PTY session persistence (no terminal emulation layer). Socket at
-  `/sandbox/.dtach-claude`. On connect, if socket exists, default command
-  is `dtach -a /sandbox/.dtach-claude` (reattach). Reconnecting reattaches
-  to the running Claude process — no new launch, no context reload, no
-  token burn. Detach key: `Ctrl+\`. Requires `/dev/pts` in policy
-  `read_write` (added to all three policy YAML files). screen and tmux
-  were evaluated and rejected — both mangle Claude Code's TUI rendering
-  through their terminal emulation layers. See
+## Rules where the obvious change is wrong
+
+1. **The sandbox is the security boundary.**
+   `--dangerously-skip-permissions` is intentional. Network policy (L4/L7),
+   Landlock filesystem, and process isolation replace Claude's permission
+   system. Do not "fix" the flag.
+2. **Never hand `policies/*.yaml` to `openshell` directly.** They are templates.
+   An unsubstituted `${OTEL_HOST}` is valid YAML, and OpenShell accepts it as a
+   literal hostname — the sandbox then silently denies all traffic.
+   `render_policy()` substitutes from `site.env` and fails on any leftover
+   placeholder.
+3. **`render_policy()` renders to a temp file; only `install_policy()` writes
+   `~/sandboxes/<name>/openshell-policy.yaml`, and only after the enforcer has
+   accepted the policy.** That file *is* the record of what is in force, so a
+   path that does not apply a policy cannot change it. Rendering straight into
+   the sandbox dir looks harmless and makes the artifact lie — `--refresh` used
+   to render the profile default over an applied `fetch-service` policy and
+   upload it, dropping blocks the enforcer still allowed. `sandbox-claude.md`
+   tells sessions to trust that file. `scripts/test-policy-artifact.sh` fails
+   if rendering ever writes into the sandbox dir again.
+4. **Endpoint host/port derive from the `site.env` URLs** via `urllib.parse`.
+   Do not add `*_HOST`/`*_PORT` keys — the same value in two places, free to
+   drift, with nothing checking it.
+5. **`--profile` applies at build time only** and the script rejects it
+   elsewhere. It decides four things at once (`.env` contents, credential
+   uploads, rendered policy, whether the system prompt keeps its Jira section)
+   and only the create path writes all four; half-applied reads as applied.
+   `--recreate NAME --profile <name>` is the only complete way to switch an
+   existing sandbox.
+6. **Host-owned files upload, never download.** `download_sandbox()` pulls only
+   the repo directories named in the manifest, so a session cannot widen its own
+   policy or rewrite its repo list by editing its copy.
+7. **The dummy OTEL hooks (`python3 -c ""`) must survive settings.json
+   stripping.** Claude Code emits no OTEL events for a hook type with no
+   registered hook; those entries exist solely to trigger telemetry.
+8. **`useradd -d /sandbox` in the Containerfile.** The default `/home/sandbox`
+   breaks gitconfig and env sourcing across `sandbox exec` calls.
+9. **`host.containers.internal` is unpoliced on every port.** OpenShell cannot
+   selectively block ports on the container gateway host, regardless of policy.
+   Keep anything that needs port-level policy on its own address, as the
+   observability stack is on `172.30.0.10-12`.
+10. **Personal profile telemetry is push-only by design.** Collector allowed,
+    Prometheus and Loki blocked, so a personal sandbox cannot read work session
+    data back. It looks like a missing rule; it is not.
+    `validate-profile.sh` asserts the asymmetry.
+11. **No repos are baked into the image.** `knowledgebase` and `standards` are
+    cloned on the host and uploaded like any other repo.
+12. **`.venv` is excluded in both directions** — host Python 3.14 vs sandbox
+    3.13.
+13. **`upload_repo()` pre-deletes the sandbox copy.** Without it, re-uploading a
+    repo where a path flipped between symlink and directory fails with tar
+    `Cannot open: File exists`.
+14. **In `validate-profile.sh`, a missing URL is a FAIL, not a skip** — a
+    skipped check reads identically to a passing one. `net_check` needs
+    `--max-time`, not just `--connect-timeout`: the latter only bounds the hop
+    to the L7 proxy, which always succeeds, so a stalled upstream hangs forever.
+
+## Settled, do not re-evaluate
+
+- **screen and tmux were tested and rejected** for session persistence — both
+  mangle Claude Code's TUI through their terminal emulation layers. `dtach`
+  only, socket at `/sandbox/.dtach-claude`, requires `/dev/pts` in policy
+  `read_write`. See
   `knowledgebase/containers/terminal-multiplexers-in-sandboxes.md`.
-- **Editable command prompt.** `claude-wrapper.sh` presents the launch
-  command via `read -e -i` (readline-editable with seeded default).
-  Replaces the old 3-option abort/new/continue menu. Default reflects
-  state: `dtach -a /sandbox/.dtach-claude` if session exists, else
-  `dtach -c /sandbox/.dtach-claude claude --dangerously-skip-permissions [-c]`.
-  User can edit to any command (e.g., remove `--dangerously-skip-permissions`).
-  Empty = bash shell. Ctrl+C = abort.
-- **`validate-profile.sh` runs every connect.** `claude-wrapper.sh` runs
-  `validate-profile.sh` before showing the command prompt — on every
-  connect, not just first launch. No ACK gate; validation output is
-  informational. Validates auth, credentials, OTEL, network
-  reachability, and git auth symmetrically — each profile checks both
-  presence of its own config and absence of the other's. Endpoints come from
-  the environment — `$OTEL_EXPORTER_OTLP_ENDPOINT`, `$SANDBOX_PROMETHEUS_URL`,
-  `$SANDBOX_LOKI_URL` — not hardcoded addresses. A missing URL is a FAIL, not
-  a skip: a skipped check reads identically to a passing one, so an endpoint
-  that is actually reachable would go unnoticed. `net_check` needs
-  `--max-time`, not just `--connect-timeout` — the latter only bounds the TCP
-  connect to the L7 proxy, which always succeeds, so a stalled upstream hangs
-  indefinitely.
-- **`--dryrun` flag.** `run()` wrapper prints commands instead of executing.
-  `exec` calls exit cleanly in dryrun. Dryrun propagates through `--ensure`
-  and `--recreate` sub-invocations via `--dryrun` arg forwarding. `.env`
-  content printed with tokens redacted.
-- **`--recreate` (image upgrade workflow).** Downloads repos + claude session
-  state, deletes remote sandbox only (preserves local dir), creates fresh
-  sandbox with `--no-clone --no-connect`, uploads local repos, connects. Used
-  when sandbox image changes.
-- **OAuth credential preservation across `--recreate`.** `download_claude_state()`
-  downloads `/sandbox/.claude/.credentials.json` and `/sandbox/.claude.json`
-  before deletion. `upload_claude_state()` restores both after creating the
-  fresh sandbox. `.credentials.json` goes into the staged `.claude/` directory.
-  `.claude.json` also goes into `.claude/` then gets `exec mv`'d to
-  `/sandbox/.claude.json` (workaround: cannot upload single file to `/sandbox`
-  due to gotcha #12, and cannot upload to `/` due to permission denied).
-  See [knowledgebase: oauth-tokens](https://github.com/jewzaam/knowledgebase/blob/main/claude-code/oauth-tokens.md)
-  for why both files are required.
-- **`--no-connect` flag.** Creates sandbox without auto-starting Claude. Used
-  by `--recreate` to allow upload step before connecting.
-- **`connect_sandbox()` function.** Extracted exec connection command (keepalive
-  + bashrc + claude-wrapper) into reusable function. All connect/ensure/create
-  paths call it.
-- **Hash-based sandbox naming.** OpenShell has a 19-char name limit (DNS label
-  constraint: 19+2+19+2+19=61 < 63). `short_name()` generates `sb-<12-char-md5>`
-  from the full name. `resolve_openshell_name()` reads `openshell_name` from
-  manifest, falls back to `short_name()`. `resolve_full_name()` scans all
-  manifests to reverse-map. `--list` annotates openshell names with full names.
-- **Claude session state preservation.** `~/sandboxes/<name>/claude/projects/`
-  stores session transcripts and project memory downloaded from sandbox.
-  `download_claude_state()` pulls `/sandbox/.claude/projects/`.
-  `upload_claude_state()` restores it at create time. Called during
-  `--download` and uploaded during `--create`. `--refresh` and `--delete` do
-  not touch it.
-- **gws CLI integration.** `@googleworkspace/cli` installed via npm in
-  Containerfile. Sandbox gets readonly OAuth credentials from
-  `~/.config/gws-sandbox/`. `ensure_gws_creds()` validates token via
-  `gws auth status` (`token_valid` field), re-auths with `--scopes` if expired
-  or missing. Scopes defined in `GWS_SANDBOX_SCOPES` (all readonly). Client
-  secret copied from `~/.config/gws/client_secret.json` on first auth.
-- **Git commit signing.** `upload_config()` uploads the SSH signing key
-  referenced by `git config --global user.signingkey` and a path-rewritten
-  `.gitconfig` (`${HOME}` → `/sandbox`). Dedicated signing-only key, not the
-  GitHub SSH auth key.
-- **Custom sandbox image.** `--from openshell-sandbox:latest` in create
-  command. Image must be built with `make build` before creating sandboxes.
-  Previously was using the default NVIDIA base image without the custom tooling.
-- **Automatic context generation.** `generate_repo_context()` in `lib.sh`
-  generates `pr-context.md` (PR metadata) and `jira-context.md` (linked Jira
-  issues) as separate files. Detects PRs from the current git branch via
-  `gh pr view <branch> --repo <org/repo>` on the host — does not rely on
-  manifest ref. If branch has a PR, generates context and updates manifest
-  ref to match. If branch is not a PR, cleans up stale context files.
-  Called automatically from `upload_repo()` before every repo upload — works
-  for `--create`, `--add-repo`, and `--upload`. Also called per-repo during
-  `--refresh`. Switching branches locally (e.g., `gh pr checkout 99`) and
-  re-uploading automatically regenerates context for the new PR. Fetches PR
-  metadata via `gh pr view` (title, body, branch, base, labels, assignees —
-  no review comments to avoid biasing agent reviews). Extracts `ANSTRAT-\d+`
-  and `AAP-\d+` from title/branch/body, fetches linked Jira issues (summary,
-  description, AC). When profile is `personal`, generates `pr-context.md`
-  but skips `jira-context.md`. `generate-pr-context.sh` is a thin wrapper
-  that loops all repos in manifest.
-- **`scode SOURCE_PATH [REF|LABEL]` — second positional is a ref if it names
-  one, else a label.** `scode ~/source/proj big-feature` names the sandbox
-  `proj-big-feature` and checks out the default branch; `scode ~/source/proj
-  pr/1176` still resolves as a ref. `is_ref()` matches `pr/<num>` and `tag/<x>`
-  by pattern (`sandbox.sh` resolves those remotely, so they need not exist in
-  the local clone) and otherwise defers to `git rev-parse --verify --quiet`,
-  which covers branches, tags, remote refs, and SHAs. Two sandboxes on one repo
-  need two names, and the name is the only thing the caller has to remember.
-  The ambiguity is deliberate and benign: a label that collides with a local
-  branch is read as a ref, and **both spellings produce the same sandbox
-  name** — only the checked-out branch differs, which is cheap to change
-  inside the sandbox. Covered by `scripts/test-scode-naming.sh`.
-- **`scode` existing sandbox dir mode.** `scode ~/sandboxes/<name>` detects
-  `manifest.json`, reads repo URLs, builds `--ensure` command with all repos.
-  Supports re-creating sandboxes from pre-existing local state without manually
-  specifying repos.
-- **`scode` Jira URL mode.** `scode https://redhat.atlassian.net/browse/AAP-87003`
-  parses Jira URL, extracts key, fetches issue context (summary, description, AC)
-  into `jira-context.md`, creates sandbox named `aap-87003` (lowercased key) with
-  no repos. `sandbox.sh` uploads `jira-context.md` to `/sandbox/source/` during
-  create and refresh. Requires `JIRA_USERNAME`/`JIRA_TOKEN`.
-- **`scode` PR URL mode.** `scode https://github.com/org/repo/pull/123` parses
-  the GitHub PR URL via regex, extracts org/repo and PR number, constructs SSH
-  clone URL (`git@github.com:org/repo.git`), sets ref to `pr/<num>`, names
-  sandbox `<repo>-pr-<num>`, and runs `--ensure` with those args. Supports
-  multiple PR URLs for multi-repo review: `scode PR_URL1 PR_URL2` — each PR
-  becomes a separate `--repo`/`--ref` pair, sandbox named after first PR.
-  Context files (`pr-context.md`, `jira-context.md`) generated automatically
-  per repo during upload. No `--source-dir` since there is no local checkout.
-- **Debian apt network access.** All three policies include `deb.debian.org`
-  on ports 80 and 443. This does **not** allow system-wide installs — there is
-  no `sudo` in the image, `/usr` is `read_only`, and `/var` is in neither
-  filesystem list. What it does allow, verified: `apt-get update` and
-  `apt-cache search`/`show` with `Dir::State`/`Dir::Cache` pointed at `/tmp`,
-  then `apt-get download` plus `dpkg -x` to extract a working binary under
-  `/sandbox` or `/tmp`. Discovery is the point — a session can find a package,
-  prove it is the right one, and recommend adding it to the Containerfile.
-  The recipe is in `config/sandbox-claude.md`.
-- **The `yq` in the image is the kislyuk build, installed via pip.** Filters
-  are jq syntax; it wraps the `jq` already installed. Not mikefarah/yq (Go) —
-  the two share a name but the expression language differs. Check which one
-  before writing a filter.
+- **`.claude.json` and `.credentials.json` are both required** to preserve
+  OAuth across `--recreate`. See
+  [knowledgebase: oauth-tokens](https://github.com/jewzaam/knowledgebase/blob/main/claude-code/oauth-tokens.md).
+- **Sandbox names are hashed** because OpenShell enforces a 19-char limit (DNS
+  label: 19+2+19+2+19=61 < 63). `short_name()` produces `sb-<12-char-md5>`.
 
 ## OpenShell Policy Gotchas
 
-These are hard-won — do not simplify or remove:
+Hard-won, and referenced by number from `sandbox.sh` and
+`docs/configuration-model.md` — do not renumber, simplify, or remove:
 
 1. `binaries: [{ path: "*" }]` does NOT match all paths. Use `{ path: "/**" }`.
 2. `access: write` is not valid. Valid: `read-only`, `read-write`, `full`. Invalid values silently deny.
@@ -377,43 +122,42 @@ These are hard-won — do not simplify or remove:
 21. `openshell sandbox exec` requires `--name` flag. The sandbox name is not positional for exec. Pattern: `openshell sandbox exec --name "$name" "${GW_FLAG[@]}" -- command`.
 22. A policy endpoint needs both `protocol: rest` and `enforcement: enforce` for CONNECT to work. Omitting them (e.g. for intended L4-only passthrough) forwards an absolute-URI `GET` to that host:port but returns 403 on `CONNECT` to the same host:port. Match every working endpoint in `policies/` — both fields are always present together.
 
+## Other gotchas
+
+- **`yq` in the image is the kislyuk build (pip), not mikefarah/yq (Go).**
+  Filters are jq syntax. The two share a name; the expression language differs.
+- **Bash `$()` strips trailing newlines.** Building `.env` content with
+  `printf '%s=%q\n'` inside `$()` loses the final newline — append `$'\n'`
+  outside the substitution.
+- **Debian apt is reachable but cannot install system-wide.** No `sudo`, `/usr`
+  is read-only, `/var` is in neither filesystem list. Download-and-extract to
+  `/tmp` works; the recipe is in `config/sandbox-claude.md`. The point is
+  discovery — find a package, prove it, then add it to the Containerfile.
+
 ## Reboot Recovery
 
-After system reboot, two things break:
+Two things break after a host reboot:
 
 1. **Rootless-netns is stale.** Pasta's rootless network namespace references
    interfaces from the previous boot. Run `scripts/reset-rootless-netns.sh`
-   before starting the gateway. This stops all containers, kills pasta,
-   removes the netns dir, restarts podman socket, then restarts the containers.
-
-2. **Sandbox JWTs may be expired.** Gateway now mints tokens with `exp=0` (no
-   expiry) for local single-player mode. New sandboxes do not need post-reboot
-   token refresh. For pre-existing sandboxes with expired tokens:
-   `scripts/mint-sandbox-token.py` mints `exp=0` tokens, finds containers by
-   `openshell.ai/sandbox-name` label (not hardcoded container name), delivers
-   token via `podman cp` into stopped container overlay, then starts it.
-   `scripts/mint-sandbox-tokens.sh` iterates all errored sandboxes from
-   `openshell sandbox list`.
-
-## Shell Script Gotchas
-
-- **`.env` newline loss.** Bash `$()` command substitution strips trailing
-  newlines. When building `.env` content with `printf '%s=%q\n'` inside `$()`,
-  the final newline is lost. Append `$'\n'` explicitly outside the substitution.
+   before starting the gateway.
+2. **Sandbox JWTs may be expired.** The gateway now mints `exp=0` tokens, so new
+   sandboxes need nothing. For older ones, `scripts/mint-sandbox-tokens.sh`
+   re-mints every errored sandbox.
 
 ## Development Workflow
 
 1. Edit files
-2. `make build` if Containerfile, bin/, or config/ changed
+2. `make build` if Containerfile, `bin/`, or `config/` changed
 3. Test with `scripts/sandbox.sh --create test`
 4. No rebuild needed for policy-only or env var changes
-5. Use `scripts/sandbox.sh --refresh` to push config changes without rebuilding
+5. `scripts/sandbox.sh --refresh` pushes config changes without rebuilding
 
 ## Standards
 
 - Shell scripts: `set -euo pipefail`, no semicolons for chaining (use `&&`)
-- Makefile: follows `~/source/standards/build/makefile.md` (verb-noun targets, self-documenting help)
-- Naming: `~/source/standards/common/naming.md` (lowercase, hyphens)
-- Local config: `~/source/standards/common/local-config-split.md` (`local.yaml` gitignored)
+- Makefile: follows `~/source/standards/build/makefile.md`
+- Naming: `~/source/standards/common/naming.md`
+- Local config: `~/source/standards/common/local-config-split.md`
 - Container tool: podman (not docker). `CONTAINER_TOOL ?= podman` in Makefile
 - License: Apache 2.0

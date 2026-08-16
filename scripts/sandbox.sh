@@ -686,14 +686,15 @@ fetch_service_teardown() {
 }
 
 render_policy() {
-    # Substitute site.env values into a policy template, writing the effective
-    # policy next to manifest.json in the sandbox dir. That file is what
-    # `openshell` receives and what gets uploaded into the sandbox.
+    # Substitute site.env values into a policy template and echo the path to
+    # the rendered file. Renders to a temp path, NOT into the sandbox dir:
+    # ~/sandboxes/<name>/openshell-policy.yaml is the record of what the
+    # enforcer accepted, so only install_policy() may write it. That one rule
+    # is why nothing else has to track the applied policy.
     # ponytail: sed over a fixed placeholder list; switch to a real templating
     # pass if this outgrows simple name substitution.
-    local src="$1" sandbox_dir="$2"
-    local dest="${sandbox_dir}/openshell-policy.yaml"
-    mkdir -p "$sandbox_dir"
+    local src="$1" dest
+    dest="$(mktemp)"
     local expr=() v
     for v in OTEL_HOST OTEL_PORT PROMETHEUS_HOST PROMETHEUS_PORT LOKI_HOST LOKI_PORT; do
         expr+=(-e "s|\${${v}}|${!v}|g")
@@ -706,6 +707,16 @@ render_policy() {
         return 1
     fi
     echo "$dest"
+}
+
+install_policy() {
+    # Promote a rendered policy to the sandbox's effective one. Call ONLY after
+    # the enforcer has accepted it — on any failure the old file stays, so the
+    # artifact still describes what is actually in force and upload_static is
+    # safe to run either way.
+    local rendered="$1" sandbox_dir="$2"
+    mkdir -p "$sandbox_dir"
+    mv "$rendered" "${sandbox_dir}/openshell-policy.yaml"
 }
 
 upload_static() {
@@ -723,8 +734,6 @@ upload_static() {
     local tmp profile="$SANDBOX_PROFILE"
     tmp="$(mktemp -d)"
     mkdir -p "${tmp}/source"
-
-    ensure_policy "$sandbox_dir"
 
     # Profile from the manifest when the caller has not resolved it — the
     # policy hot-swap path runs before --profile is read.
@@ -746,8 +755,18 @@ upload_static() {
         cp "${sandbox_dir}/manifest.json" "${tmp}/source/manifest.json"
     fi
 
-    # copy: openshell policy — ensure_policy above guarantees it exists
-    cp "${sandbox_dir}/openshell-policy.yaml" "${tmp}/source/openshell-policy.yaml"
+    # copy: openshell policy — same conditional as the manifest above. Absent
+    # means no policy was ever applied through this script (a sandbox predating
+    # the artifact, or a wiped local dir), and what the enforcer holds is
+    # unknown. Leaving the sandbox's existing copy alone is the honest move:
+    # a rendered profile default would be a guess, and the whole point of the
+    # artifact is that it is not one. `--policy NAME` applies and installs.
+    if [[ -f "${sandbox_dir}/openshell-policy.yaml" ]]; then
+        cp "${sandbox_dir}/openshell-policy.yaml" "${tmp}/source/openshell-policy.yaml"
+    else
+        echo "warning: no policy artifact in ${sandbox_dir} — leaving the" >&2
+        echo "  sandbox's copy as-is. Run --policy NAME to set and record one." >&2
+    fi
 
     # do: upload
     run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
@@ -760,20 +779,6 @@ policy_for_profile() {
         personal) resolve_policy "personal" ;;
         *)        resolve_policy "code" ;;
     esac
-}
-
-ensure_policy() {
-    # Render the effective policy if it is not already on disk, so paths that
-    # do not resolve a policy themselves (--upload, --add-repo) still have one
-    # to upload. Sandboxes created before openshell-policy.yaml existed have
-    # none; without this they would silently upload nothing.
-    local sandbox_dir="$1" profile="" template
-    [[ -f "${sandbox_dir}/openshell-policy.yaml" ]] && return 0
-    if [[ -f "${sandbox_dir}/manifest.json" ]]; then
-        profile=$(jq -r '.profile // empty' "${sandbox_dir}/manifest.json" 2>/dev/null || true)
-    fi
-    template="$(policy_for_profile "$profile")" || return 1
-    render_policy "$template" "$sandbox_dir" >/dev/null
 }
 
 resolve_policy() {
@@ -1187,7 +1192,8 @@ fi
 if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_MODE" != true ]]; then
     POLICY_TARGET="$(infer_sandbox_name)" || { echo "error: --policy requires sandbox NAME or CWD under ~/sandboxes/<name>/" >&2; exit 1; }
     OS_NAME=$(resolve_openshell_name "$POLICY_TARGET")
-    POLICY_FILE="$(render_policy "$POLICY_FILE" "${SANDBOXES_DIR}/${POLICY_TARGET}")" || exit 1
+    POLICY_DIR="${SANDBOXES_DIR}/${POLICY_TARGET}"
+    POLICY_FILE="$(render_policy "$POLICY_FILE")" || exit 1
     echo "setting policy on ${POLICY_TARGET}..." >&2
     if [[ "$DRYRUN" == true ]]; then
         run openshell policy set "${GW_FLAG[@]}" --policy "$POLICY_FILE" "$OS_NAME"
@@ -1200,10 +1206,7 @@ if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_
     while true; do
         # Highest VERSION wins, not the last row. `openshell policy list` prints
         # newest-first under a header, so `tail -1` read the OLDEST row — always
-        # Superseded — and the poll timed out on every real change. The failure
-        # is worse than it looks: the timeout exits before the artifact upload,
-        # so the enforcer gets the new policy while /sandbox/source keeps
-        # advertising the old one.
+        # Superseded — and the poll timed out on every real change.
         latest_status=$(openshell policy list "${GW_FLAG[@]}" "$OS_NAME" 2>/dev/null \
             | awk 'NR>1 && $1 ~ /^[0-9]+$/ {print $1, $3}' | sort -rn | head -1 | awk '{print $2}')
         if [[ "$latest_status" == "Failed" ]]; then
@@ -1219,12 +1222,14 @@ if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_
         if [[ $elapsed -ge 30 ]]; then
             echo "error: policy update not applied within 30s" >&2
             openshell policy list "${GW_FLAG[@]}" "$OS_NAME" >&2
+            echo "artifact left on the previous policy — re-run once it settles" >&2
             exit 1
         fi
     done
     fi
-    # Refresh the sandbox's copy so it does not describe the previous policy.
-    upload_static "$OS_NAME" "${SANDBOXES_DIR}/${POLICY_TARGET}"
+    # Accepted: this is now the effective policy, so it becomes the artifact.
+    install_policy "$POLICY_FILE" "$POLICY_DIR"
+    upload_static "$OS_NAME" "$POLICY_DIR"
     echo "done." >&2
     exit 0
 fi
@@ -1240,9 +1245,8 @@ fi
 
 # Everything past this point creates a sandbox. Reaching it without a name
 # means no mode flag matched. Without this guard the create path runs with an
-# empty name: short_name "" hashes to sb-d41d8cd98f00, render_policy is skipped
-# (it is guarded on SANDBOX_NAME), and the unrendered template goes to
-# openshell, which rejects "${OTEL_PORT}" as a port.
+# empty name — short_name "" hashes to sb-d41d8cd98f00 — and installs the
+# policy into ~/sandboxes//, a directory no sandbox will ever look for.
 if [[ -z "$SANDBOX_NAME" ]]; then
     echo "error: no sandbox name — nothing to do. See --help for modes." >&2
     exit 1
@@ -1271,15 +1275,25 @@ fi
 # Resolve policy
 # ---------------------------------------------------------------------------
 
+# --refresh re-uploads config; it never calls `openshell policy set`. Letting
+# it take a --policy would render and ship an artifact for a policy the
+# enforcer never received. Standalone --policy is the path that changes one.
+if [[ -n "$POLICY_FILE" && "$REFRESH_MODE" == true ]]; then
+    echo "error: --policy is not valid with --refresh — it would upload a policy" >&2
+    echo "  artifact without applying it to the enforcer." >&2
+    echo "  To change the policy: cd ~/sandboxes/${SANDBOX_NAME} && $(basename "$0") --policy NAME" >&2
+    exit 1
+fi
+
 if [[ -z "$POLICY_FILE" ]]; then
     POLICY_FILE="$(policy_for_profile "$SANDBOX_PROFILE")" || exit 1
 fi
 
-# Render the template into ~/sandboxes/<name>/openshell-policy.yaml. From here
-# on POLICY_FILE is the effective policy, not the template.
-if [[ -n "$SANDBOX_NAME" ]]; then
-    POLICY_FILE="$(render_policy "$POLICY_FILE" "${SANDBOXES_DIR}/${SANDBOX_NAME}")" || exit 1
-fi
+# Render to a temp file. It is handed to `openshell sandbox create` below and
+# only becomes the sandbox's openshell-policy.yaml once that create succeeds.
+# --refresh reaches here too and renders a temp it never installs, which costs
+# one sed and changes nothing on disk.
+POLICY_FILE="$(render_policy "$POLICY_FILE")" || exit 1
 
 # ---------------------------------------------------------------------------
 # Generate /sandbox/.env content (runtime env vars)
@@ -1481,6 +1495,10 @@ fi
 if [[ -n "$SANDBOX_NAME" ]]; then
     mkdir -p "${SANDBOXES_DIR}/${SANDBOX_NAME}"
 fi
+
+# The sandbox exists on the policy rendered above, so that render is now the
+# effective one. upload_config -> upload_static ships it below.
+install_policy "$POLICY_FILE" "${SANDBOXES_DIR}/${SANDBOX_NAME}"
 
 # Update profile in manifest (handles --recreate with --no-clone where write_manifest is never called)
 if [[ -n "$SANDBOX_PROFILE" && -f "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json" ]]; then
