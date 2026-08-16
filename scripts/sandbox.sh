@@ -1372,6 +1372,27 @@ ENV_CONTENT+="$(printf 'SANDBOX_LOKI_URL=%q' "$LOKI_URL")"$'\n'
 # Sandbox source directory name for OTEL enrichment
 ENV_CONTENT+="$(printf 'SANDBOX_SOURCE_NAME=%q' "${SANDBOX_NAME}")"$'\n'
 
+# The creating host's hostname, for OTEL host.name. Inside the container
+# `hostname` returns sandbox-sb-<hash>, which identifies the sandbox, not the
+# machine — and sandbox.source already carries the sandbox identity. With
+# several machines shipping to one collector, host.name has to be the machine.
+# Must be the same `hostname` invocation the host's own claude.env uses, or the
+# same laptop splits into two series (short name vs FQDN).
+ENV_CONTENT+="$(printf 'SANDBOX_HOST_NAME=%q' "$(hostname)")"$'\n'
+
+# This sandbox's directory on the host, for OTEL project. A sandbox session's
+# $(pwd) is /sandbox/source/ for every sandbox on every machine, because
+# connect_sandbox() cds there before launch — so project collapses them all
+# into one value. The full host path is deliberate: the dashboards' existing
+# ^/home/<user> -> ~ rewrite turns it into ~/sandboxes/<name>, which is what
+# they already synthesise for the sandbox case.
+ENV_CONTENT+="$(printf 'SANDBOX_HOST_DIR=%q' "${SANDBOXES_DIR}/${SANDBOX_NAME}")"$'\n'
+
+# The openshell name (sb-<hash>). The only handle tying a session to its
+# container, `openshell sandbox list`, and the openshell.ai/sandbox-name podman
+# label. In manifest.json too, but exporting it saves every consumer a jq call.
+ENV_CONTENT+="$(printf 'SANDBOX_OPENSHELL_NAME=%q' "$(resolve_openshell_name "$SANDBOX_NAME")")"$'\n'
+
 # Profile-specific OTEL resource attribute tagging
 if [[ "$SANDBOX_PROFILE" == "personal" ]]; then
     ENV_CONTENT+="SANDBOX_PROFILE=personal"$'\n'
