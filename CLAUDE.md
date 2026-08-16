@@ -13,7 +13,7 @@ Containerfile.
 - `Makefile` — `make build` (podman), `make clean`
 - `bin/` — user scripts copied to `/sandbox/bin/` at image build time
 - `config/bashrc` — base `.bashrc` baked into image, sources `/sandbox/.env`
-- `config/site.env` — gitignored, host-specific telemetry destination (`OTEL_URL`, `PROMETHEUS_URL`, `LOKI_URL`); sourced by `sandbox.sh` before policy rendering
+- `config/site.env` — gitignored, host-specific telemetry destination (`OTEL_URL`, `PROMETHEUS_URL`, `LOKI_URL`) plus optional `DEFAULT_PROFILE`; sourced by `sandbox.sh` before policy rendering
 - `config/site.env.example` — template for `config/site.env`; not auto-copied
 - `config/sandbox-claude.md` — sandbox system prompt, uploaded to `/sandbox/source/CLAUDE.md`
 - `policies/` — network + filesystem policies per profile
@@ -26,6 +26,7 @@ Containerfile.
 - `scripts/mint-sandbox-token.py` — re-mint a single sandbox JWT using gateway signing key
 - `scripts/mint-sandbox-tokens.sh` — wait for gateway, re-mint all errored sandbox JWTs
 - `scripts/reset-rootless-netns.sh` — reset rootless podman network namespace after reboot/interface change
+- `scripts/test-scode-naming.sh` — self-check for scode's REF-vs-LABEL split and `site_default_profile()`
 - `docs/troubleshooting.md` — known issues, triage, policy reference
 - `docs/fetch-service.md` — how a session inside a sandbox reads web pages; feed to skills that need URLs
 - `fetchsvc/` — the fetch service itself (host-side): service, Containerfile, lifecycle script
@@ -179,6 +180,25 @@ Containerfile.
   profile disagrees with `manifest.json`. `scode` passes `--profile` on every
   `--ensure` (`scode:137,165,189,207,243`), so a match must stay silent —
   only a mismatch is an error.
+- **`DEFAULT_PROFILE` in `site.env` sets the machine default.** Optional,
+  unlike the three URLs. Precedence is CLI `--profile` > `manifest.json` >
+  `DEFAULT_PROFILE` > work default, and the order is enforced by placement:
+  the default is applied *after* the manifest lookup, so an existing sandbox
+  keeps the profile it was built with on a machine that defaults to another.
+  It lives in `site.env` because it describes the machine, not the account —
+  a laptop that only does personal work. It is a profile name, never a
+  credential. Renaming `site.env` to something broader was considered and
+  dropped: the working copy is gitignored and per-machine, so a rename is
+  manual work on every host and buys nothing.
+  `scode` does not source `site.env`; it calls `site_default_profile()`
+  (`lib.sh`) so `guard_private_repo` sees the profile the sandbox will be
+  built with. `scode` deliberately does **not** forward the default as
+  `--profile` — precedence stays in one place, in `sandbox.sh`, and
+  forwarding it would trip the `--ensure` profile-mismatch check on every
+  pre-existing sandbox. The friction this removes is concrete:
+  `ensure_gws_creds` runs whenever the profile is not `personal`, so on a
+  personal machine every bare `--create` used to stop at a `gws auth setup`
+  wall.
 - **Personal profile has OTEL, push-only.** `policies/personal.yaml` allows
   the collector at `172.30.0.10:4318` but not Prometheus (`172.30.0.11:9090`)
   or Loki (`172.30.0.12:3100`), so a personal sandbox can write telemetry
@@ -287,6 +307,18 @@ Containerfile.
   description, AC). When profile is `personal`, generates `pr-context.md`
   but skips `jira-context.md`. `generate-pr-context.sh` is a thin wrapper
   that loops all repos in manifest.
+- **`scode SOURCE_PATH [REF|LABEL]` — second positional is a ref if it names
+  one, else a label.** `scode ~/source/proj big-feature` names the sandbox
+  `proj-big-feature` and checks out the default branch; `scode ~/source/proj
+  pr/1176` still resolves as a ref. `is_ref()` matches `pr/<num>` and `tag/<x>`
+  by pattern (`sandbox.sh` resolves those remotely, so they need not exist in
+  the local clone) and otherwise defers to `git rev-parse --verify --quiet`,
+  which covers branches, tags, remote refs, and SHAs. Two sandboxes on one repo
+  need two names, and the name is the only thing the caller has to remember.
+  The ambiguity is deliberate and benign: a label that collides with a local
+  branch is read as a ref, and **both spellings produce the same sandbox
+  name** — only the checked-out branch differs, which is cheap to change
+  inside the sandbox. Covered by `scripts/test-scode-naming.sh`.
 - **`scode` existing sandbox dir mode.** `scode ~/sandboxes/<name>` detects
   `manifest.json`, reads repo URLs, builds `--ensure` command with all repos.
   Supports re-creating sandboxes from pre-existing local state without manually

@@ -33,32 +33,32 @@ make build
 
 ```bash
 # Create sandbox with repo at specific PR
-sandbox.sh --create nexus --repo git@github.com:org/nexus.git --ref pr/42
+sandbox.sh --create myapp --repo git@github.com:org/myapp.git --ref pr/42
 
 # Create-or-connect (idempotent)
-sandbox.sh --ensure nexus-pr-42 --repo git@github.com:org/nexus.git --ref pr/42
+sandbox.sh --ensure myapp-pr-42 --repo git@github.com:org/myapp.git --ref pr/42
 
 # Multiple repos
-sandbox.sh --create nexus --repo git@github.com:org/nexus.git --repo git@github.com:org/nexus-ui.git
+sandbox.sh --create myapp --repo git@github.com:org/myapp.git --repo git@github.com:org/myapp-ui.git
 
 # Add repo to existing sandbox (infer URL from local checkout)
-sandbox.sh --add-repo nexus --source-dir ~/source/lib
+sandbox.sh --add-repo myapp --source-dir ~/source/lib
 
 # Add repo with explicit URL
-sandbox.sh --add-repo nexus --repo git@github.com:org/lib.git --ref v2.0
+sandbox.sh --add-repo myapp --repo git@github.com:org/lib.git --ref v2.0
 
 # Download changes from sandbox
-sandbox.sh --download nexus
+sandbox.sh --download myapp
 
 # Upload rebased code back into sandbox
-sandbox.sh --upload nexus --repo nexus
+sandbox.sh --upload myapp --repo myapp
 
 # Reconnect to existing sandbox (launches Claude)
-sandbox.sh --connect nexus
+sandbox.sh --connect myapp
 
 # List / delete
 sandbox.sh --list
-sandbox.sh --delete nexus
+sandbox.sh --delete myapp
 ```
 
 ### Options
@@ -86,10 +86,10 @@ sandbox.sh --delete nexus
 
 ```bash
 # Open sandbox for a repo + ref (auto-names sandbox <repo>-<ref>)
-scode ~/source/nexus pr/1176
+scode ~/source/myapp pr/1176
 
 # Default branch
-scode ~/source/nexus
+scode ~/source/myapp
 
 # Custom sandbox name, no repos (add repos separately)
 scode --name review-workspace
@@ -139,11 +139,14 @@ Auto-detection: `CLAUDE_CODE_USE_VERTEX` set → work, otherwise → home.
 ├── .config/
 │   └── gcloud/             # Uploaded from host (Vertex AI creds)
 ├── bin/                    # User scripts (from repo bin/)
-└── source/                 # Repos (baked + cloned at create time)
-    ├── knowledgebase/      # Baked into image
-    ├── standards/          # Baked into image
-    ├── nexus/              # Uploaded from host
-    └── nexus-ui/           # Uploaded from host
+└── source/                 # Cloned on host, uploaded at create time
+    ├── CLAUDE.md           # System prompt (from config/sandbox-claude.md)
+    ├── manifest.json       # Sandbox name, repo list, profile
+    ├── openshell-policy.yaml  # Effective policy, rendered from site.env
+    ├── knowledgebase/      # Uploaded from host
+    ├── standards/          # Uploaded from host
+    ├── myapp/              # Uploaded from host
+    └── myapp-ui/           # Uploaded from host
 ```
 
 ## Development

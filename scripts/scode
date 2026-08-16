@@ -12,33 +12,37 @@ SANDBOXES_DIR="${HOME}/sandboxes"
 
 if [[ " $* " == *" --help "* ]] || [[ " $* " == *" -h "* ]]; then
     cat << 'EOF'
-Usage: scode [OPTIONS] [JIRA_URL | PR_URL... | SANDBOX_DIR | --name NAME | SOURCE_PATH [REF]]
+Usage: scode [OPTIONS] [JIRA_URL | PR_URL... | SANDBOX_DIR | --name NAME | SOURCE_PATH [REF|LABEL]]
 
 Open a directory in VS Code backed by an OpenShell sandbox running Claude.
 
 Options:
   --profile NAME   Credential profile (e.g., personal). Passed to sandbox.sh.
+                   Defaults to DEFAULT_PROFILE in config/site.env.
 
 Modes:
-  scode JIRA_URL              Jira issue URL — fetch context, no repos
-  scode PR_URL [PR_URL ...]   GitHub PR URL(s) — multi-repo review
-  scode SANDBOX_DIR           Re-use existing sandbox from manifest.json
-  scode SOURCE_PATH [REF]     Auto-name sandbox <repo>-<ref>, clone repo
-  scode --name NAME           Custom name, no repos (add with sandbox.sh --add-repo)
+  scode JIRA_URL                    Jira issue URL — fetch context, no repos
+  scode PR_URL [PR_URL ...]         GitHub PR URL(s) — multi-repo review
+  scode SANDBOX_DIR                 Re-use existing sandbox from manifest.json
+  scode SOURCE_PATH [REF|LABEL]     Auto-name sandbox <repo>-<ref|label>, clone repo
+  scode --name NAME                 Custom name, no repos (add with sandbox.sh --add-repo)
 
 Arguments:
   JIRA_URL       https://redhat.atlassian.net/browse/AAP-87003
   PR_URL         https://github.com/org/repo/pull/123
   SANDBOX_DIR    Path to existing ~/sandboxes/<name>/ with manifest.json
-  SOURCE_PATH    Path to local git repo (e.g., ~/source/nexus)
+  SOURCE_PATH    Path to local git repo (e.g., ~/source/myapp)
   REF            Branch, PR, tag, or SHA (default: repo's default branch)
+  LABEL          Any word that is not a ref — names the sandbox and checks out
+                 the default branch. For running two sandboxes on one repo.
 
 Examples:
   scode https://redhat.atlassian.net/browse/AAP-87003
-  scode https://github.com/automation-nexus/nexus-combined/pull/1109
+  scode https://github.com/org/myapp/pull/1109
   scode https://github.com/org/repo1/pull/42 https://github.com/org/repo2/pull/99
   scode ~/sandboxes/supply-chain
-  scode ~/source/nexus pr/1176
+  scode ~/source/myapp pr/1176                   # ref     -> myapp-pr-1176
+  scode ~/source/my-great-project big-feature    # label   -> my-great-project-big-feature
   scode --profile personal ~/source/my-project
   scode --name review-workspace
 EOF
@@ -65,7 +69,7 @@ set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
 
 if [[ $# -lt 1 ]]; then
     echo "error: requires --name NAME, SOURCE_PATH, or SANDBOX_DIR" >&2
-    echo "usage: scode [--profile NAME] [--name NAME | SOURCE_PATH [REF] | ~/sandboxes/<name>]" >&2
+    echo "usage: scode [--profile NAME] [--name NAME | SOURCE_PATH [REF|LABEL] | ~/sandboxes/<name>]" >&2
     exit 1
 fi
 
@@ -157,7 +161,11 @@ if [[ "$_all_prs" == true ]]; then
         repo_name="$(basename "$gh_repo")"
         ref="pr/${pr_num}"
 
-        SANDBOX_PROFILE="$SCODE_PROFILE" guard_private_repo "$repo_url"
+        # ${SCODE_PROFILE:-$(site_default_profile)}: the guard must see the
+        # profile the sandbox will actually be built with, and on a
+        # DEFAULT_PROFILE=personal machine that is personal even with no
+        # --profile on the command line.
+        SANDBOX_PROFILE="${SCODE_PROFILE:-$(site_default_profile)}" guard_private_repo "$repo_url"
 
         # Name sandbox after first PR
         if [[ -z "$ENSURE_CMD" ]]; then
@@ -216,9 +224,27 @@ if [[ ! -d "$source_path/.git" ]]; then
     exit 1
 fi
 
-if [[ $# -ge 2 ]]; then
+# Second positional is a REF if it names one, otherwise a LABEL. Two sandboxes
+# on the same repo need two names, and the name is the only thing the user has
+# to remember — so `scode ~/source/proj big-feature` names it proj-big-feature
+# and checks out the default branch. Branch juggling inside the sandbox is
+# cheap; remembering a naming convention is not.
+#
+# The ambiguity is benign: a LABEL that happens to match a local branch is read
+# as a REF, and both spellings produce the SAME sandbox name — only the checked
+# out branch differs. pr/N and tag/X are matched by pattern because sandbox.sh
+# resolves them remotely; they need not exist in the local clone.
+is_ref() {
+    [[ "$2" =~ ^(pr/[0-9]+|tag/.+)$ ]] && return 0
+    git -C "$1" rev-parse --verify --quiet "$2" >/dev/null 2>&1
+}
+
+label=""
+ref=""
+if [[ $# -ge 2 ]] && is_ref "$source_path" "$2"; then
     ref="$2"
 else
+    [[ $# -ge 2 ]] && label="${2//\//-}"
     ref="$(git -C "$source_path" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')" || true
     if [[ -z "$ref" ]]; then
         echo "error: cannot detect default branch (no origin/HEAD). Specify REF explicitly" >&2
@@ -227,8 +253,7 @@ else
 fi
 
 repo_name="$(basename "$source_path")"
-ref_normalized="${ref//\//-}"
-sandbox_name="${repo_name}-${ref_normalized}"
+sandbox_name="${repo_name}-${label:-${ref//\//-}}"
 
 repo_url="$(git -C "$source_path" remote get-url origin 2>/dev/null)" || {
     echo "error: no origin remote in ${source_path}" >&2
