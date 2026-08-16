@@ -1,9 +1,13 @@
 # OpenShell sandbox policy: personal + outbound fetch service
 #
-# personal.yaml plus one endpoint: the fetch service on the host, which
-# performs HTTPS requests on the sandbox's behalf. That makes every public URL
-# readable from this sandbox, including hosts named nowhere in this file —
-# the fetch service's own validation is what constrains it, not this policy.
+# personal.yaml plus two additions: the fetch service on the host, which
+# performs HTTPS requests on the sandbox's behalf, and direct egress to search
+# engines. The fetch service makes every public URL readable from this sandbox,
+# including hosts named nowhere in this file — the fetch service's own
+# validation is what constrains it, not this policy.
+#
+# Search engines are the one class of host that cannot go through the fetch
+# service (see the search-engines block for why) and so are named explicitly.
 #
 # Applied and reverted by `sandbox.sh --fetch-service`, so the grant lives only
 # as long as the service does. Do not set this as a profile default.
@@ -138,5 +142,97 @@ network_policies:
         protocol: rest
         enforcement: enforce
         access: full
+    binaries:
+      - { path: "/**" }
+
+  search_engines:
+    name: search-engines
+    # Search engines must be reached directly, NOT through the fetch service.
+    # They serve a plain urllib/curl GET an anti-bot challenge page (HTTP 202,
+    # zero results) regardless of User-Agent — verified from the host with both
+    # a browser UA and the service's own UA. The `ddgs` library gets real
+    # results from that same host and IP because `primp` impersonates Chrome's
+    # TLS fingerprint. CONNECT is an opaque tunnel, so that impersonation
+    # survives the proxy intact, which is why direct egress works here and
+    # routing through the fetch service cannot.
+    #
+    # This list is every host the nine text-search backends registered by
+    # ddgs 9.14.4 actually call, taken from the library's own engine modules
+    # rather than guessed. Naming a host for a backend ddgs does not register
+    # for text search buys nothing: ddgs silently falls back to auto-selection
+    # for an unrecognised backend name, so it never reaches that host.
+    #
+    # Engines block intermittently on their own, independent of this policy —
+    # probes minutes apart returned 3/8 and 2/9 alive. Naming all of them is
+    # what makes that survivable.
+    endpoints:
+      # brave
+      - host: search.brave.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # duckduckgo
+      - host: duckduckgo.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # duckduckgo (results endpoint)
+      - host: html.duckduckgo.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # google
+      - host: www.google.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # mojeek
+      - host: www.mojeek.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # startpage
+      - host: www.startpage.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # yahoo
+      - host: search.yahoo.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # yahoo — its text results are Bing-powered; the yahoo
+      #   engine calls both hosts. Bing is NOT itself a text backend.
+      - host: www.bing.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # yandex
+      - host: yandex.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # wikipedia — opensearch API, returns 1 result. Add other
+      #   language hosts only if you set a non-English region.
+      - host: en.wikipedia.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # grokipedia — typeahead API, returns 1 result.
+      - host: grokipedia.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
     binaries:
       - { path: "/**" }
