@@ -71,12 +71,14 @@ NO_CONNECT=false
 DOWNLOAD_MODE=false
 UPLOAD_MODE=false
 ADD_REPO_MODE=false
+CREATE_MODE=false
 ENSURE_MODE=false
 REFRESH_MODE=false
 RECREATE_MODE=false
 GATEWAY=""
 POLICY_FILE=""
 SANDBOX_PROFILE=""
+PROFILE_FROM_CLI=false
 SOURCE_DIR=""
 REPOS=()
 REFS=()
@@ -172,7 +174,8 @@ OPTIONS:
     --download [NAME] Download repos from sandbox to ~/sandboxes/<name>/
     --upload [NAME]   Upload local repo changes back into sandbox
     --policy NAME     Policy name or path (e.g. research, work). Standalone: hot-swap on running sandbox
-    --profile NAME    Credential profile (e.g. personal). Controls env vars, uploads, and default policy
+    --profile NAME    Credential profile (e.g. personal). Controls env vars, uploads, and default policy.
+                      Only valid with --create, --recreate, or --ensure — applied at build, not after
     --gateway NAME    OpenShell gateway (default: \$OPENSHELL_GATEWAY)
     --refresh [NAME]  Re-upload ~/.claude/, bin/, .bashrc, .env, system prompt
     --recreate [NAME] Download, delete sandbox container, recreate with new image, re-upload repos
@@ -798,6 +801,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --create)
             [[ $# -ge 2 ]] || { echo "error: --create requires NAME" >&2; exit 1; }
+            CREATE_MODE=true
             SANDBOX_NAME="$2"
             shift 2
             ;;
@@ -916,6 +920,7 @@ while [[ $# -gt 0 ]]; do
         --profile)
             [[ $# -ge 2 ]] || { echo "error: --profile requires NAME" >&2; exit 1; }
             SANDBOX_PROFILE="$2"
+            PROFILE_FROM_CLI=true
             shift 2
             ;;
         --no-clone)
@@ -941,6 +946,26 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# ---------------------------------------------------------------------------
+# --profile is only applied on a path that creates a sandbox
+# ---------------------------------------------------------------------------
+
+# Profile decides four things at once: which env vars land in /sandbox/.env,
+# which credentials upload, which policy renders, and whether the system prompt
+# keeps its Jira section. Only the create path writes all four. Every other mode
+# either ignores --profile outright or — worse, --refresh — applies the new
+# .env and leaves the policy, system prompt, and manifest on the old profile.
+# Half-applied reads as applied, so refuse instead.
+if [[ "$PROFILE_FROM_CLI" == true \
+      && "$CREATE_MODE" != true \
+      && "$RECREATE_MODE" != true \
+      && "$ENSURE_MODE" != true ]]; then
+    echo "error: --profile is only valid with --create, --recreate, or --ensure." >&2
+    echo "  Profile is applied when a sandbox is built, not afterwards." >&2
+    echo "  To switch an existing sandbox: $(basename "$0") --recreate NAME --profile ${SANDBOX_PROFILE}" >&2
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Subcommands
@@ -1124,6 +1149,21 @@ if [[ "$ENSURE_MODE" == true ]]; then
         if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
             WORKDIR="/sandbox/source/"
         fi
+        # This branch connects, it does not build — so --profile is dropped.
+        # Dropping it silently when it disagrees with what the sandbox was
+        # built as hands the caller a sandbox on the other profile's
+        # credentials and policy while the command line says otherwise.
+        # scode passes --profile on every --ensure (scode:137,165,189,207,243),
+        # so a match must stay silent; only a mismatch is an error.
+        if [[ "$PROFILE_FROM_CLI" == true ]]; then
+            manifest_profile=$(jq -r '.profile // empty' "${SANDBOX_DIR}/manifest.json" 2>/dev/null || true)
+            if [[ "$SANDBOX_PROFILE" != "$manifest_profile" ]]; then
+                echo "error: sandbox '${SANDBOX_NAME}' exists with profile '${manifest_profile:-<none>}', cannot connect as '${SANDBOX_PROFILE}'." >&2
+                echo "  --ensure connects an existing sandbox; profile is only applied at create." >&2
+                echo "  To switch it: $(basename "$0") --recreate ${SANDBOX_NAME} --profile ${SANDBOX_PROFILE}" >&2
+                exit 1
+            fi
+        fi
         echo "sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
         connect_sandbox "$OS_NAME" "$WORKDIR"
     else
@@ -1195,6 +1235,16 @@ fi
 
 if [[ -z "$SANDBOX_NAME" && "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
     echo "error: --create required when --repo is specified" >&2
+    exit 1
+fi
+
+# Everything past this point creates a sandbox. Reaching it without a name
+# means no mode flag matched. Without this guard the create path runs with an
+# empty name: short_name "" hashes to sb-d41d8cd98f00, render_policy is skipped
+# (it is guarded on SANDBOX_NAME), and the unrendered template goes to
+# openshell, which rejects "${OTEL_PORT}" as a port.
+if [[ -z "$SANDBOX_NAME" ]]; then
+    echo "error: no sandbox name — nothing to do. See --help for modes." >&2
     exit 1
 fi
 

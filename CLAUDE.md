@@ -166,6 +166,19 @@ Containerfile.
   credentials, defaults to `policies/personal.yaml`, and strips Jira and
   Prometheus/Loki sections from sandbox system prompt. No profile
   (default) = current behavior.
+- **`--profile` is build-time only, and the script enforces it.** Valid with
+  `--create`, `--recreate`, and `--ensure`; every other mode exits 1. Profile
+  decides four things at once — `.env` contents, credential uploads, rendered
+  policy, and whether the system prompt keeps its Jira section — and only the
+  create path writes all four. `--refresh --profile` was the trap: it wrote
+  the new `.env` and left policy, system prompt, and manifest on the old
+  profile, and half-applied reads as applied. To switch an existing sandbox,
+  `--recreate NAME --profile <name>` is the only complete path. `--ensure` is
+  allowed because it delegates to `--create` when the sandbox is missing, but
+  its connect branch drops `--profile`, so it errors when the requested
+  profile disagrees with `manifest.json`. `scode` passes `--profile` on every
+  `--ensure` (`scode:137,165,189,207,243`), so a match must stay silent —
+  only a mismatch is an error.
 - **Personal profile has OTEL, push-only.** `policies/personal.yaml` allows
   the collector at `172.30.0.10:4318` but not Prometheus (`172.30.0.11:9090`)
   or Loki (`172.30.0.12:3100`), so a personal sandbox can write telemetry
