@@ -191,14 +191,14 @@ OPTIONS:
     --help            Show this help
 
 EXAMPLES:
-    $(basename "$0") --create nexus --repo git@github.com:org/nexus.git --ref pr/42
-    $(basename "$0") --ensure nexus-pr-42 --repo git@github.com:org/nexus.git --ref pr/42
-    $(basename "$0") --add-repo nexus --repo git@github.com:org/lib.git --ref v2.0
-    $(basename "$0") --add-repo nexus --repo git@github.com:org/ui.git --source-dir ~/source/ui
-    $(basename "$0") --download nexus
-    $(basename "$0") --upload nexus --repo nexus
-    $(basename "$0") --connect nexus
-    $(basename "$0") --delete nexus
+    $(basename "$0") --create myapp --repo git@github.com:org/myapp.git --ref pr/42
+    $(basename "$0") --ensure myapp-pr-42 --repo git@github.com:org/myapp.git --ref pr/42
+    $(basename "$0") --add-repo myapp --repo git@github.com:org/lib.git --ref v2.0
+    $(basename "$0") --add-repo myapp --repo git@github.com:org/ui.git --source-dir ~/source/ui
+    $(basename "$0") --download myapp
+    $(basename "$0") --upload myapp --repo myapp
+    $(basename "$0") --connect myapp
+    $(basename "$0") --delete myapp
 EOF
     exit "${1:-0}"
 }
@@ -1257,6 +1257,14 @@ if [[ -z "$SANDBOX_PROFILE" && -n "$SANDBOX_NAME" && -f "${SANDBOXES_DIR}/${SAND
     if [[ -n "$SANDBOX_PROFILE" ]]; then
         echo "using profile '${SANDBOX_PROFILE}' from manifest" >&2
     fi
+fi
+
+# Machine default, lowest precedence — after the manifest, so an existing
+# sandbox keeps the profile it was built with even on a machine that defaults
+# to another. Optional, unlike the site URLs: unset means the work default.
+if [[ -z "$SANDBOX_PROFILE" && -n "${DEFAULT_PROFILE:-}" ]]; then
+    SANDBOX_PROFILE="$DEFAULT_PROFILE"
+    echo "using default profile '${SANDBOX_PROFILE}' from ${SITE_ENV}" >&2
 fi
 
 # ---------------------------------------------------------------------------

@@ -223,6 +223,22 @@ generate_repo_context() {
 }
 
 # ---------------------------------------------------------------------------
+# Machine default profile
+# ---------------------------------------------------------------------------
+
+# DEFAULT_PROFILE from config/site.env, or empty. sandbox.sh sources site.env
+# wholesale and reads the variable directly; scode does not, but needs the
+# effective profile for guard_private_repo — a personal-by-default machine
+# must still be warned before a private repo goes into a personal sandbox.
+# Subshell so the rest of site.env does not leak into the caller.
+site_default_profile() {
+    local site_env
+    site_env="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/site.env"
+    [[ -f "$site_env" ]] || return 0
+    ( set -a; . "$site_env"; echo "${DEFAULT_PROFILE:-}" )
+}
+
+# ---------------------------------------------------------------------------
 # Repo visibility helpers
 # ---------------------------------------------------------------------------
 
