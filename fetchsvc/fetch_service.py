@@ -157,7 +157,7 @@ def selfcheck():
         ("ftp://example.com/x", "scheme"),
         ("https://localhost/", "loopback"),
         ("https://127.0.0.1/", "loopback"),
-        ("https://192.168.50.13/", "private"),
+        ("https://192.168.1.123/", "private"),
         ("https://169.254.169.254/latest/meta-data/", "link-local"),
         ("https://[::1]/", "loopback"),
         ("https:///nohost", "no host"),
