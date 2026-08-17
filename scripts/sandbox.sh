@@ -1424,7 +1424,7 @@ if [[ "$REFRESH_MODE" == true ]]; then
     if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
         for repo_name in $(jq -r '.repos | keys[]' "${SANDBOX_DIR}/manifest.json"); do
             generate_repo_context "$SANDBOX_DIR" "$repo_name" "${SANDBOX_PROFILE:-}"
-            for ctx_file in pr-context.md jira-context.md; do
+            for ctx_file in pr-context.md jira-context.md open-prs.json; do
                 if [[ -f "${SANDBOX_DIR}/${repo_name}/${ctx_file}" ]]; then
                     echo "  uploading ${ctx_file} for ${repo_name}..." >&2
                     run openshell sandbox upload "$OS_NAME" "${GW_FLAG[@]}" \
