@@ -102,7 +102,7 @@ case "${1:-}" in
             "${base}/fetch?url=https%3A%2F%2Fexample.com%2F"
         printf '%-34s ' "refuse private address"
         curl -s -o /dev/null -w '%{http_code}\n' --max-time 10 \
-            "${base}/fetch?url=http%3A%2F%2F192.168.50.13%2F"
+            "${base}/fetch?url=http%3A%2F%2F192.168.1.123%2F"
         echo "(expect 200, 200, 403)"
         ;;
     *)
