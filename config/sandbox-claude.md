@@ -112,10 +112,29 @@ or working on the PR.
 
 A repo or `/sandbox/source/` may contain `jira-context.md`. If present, it
 was generated on the host from linked Jira issues — summary, description,
-and acceptance criteria for referenced ANSTRAT or AAP tickets. For PR-based
+and acceptance criteria for referenced Jira tickets. For PR-based
 repos, Jira keys are extracted from the PR title, branch, and body.
 For Jira-seeded sandboxes (no repos), the file is at `/sandbox/source/jira-context.md`.
 Read this file for requirements context.
+
+## Open PRs
+
+A repo may contain `open-prs.json` — structured data on all open pull
+requests for that repository, generated on the host. Schema:
+
+    {
+      "prs": [{"number", "branch", "base", "title", "body", "merge_state",
+               "files": [string], "labels"?: [string],
+               "related_prs"?: [int], "jira_keys"?: [string]}],
+      "bot_prs"?: [{"number", "title", "author"}],
+      "cross_refs"?: [{"number", "related_prs"?, "jira_keys"?}]
+    }
+
+`cross_refs` maps PRs that reference each other or share Jira keys — use
+it to identify coordinated changes across PRs. `body` is the raw PR
+description. `bot_prs` are dependency bumps. Use this to scope reviews:
+verify "out of scope" claims, find merge-order dependencies, and spot
+related work the PR author may not have linked.
 
 ## Completion gate
 

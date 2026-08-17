@@ -125,6 +125,12 @@ fetch_jira_context() {
     fi
 }
 
+_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+format_open_prs() {
+    python3 "${_LIB_DIR}/format-open-prs.py" "$@"
+}
+
 # ---------------------------------------------------------------------------
 # Per-repo context generation (pr-context.md + jira-context.md)
 # ---------------------------------------------------------------------------
@@ -144,6 +150,12 @@ generate_repo_context() {
     local gh_repo
     gh_repo=$(echo "$repo_url" | sed -E 's|.*github\.com[:/]||; s|\.git/?$||')
 
+    # open-prs.json — all open PRs, compact structured data
+    format_open_prs "$gh_repo" > "${repo_dir}/open-prs.json" || true
+    if [[ ! -s "${repo_dir}/open-prs.json" ]]; then
+        rm -f "${repo_dir}/open-prs.json"
+    fi
+
     # Detect PR from current branch (git state is source of truth, not manifest ref)
     local branch pr_arg
     branch=$(git -C "$repo_dir" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 0
@@ -154,6 +166,7 @@ generate_repo_context() {
         pr_arg="${BASH_REMATCH[1]}"
     fi
 
+    echo "  checking branch '${branch}' for PR..." >&2
     local pr_json
     pr_json=$(gh pr view "$pr_arg" --repo "$gh_repo" \
         --json number,title,body,headRefName,baseRefName,labels,assignees 2>/dev/null) || {
@@ -201,7 +214,7 @@ generate_repo_context() {
 
     local jira_keys
     jira_keys=$(printf '%s\n%s\n%s' "$pr_title" "$pr_branch" "$pr_body" | \
-        grep -ioE '(ANSTRAT|AAP)-[0-9]+' | tr '[:lower:]' '[:upper:]' | sort -u || true)
+        grep -oE '[a-zA-Z]+-[0-9]+' | sort -u || true)
 
     [[ -n "$jira_keys" ]] || return 0
 
