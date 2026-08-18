@@ -132,8 +132,37 @@ format_open_prs() {
 }
 
 # ---------------------------------------------------------------------------
-# Per-repo context generation (pr-context.md + jira-context.md)
+# PR checkout + per-repo context generation (pr-context.md + jira-context.md)
 # ---------------------------------------------------------------------------
+
+# Check out a PR as a real branch. `git fetch origin pull/N/head:pr-N` produced
+# a branch named pr-N with no upstream at all — fine to work in, but anything
+# reading @{upstream} (monitoring, prompt, status tooling) sees a local-only
+# branch. `gh pr checkout` names the branch after the PR head ref and writes
+# branch.<name>.{remote,merge}, so the checkout looks like any other branch.
+#
+# The fallback keeps the old refs/pull fetch: gh needs auth and network, and a
+# create that silently stays on the default branch is worse than a branch
+# without tracking. generate_repo_context() reads both spellings.
+checkout_pr() {
+    local target="$1" pr_num="$2"
+
+    if [[ "${DRYRUN:-false}" == true ]]; then
+        echo "[dryrun]: (cd ${target} && gh pr checkout ${pr_num})" >&2
+        return 0
+    fi
+
+    # cd, not -C: gh has no repo-directory flag, and --repo names the GitHub
+    # repo, not the clone to check out into.
+    if ( cd "$target" && gh pr checkout "$pr_num" ); then
+        return 0
+    fi
+
+    echo "  warning: gh pr checkout ${pr_num} failed — falling back to a" >&2
+    echo "    refs/pull fetch, which leaves the branch without an upstream" >&2
+    git -C "$target" fetch origin "pull/${pr_num}/head:pr-${pr_num}"
+    git -C "$target" checkout "pr-${pr_num}"
+}
 
 generate_repo_context() {
     local sandbox_dir="$1" repo_name="$2" profile="${3:-}"
@@ -159,10 +188,20 @@ generate_repo_context() {
     # Detect PR from current branch (git state is source of truth, not manifest ref)
     local branch pr_arg
     branch=$(git -C "$repo_dir" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 0
-    # clone_repo_host creates local branches named pr-<num> — gh pr view needs
-    # the number, not the local branch name (no such branch exists on remote)
+    # A PR checkout is normally a real branch (gh pr checkout), so the name is
+    # the head ref and `gh pr view <branch>` resolves it.
     pr_arg="$branch"
+    # Legacy and fallback checkouts are named pr-<num>; no such branch exists
+    # on the remote, so gh pr view needs the number.
     if [[ "$branch" =~ ^pr-([0-9]+)$ ]]; then
+        pr_arg="${BASH_REMATCH[1]}"
+    fi
+    # A fork PR's head ref lives in the fork, so the branch name does not
+    # identify it in the base repo. gh writes refs/pull/<num>/head as the
+    # upstream in that case — the number is right there, no guessing.
+    local merge_ref
+    merge_ref=$(git -C "$repo_dir" config "branch.${branch}.merge" 2>/dev/null || true)
+    if [[ "$merge_ref" =~ ^refs/pull/([0-9]+)/head$ ]]; then
         pr_arg="${BASH_REMATCH[1]}"
     fi
 
@@ -248,6 +287,7 @@ site_default_profile() {
     local site_env
     site_env="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/site.env"
     [[ -f "$site_env" ]] || return 0
+    # shellcheck source=/dev/null  # gitignored, per-machine — nothing to follow
     ( set -a; . "$site_env"; echo "${DEFAULT_PROFILE:-}" )
 }
 

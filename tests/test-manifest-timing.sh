@@ -10,7 +10,7 @@
 # the folder), and sandbox.sh --create (manifest written before the create
 # call). Runs against a scratch HOME with --dryrun, so no openshell calls.
 #
-# Run: scripts/test-manifest-timing.sh
+# Run: tests/test-manifest-timing.sh
 
 set -euo pipefail
 

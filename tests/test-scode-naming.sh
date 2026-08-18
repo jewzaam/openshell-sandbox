@@ -5,7 +5,7 @@
 # site_default_profile(). Builds a throwaway git repo in a temp dir, sources
 # the real functions out of scode/lib.sh, and asserts the resulting names.
 #
-# Run: scripts/test-scode-naming.sh
+# Run: tests/test-scode-naming.sh
 
 set -euo pipefail
 
@@ -22,7 +22,7 @@ is_ref() {
     git -C "$1" rev-parse --verify --quiet "$2" >/dev/null 2>&1
 }
 
-if ! grep -qF 'git -C "$1" rev-parse --verify --quiet "$2" >/dev/null 2>&1' "${SCRIPT_DIR}/scode"; then
+if ! grep -qF 'git -C "$1" rev-parse --verify --quiet "$2" >/dev/null 2>&1' "${REPO_ROOT}/scripts/scode"; then
     echo "FAIL: scode's is_ref no longer matches the copy under test" >&2
     exit 1
 fi
@@ -91,11 +91,11 @@ check "the-best-new-feature" "my-great-project-the-best-new-feature ref=main"
 check "some/feature"         "my-great-project-some-feature ref=main"
 
 # --- site_default_profile(): unset, set, and missing-file ---
-source "${SCRIPT_DIR}/lib.sh"
+source "${REPO_ROOT}/scripts/lib.sh"
 
 FAKE_ROOT="${TMP}/fake"
 mkdir -p "${FAKE_ROOT}/scripts" "${FAKE_ROOT}/config"
-cp "${SCRIPT_DIR}/lib.sh" "${FAKE_ROOT}/scripts/lib.sh"
+cp "${REPO_ROOT}/scripts/lib.sh" "${FAKE_ROOT}/scripts/lib.sh"
 
 probe() { ( source "${FAKE_ROOT}/scripts/lib.sh"; site_default_profile ); }
 
