@@ -145,6 +145,10 @@ and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
   `key-123` (lowercased).
 - **`scode` accepts multiple PR URLs.** `scode PR_URL1 PR_URL2` for multi-repo
   review. Each becomes a `--repo`/`--ref` pair; sandbox named after first PR.
+- **`ANTHROPIC_DEFAULT_{HAIKU,OPUS,SONNET}_MODEL` are stripped from the
+  uploaded `settings.json` for every profile**, by
+  `scripts/strip-settings.py`. A host pins models for host reasons; in a
+  sandbox available models may differ.  Pinning model is not required.
 - **Personal profile sets `--model claude-opus-5[1m]`** in the sandbox
   `claude-wrapper.sh`, off `$SANDBOX_PROFILE` from `/sandbox/.env`. Not off
   manifest.json — that is uploaded by `upload_static()` and used to lose the
