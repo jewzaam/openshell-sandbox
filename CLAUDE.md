@@ -22,7 +22,7 @@ and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
 - `docs/configuration-model.md` — a **draft** proposal, not implemented. Do not
   read it as current behavior.
 - `scripts/test-*.sh` — runnable self-checks, no framework. Run after touching
-  scode naming or the policy path.
+  scode naming, the policy path, or when the manifest is written.
 
 ## Rules where the obvious change is wrong
 
@@ -76,7 +76,14 @@ and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
 13. **`upload_repo()` pre-deletes the sandbox copy.** Without it, re-uploading a
     repo where a path flipped between symlink and directory fails with tar
     `Cannot open: File exists`.
-14. **In `validate-profile.sh`, a missing URL is a FAIL, not a skip** — a
+14. **`manifest.json` is written before the sandbox is created, not after the
+    repos are cloned.** `init_manifest()` (lib.sh) is called by scode before
+    `code` opens the folder and by sandbox.sh before `openshell sandbox
+    create`; the repo loop only fills in `.repos`. The file is an input, not
+    bookkeeping — the host prompt reads `.profile` out of it, and moving the
+    write back into the repo loop hides the profile behind create + clone +
+    upload. `scripts/test-manifest-timing.sh` fails if it slips.
+15. **In `validate-profile.sh`, a missing URL is a FAIL, not a skip** — a
     skipped check reads identically to a passing one. `net_check` needs
     `--max-time`, not just `--connect-timeout`: the latter only bounds the hop
     to the L7 proxy, which always succeeds, so a stalled upstream hangs forever.
@@ -109,7 +116,10 @@ and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
 - **`scode` accepts multiple PR URLs.** `scode PR_URL1 PR_URL2` for multi-repo
   review. Each becomes a `--repo`/`--ref` pair; sandbox named after first PR.
 - **Personal profile sets `--model claude-opus-5[1m]`** in the sandbox
-  `claude-wrapper.sh`. Non-personal profiles inherit the default model.
+  `claude-wrapper.sh`, off `$SANDBOX_PROFILE` from `/sandbox/.env`. Not off
+  manifest.json — that is uploaded by `upload_static()` and used to lose the
+  race on a first create, silently starting personal sessions on the default
+  model.
 
 ## OpenShell Policy Gotchas
 

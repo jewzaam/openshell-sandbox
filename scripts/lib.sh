@@ -263,6 +263,49 @@ is_private_repo() {
     [[ "$private" == "true" ]]
 }
 
+# ---------------------------------------------------------------------------
+# Sandbox manifest (shared by scode and sandbox.sh)
+# ---------------------------------------------------------------------------
+
+# Short name for OpenShell (19-char limit from DNS label constraint)
+short_name() {
+    local hash
+    hash=$(printf '%s' "$1" | md5sum | cut -c1-12)
+    echo "sb-${hash}"
+}
+
+# Write the manifest skeleton — name, openshell name, profile — creating the
+# sandbox dir if needed. Idempotent: an existing manifest keeps its repos and
+# only has .profile refreshed.
+#
+# scode calls this before opening VS Code, and sandbox.sh before `openshell
+# sandbox create`, because the host prompt reads .profile out of this file.
+# Written only by the repo loop, it appears minutes late — after create, the
+# credential uploads, and the host clone — and until then every shell in that
+# directory shows no profile at all.
+init_manifest() {
+    local sandbox_dir="$1" sandbox_name="$2" profile="${3:-}"
+    local manifest="${sandbox_dir}/manifest.json"
+
+    mkdir -p "$sandbox_dir"
+
+    if [[ ! -f "$manifest" ]]; then
+        jq -n \
+            --arg name "$sandbox_name" \
+            --arg os_name "$(short_name "$sandbox_name")" \
+            --arg created "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            '{name: $name, openshell_name: $os_name, created: $created, repos: {}}' \
+            > "${manifest}.tmp"
+        mv "${manifest}.tmp" "$manifest"
+    fi
+
+    if [[ -n "$profile" ]]; then
+        jq --arg profile "$profile" '.profile = $profile' \
+            "$manifest" > "${manifest}.tmp"
+        mv "${manifest}.tmp" "$manifest"
+    fi
+}
+
 # Warn and confirm if personal profile is adding a private repo
 guard_private_repo() {
     local url="$1"
