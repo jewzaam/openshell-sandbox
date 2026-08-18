@@ -122,14 +122,17 @@ Read this file for requirements context.
 Every GitHub repo has an `open-prs.json` — structured data on all open pull
 requests for that repository, generated on the host. `"prs": []` means the
 repo has no open PRs, not that the data is missing. The file is refreshed at
-most once an hour, so it can be up to that stale. Schema:
+most once an hour, so it can be up to that stale. A `fetch_error` key means
+the host could not reach the GitHub API for that repo — `prs` is then stale or
+absent, and its absence says nothing about whether PRs exist. Schema:
 
     {
       "prs": [{"number", "branch", "base", "title", "body", "merge_state",
                "files": [string], "labels"?: [string],
                "related_prs"?: [int], "jira_keys"?: [string]}],
       "bot_prs"?: [{"number", "title", "author"}],
-      "cross_refs"?: [{"number", "related_prs"?, "jira_keys"?}]
+      "cross_refs"?: [{"number", "related_prs"?, "jira_keys"?}],
+      "fetch_error"?: string, "fetch_error_at"?: string
     }
 
 `cross_refs` maps PRs that reference each other or share Jira keys — use
