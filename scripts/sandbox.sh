@@ -533,42 +533,13 @@ upload_config() {
             --exclude=.credentials.json \
             "${HOME}/.claude/" "${CLAUDE_TMP}/.claude/"
 
-        # Strip settings.json: remove allow permissions, keep only OTEL dummy hooks
+        # Strip settings.json: host paths, allow permissions, pinned models,
+        # work-only env on personal, every hook but the OTEL dummies. In a
+        # script, not inline: it is real logic with quoting hazards, and
+        # tests/test-strip-settings.sh can only reach it as a file.
         if [[ -f "${CLAUDE_TMP}/.claude/settings.json" ]]; then
-            python3 -c "
-import json, sys
-with open(sys.argv[1], 'r') as f:
-    raw = f.read()
-raw = raw.replace(sys.argv[2], '/sandbox')
-s = json.loads(raw)
-if isinstance(s.get('permissions'), dict):
-    s['permissions'].pop('allow', None)
-profile = sys.argv[3] if len(sys.argv) > 3 else ''
-if profile == 'personal':
-    import re
-    strip_re = re.compile(r'^(CLAUDE_CODE_USE_VERTEX|ANTHROPIC_VERTEX|GOOGLE|CLOUDSDK|CLOUD_ML|JIRA|ATLASSIAN)', re.I)
-    if isinstance(s.get('env'), dict):
-        s['env'] = {k: v for k, v in s['env'].items() if not strip_re.match(k)}
-hooks = s.get('hooks')
-if isinstance(hooks, dict):
-    for event in list(hooks.keys()):
-        rules = hooks[event]
-        if isinstance(rules, list):
-            kept = [r for r in rules if isinstance(r, dict) and any(
-                isinstance(h, dict) and h.get('command', '').strip() in ('python3 -c \"\"', 'python -c \"\"')
-                for h in r.get('hooks', [])
-            )]
-            if kept:
-                hooks[event] = kept
-            else:
-                del hooks[event]
-    if not hooks:
-        del s['hooks']
-else:
-    s.pop('hooks', None)
-with open(sys.argv[1], 'w') as f:
-    json.dump(s, f, indent=2)
-" "${CLAUDE_TMP}/.claude/settings.json" "${HOME}" "${SANDBOX_PROFILE}"
+            python3 "${SCRIPT_DIR}/strip-settings.py" \
+                "${CLAUDE_TMP}/.claude/settings.json" "${HOME}" "${SANDBOX_PROFILE}"
         fi
 
         # Rewrite host HOME paths to /sandbox in all plugin config files
