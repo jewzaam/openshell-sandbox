@@ -25,6 +25,9 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
+# The fallback case goes through gh pr checkout's retry budget; no reason to
+# sit through the backoff.
+export GH_RETRY_DELAY=0
 source "${REPO_ROOT}/scripts/lib.sh"
 
 fail=0

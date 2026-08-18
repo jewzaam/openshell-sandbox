@@ -123,17 +123,23 @@ and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
   "no such PR" and for a 502, and the "no such PR" branch deletes
   `pr-context.md` and `jira-context.md`. `gh_pr_view_json()` returns 2 only
   when gh actually answered (`no pull requests found` / `Could not resolve`);
-  anything else is 1, retried `GH_RETRY_ATTEMPTS` times (default 3, backoff
-  `GH_RETRY_DELAY` doubling from 2s), and the existing files are kept. Never
-  retry a call whose "not found" is an expected answer — that cost is paid on
-  every non-PR repo. `tests/test-gh-retry.sh` covers both directions.
+  anything else is 1 and the existing files are kept.
+- **Only `gh pr checkout` retries** (`GH_RETRY_ATTEMPTS`, default 3, delay
+  doubling from `GH_RETRY_DELAY`, default 2s). It decides what code is in the
+  sandbox and runs once per repo at create time. Context generation runs on
+  every upload for every repo, so a backoff there multiplies: with GitHub
+  down, retrying `gh pr list` alone made a multi-repo upload take 3x as long
+  for data that is optional. `tests/test-gh-retry.sh` asserts the one-call
+  ceiling during an outage.
 - **`open-prs.json` is always written for a GitHub repo, and is debounced.**
   No open PRs is `{"prs": []}`, not a missing file — absence used to mean
   "none", "gh failed", and "not GitHub" at once. `gh pr list --json files` is
   the slowest call in an upload and runs per repo, so a file younger than
   `OPEN_PRS_TTL_MINUTES` (default 60) is reused; set it to 0 to force. A failed
-  fetch leaves the previous file and its mtime alone, so the next upload
-  retries instead of debouncing on data this run never fetched.
+  fetch writes `fetch_error` + `fetch_error_at` into the file (keeping any real
+  `prs` already there) so the failure is debounced like a success — these
+  failures are repo-pinned, and a repo gh cannot read would otherwise burn a
+  doomed call on every upload forever.
 - **`scode` accepts Jira URLs.** `scode https://...atlassian.net/browse/KEY-123`
   fetches issue context into `jira-context.md`, creates a no-repo sandbox named
   `key-123` (lowercased).

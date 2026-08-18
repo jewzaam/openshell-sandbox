@@ -143,8 +143,14 @@ fetch_open_prs() {
 # PR checkout + per-repo context generation (pr-context.md + jira-context.md)
 # ---------------------------------------------------------------------------
 
-# GitHub's API fails often enough that a single attempt is not a signal. Two
-# short retries turn most 502s and connection resets into a normal run.
+# Retry budget for the ONE gh call worth waiting on: `gh pr checkout`, which
+# decides what code is in the sandbox, runs once per repo at create time, and
+# falls back to a worse checkout if it fails.
+#
+# Nothing else retries. Context generation runs on every upload, once per repo,
+# and when GitHub is down a 3-attempt backoff there turns a multi-repo upload
+# into minutes of sleeping for data that is optional (open-prs.json) or already
+# on disk (pr-context.md). One attempt, warn, move on.
 GH_RETRY_ATTEMPTS="${GH_RETRY_ATTEMPTS:-3}"
 GH_RETRY_DELAY="${GH_RETRY_DELAY:-2}"
 
@@ -173,31 +179,24 @@ gh_retry() {
 # an upload destroys correct pr-context.md and jira-context.md — and
 # jira-context.md costs Jira calls to rebuild.
 gh_pr_view_json() {
-    local pr_arg="$1" gh_repo="$2"
-    local attempt=1 delay="$GH_RETRY_DELAY" out err
+    local pr_arg="$1" gh_repo="$2" out err rc=1
     err="$(mktemp)"
-    while :; do
-        if out=$(gh pr view "$pr_arg" --repo "$gh_repo" \
-            --json number,title,body,headRefName,baseRefName,labels,assignees 2>"$err"); then
-            rm -f "$err"
-            printf '%s' "$out"
-            return 0
-        fi
+    if out=$(gh pr view "$pr_arg" --repo "$gh_repo" \
+        --json number,title,body,headRefName,baseRefName,labels,assignees 2>"$err"); then
+        printf '%s' "$out"
+        rc=0
+    else
         case "$(cat "$err")" in
             *"no pull requests found"*|*"no open pull requests"*|*"Could not resolve"*)
-                rm -f "$err"
-                return 2
+                rc=2
+                ;;
+            *)
+                echo "  warning: gh pr view failed: $(head -1 "$err")" >&2
                 ;;
         esac
-        if (( attempt++ >= GH_RETRY_ATTEMPTS )); then
-            echo "  warning: gh pr view failed: $(head -1 "$err")" >&2
-            rm -f "$err"
-            return 1
-        fi
-        echo "  gh pr view failed, retrying in ${delay}s (attempt ${attempt}/${GH_RETRY_ATTEMPTS})..." >&2
-        sleep "$delay"
-        delay=$(( delay * 2 ))
-    done
+    fi
+    rm -f "$err"
+    return "$rc"
 }
 
 # Check out a PR as a real branch. `git fetch origin pull/N/head:pr-N` produced
@@ -264,15 +263,30 @@ generate_repo_context() {
     fi
     if (( open_prs_age < OPEN_PRS_TTL_MINUTES )); then
         echo "  open-prs.json is ${open_prs_age}m old (< ${OPEN_PRS_TTL_MINUTES}m), skipping PR list fetch" >&2
-    elif gh_retry fetch_open_prs "$gh_repo" "${open_prs}.tmp"; then
+    elif fetch_open_prs "$gh_repo" "${open_prs}.tmp"; then
         # A repo with no open PRs gets `{"prs": []}`, not a missing file: the
         # absence of the file used to mean "none", "gh failed", and "not a
         # GitHub repo" all at once, and a session cannot tell those apart.
         mv "${open_prs}.tmp" "$open_prs"
     else
-        # Failed fetch: leave the previous file, mtime and all, so the next
-        # upload retries instead of debouncing on a file this run never wrote.
-        rm -f "${open_prs}.tmp"
+        # Failed fetch: record it IN the file, which puts the failure under the
+        # same debounce as a success. These failures are repo-pinned — a repo
+        # gh cannot read fails identically on every upload — so retrying each
+        # one every time is pure cost. Any real data already here is kept and
+        # marked stale rather than replaced with a lie about there being no PRs.
+        local now
+        now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        if [[ -f "$open_prs" ]] && jq --arg at "$now" --arg repo "$gh_repo" \
+            '. + {fetch_error: ("gh pr list failed for " + $repo), fetch_error_at: $at}' \
+            "$open_prs" > "${open_prs}.tmp"; then
+            mv "${open_prs}.tmp" "$open_prs"
+        else
+            rm -f "${open_prs}.tmp"
+            jq -n --arg at "$now" --arg repo "$gh_repo" \
+                '{fetch_error: ("gh pr list failed for " + $repo), fetch_error_at: $at}' \
+                > "$open_prs"
+        fi
+        echo "  open PRs unknown for ${gh_repo} — recorded, no retry for ${OPEN_PRS_TTL_MINUTES}m" >&2
     fi
 
     # Detect PR from current branch (git state is source of truth, not manifest ref)

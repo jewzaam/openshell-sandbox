@@ -97,23 +97,34 @@ listed || { echo "FAIL: a 2h-old file was not refetched" >&2; fail=1; }
 GH_LIST_JSON="$EMPTY_LIST" OPEN_PRS_TTL_MINUTES=0 run_context
 listed || { echo "FAIL: OPEN_PRS_TTL_MINUTES=0 did not force a fetch" >&2; fail=1; }
 
-# --- a failed fetch keeps the previous file rather than claiming zero PRs ---
-touch -d '2 hours ago' "$OPEN_PRS"
+# --- a failed fetch keeps the previous PRs and marks the failure ---
 echo '{"prs":[{"number":9}]}' > "$OPEN_PRS"
 touch -d '2 hours ago' "$OPEN_PRS"
 run_context   # no GH_LIST_JSON -> gh pr list exits 1
 [[ "$(jq -r '.prs[0].number' "$OPEN_PRS" 2>/dev/null)" == "9" ]] \
     || { echo "FAIL: a failed fetch overwrote the previous open-prs.json" >&2; fail=1; }
+[[ "$(jq -r '.fetch_error // empty' "$OPEN_PRS")" == *"org/myrepo"* ]] \
+    || { echo "FAIL: a failed fetch left no fetch_error marker" >&2; fail=1; }
 [[ ! -f "${OPEN_PRS}.tmp" ]] \
     || { echo "FAIL: a failed fetch left open-prs.json.tmp behind" >&2; fail=1; }
 
-# --- ...and writes nothing at all when there was no previous file ---
+# --- and the failure is debounced: these failures are repo-pinned, so the
+# next upload must not pay for the same doomed call ---
+run_context
+listed && { echo "FAIL: refetched right after a recorded failure" >&2; fail=1; }
+
+# --- with no previous file, the failure itself is the file ---
 rm -f "$OPEN_PRS"
 run_context
-[[ ! -f "$OPEN_PRS" ]] \
-    || { echo "FAIL: a failed fetch invented an open-prs.json" >&2; fail=1; }
+[[ -f "$OPEN_PRS" ]] \
+    || { echo "FAIL: a failed fetch recorded nothing, so it will retry forever" >&2; fail=1; }
+[[ -n "$(jq -r '.fetch_error // empty' "$OPEN_PRS")" ]] \
+    || { echo "FAIL: failure marker missing from a fresh open-prs.json" >&2; fail=1; }
+[[ "$(jq -r '.prs // "absent"' "$OPEN_PRS")" == "absent" ]] \
+    || { echo "FAIL: a failed fetch claimed a PR list it never got" >&2; fail=1; }
 
 # --- a non-GitHub repo is left alone ---
+rm -f "$OPEN_PRS"   # the failure case above recorded one
 jq -n '{name:"probe",repos:{myrepo:{url:"git@gitlab.com:org/myrepo.git"}}}' > "${SBX}/manifest.json"
 run_context
 [[ ! -f "$OPEN_PRS" ]] \
