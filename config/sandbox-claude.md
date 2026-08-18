@@ -119,8 +119,10 @@ Read this file for requirements context.
 
 ## Open PRs
 
-A repo may contain `open-prs.json` — structured data on all open pull
-requests for that repository, generated on the host. Schema:
+Every GitHub repo has an `open-prs.json` — structured data on all open pull
+requests for that repository, generated on the host. `"prs": []` means the
+repo has no open PRs, not that the data is missing. The file is refreshed at
+most once an hour, so it can be up to that stale. Schema:
 
     {
       "prs": [{"number", "branch", "base", "title", "body", "merge_state",
