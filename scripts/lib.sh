@@ -131,9 +131,74 @@ format_open_prs() {
     python3 "${_LIB_DIR}/format-open-prs.py" "$@"
 }
 
+# Fetch into a file rather than redirecting the whole retry loop: `>` truncates
+# per attempt, so a partial write from a failed attempt cannot end up prepended
+# to a good one.
+fetch_open_prs() {
+    local gh_repo="$1" dest="$2"
+    format_open_prs "$gh_repo" > "$dest"
+}
+
 # ---------------------------------------------------------------------------
 # PR checkout + per-repo context generation (pr-context.md + jira-context.md)
 # ---------------------------------------------------------------------------
+
+# GitHub's API fails often enough that a single attempt is not a signal. Two
+# short retries turn most 502s and connection resets into a normal run.
+GH_RETRY_ATTEMPTS="${GH_RETRY_ATTEMPTS:-3}"
+GH_RETRY_DELAY="${GH_RETRY_DELAY:-2}"
+
+# Run a command, retrying transient failures with a doubling delay.
+# Only for calls whose failure is always an error — never for one where
+# "not found" is an expected answer, or every miss costs the full backoff.
+gh_retry() {
+    local attempt=1 delay="$GH_RETRY_DELAY"
+    while :; do
+        "$@" && return 0
+        (( attempt++ >= GH_RETRY_ATTEMPTS )) && return 1
+        echo "  gh call failed, retrying in ${delay}s (attempt ${attempt}/${GH_RETRY_ATTEMPTS})..." >&2
+        sleep "$delay"
+        delay=$(( delay * 2 ))
+    done
+}
+
+# Fetch a PR as JSON on stdout.
+#   0 — JSON on stdout
+#   2 — gh answered, and there is no such PR (final; do not retry, do not
+#       treat as an outage)
+#   1 — gh could not answer after retries; the caller knows nothing new
+#
+# The split matters because `gh pr view` exits 1 for both, and the caller
+# deletes stale context files on "no PR". Conflating them means a 502 during
+# an upload destroys correct pr-context.md and jira-context.md — and
+# jira-context.md costs Jira calls to rebuild.
+gh_pr_view_json() {
+    local pr_arg="$1" gh_repo="$2"
+    local attempt=1 delay="$GH_RETRY_DELAY" out err
+    err="$(mktemp)"
+    while :; do
+        if out=$(gh pr view "$pr_arg" --repo "$gh_repo" \
+            --json number,title,body,headRefName,baseRefName,labels,assignees 2>"$err"); then
+            rm -f "$err"
+            printf '%s' "$out"
+            return 0
+        fi
+        case "$(cat "$err")" in
+            *"no pull requests found"*|*"no open pull requests"*|*"Could not resolve"*)
+                rm -f "$err"
+                return 2
+                ;;
+        esac
+        if (( attempt++ >= GH_RETRY_ATTEMPTS )); then
+            echo "  warning: gh pr view failed: $(head -1 "$err")" >&2
+            rm -f "$err"
+            return 1
+        fi
+        echo "  gh pr view failed, retrying in ${delay}s (attempt ${attempt}/${GH_RETRY_ATTEMPTS})..." >&2
+        sleep "$delay"
+        delay=$(( delay * 2 ))
+    done
+}
 
 # Check out a PR as a real branch. `git fetch origin pull/N/head:pr-N` produced
 # a branch named pr-N with no upstream at all — fine to work in, but anything
@@ -154,7 +219,7 @@ checkout_pr() {
 
     # cd, not -C: gh has no repo-directory flag, and --repo names the GitHub
     # repo, not the clone to check out into.
-    if ( cd "$target" && gh pr checkout "$pr_num" ); then
+    if ( cd "$target" && gh_retry gh pr checkout "$pr_num" ); then
         return 0
     fi
 
@@ -163,6 +228,14 @@ checkout_pr() {
     git -C "$target" fetch origin "pull/${pr_num}/head:pr-${pr_num}"
     git -C "$target" checkout "pr-${pr_num}"
 }
+
+# How long an open-prs.json is trusted before the PR list is fetched again.
+# `gh pr list --json files` is the slowest call in an upload and it runs once
+# per repo, so a multi-repo `--upload` paid for a full refetch every time even
+# when nothing could plausibly have changed. An hour is short enough that a PR
+# opened this morning shows up, long enough that repeated uploads are free.
+# Set OPEN_PRS_TTL_MINUTES=0 to force a fetch.
+OPEN_PRS_TTL_MINUTES="${OPEN_PRS_TTL_MINUTES:-60}"
 
 generate_repo_context() {
     local sandbox_dir="$1" repo_name="$2" profile="${3:-}"
@@ -180,9 +253,26 @@ generate_repo_context() {
     gh_repo=$(echo "$repo_url" | sed -E 's|.*github\.com[:/]||; s|\.git/?$||')
 
     # open-prs.json — all open PRs, compact structured data
-    format_open_prs "$gh_repo" > "${repo_dir}/open-prs.json" || true
-    if [[ ! -s "${repo_dir}/open-prs.json" ]]; then
-        rm -f "${repo_dir}/open-prs.json"
+    local open_prs="${repo_dir}/open-prs.json"
+    # Age in minutes, or "old enough" when the file is missing or unreadable.
+    # Not `find -newermt "-N minutes"`: the sandbox image's find is bfs, which
+    # takes only absolute ISO timestamps and errors on the relative form — the
+    # check would have silently meant "always stale".
+    local open_prs_age=999999
+    if [[ -f "$open_prs" ]]; then
+        open_prs_age=$(( ( $(date +%s) - $(stat -c %Y "$open_prs" 2>/dev/null || echo 0) ) / 60 ))
+    fi
+    if (( open_prs_age < OPEN_PRS_TTL_MINUTES )); then
+        echo "  open-prs.json is ${open_prs_age}m old (< ${OPEN_PRS_TTL_MINUTES}m), skipping PR list fetch" >&2
+    elif gh_retry fetch_open_prs "$gh_repo" "${open_prs}.tmp"; then
+        # A repo with no open PRs gets `{"prs": []}`, not a missing file: the
+        # absence of the file used to mean "none", "gh failed", and "not a
+        # GitHub repo" all at once, and a session cannot tell those apart.
+        mv "${open_prs}.tmp" "$open_prs"
+    else
+        # Failed fetch: leave the previous file, mtime and all, so the next
+        # upload retries instead of debouncing on a file this run never wrote.
+        rm -f "${open_prs}.tmp"
     fi
 
     # Detect PR from current branch (git state is source of truth, not manifest ref)
@@ -206,13 +296,19 @@ generate_repo_context() {
     fi
 
     echo "  checking branch '${branch}' for PR..." >&2
-    local pr_json
-    pr_json=$(gh pr view "$pr_arg" --repo "$gh_repo" \
-        --json number,title,body,headRefName,baseRefName,labels,assignees 2>/dev/null) || {
-        # Not a PR branch — clean up stale context files
-        rm -f "${repo_dir}/pr-context.md" "${repo_dir}/jira-context.md"
+    local pr_json rc
+    pr_json=$(gh_pr_view_json "$pr_arg" "$gh_repo") || rc=$?
+    if [[ -n "${rc:-}" ]]; then
+        if (( rc == 2 )); then
+            # gh answered: no such PR. Whatever context is here is stale.
+            rm -f "${repo_dir}/pr-context.md" "${repo_dir}/jira-context.md"
+        else
+            # gh could not answer. Deleting here would throw away correct
+            # context on a transient API failure, so keep what is on disk.
+            echo "  keeping existing PR context for ${repo_name} (gh unreachable)" >&2
+        fi
         return 0
-    }
+    fi
 
     local pr_num
     pr_num=$(echo "$pr_json" | jq -r '.number')
