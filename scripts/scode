@@ -7,7 +7,13 @@
 
 set -euo pipefail
 
-SANDBOX_SH="${SANDBOX_SH:-${HOME}/source/openshell-sandbox/scripts/sandbox.sh}"
+# One checkout drives one sandbox: scode, lib.sh, and sandbox.sh all come from
+# here unless $SANDBOX_SH says otherwise. readlink -f so a symlink into ~/bin
+# still resolves to the real repo. An absolute default let a scode from one
+# checkout hand the work to another checkout's sandbox.sh, which is how a
+# manifest fix in one and not the other went unnoticed.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+SANDBOX_SH="${SANDBOX_SH:-${SCRIPT_DIR}/sandbox.sh}"
 SANDBOXES_DIR="${HOME}/sandboxes"
 
 if [[ " $* " == *" --help "* ]] || [[ " $* " == *" -h "* ]]; then
@@ -78,8 +84,29 @@ if [[ -n "$SCODE_PROFILE" ]]; then
     PROFILE_FLAG=" --profile ${SCODE_PROFILE}"
 fi
 
+# scode's OWN lib.sh, not $SANDBOX_SH's. They are usually the same checkout,
+# but SANDBOX_SH defaults to a fixed absolute path — so `./scripts/scode` out
+# of a second checkout or a worktree used to run this script against the other
+# copy's library, and picked up whatever functions that one happened to have.
+source "${SCRIPT_DIR}/lib.sh"
+
+# The profile the sandbox will actually be built with: on a DEFAULT_PROFILE
+# machine that is the site default even with no --profile on the command line.
+EFFECTIVE_PROFILE="${SCODE_PROFILE:-$(site_default_profile)}"
+
 write_tasks_and_open() {
     local dir="$1" cmd="$2"
+
+    # Before `code`, not after: the VS Code terminals open with the folder and
+    # a prompt that reads .profile out of manifest.json. Left to sandbox.sh,
+    # the file only lands after create + clone + upload, and every shell until
+    # then shows the wrong thing. An existing manifest is left alone — its
+    # profile is what the sandbox was built with, and sandbox.sh --ensure
+    # errors on a mismatch rather than letting scode overwrite it here.
+    if [[ ! -f "${dir}/manifest.json" ]]; then
+        init_manifest "$dir" "$sandbox_name" "$EFFECTIVE_PROFILE"
+    fi
+
     mkdir -p "${dir}/.vscode"
     if [[ ! -f "${dir}/.vscode/tasks.json" ]]; then
         cat > "${dir}/.vscode/tasks.json" << TASKS
@@ -124,8 +151,6 @@ if [[ "$1" =~ ^https://[^/]+/browse/([A-Za-z]+-[0-9]+)$ ]]; then
     jira_key="${BASH_REMATCH[1]}"
     sandbox_name="${jira_key,,}"
 
-    source "$(dirname "$SANDBOX_SH")/lib.sh"
-
     sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
     mkdir -p "${sandbox_dir}"
 
@@ -150,8 +175,6 @@ for _arg in "$@"; do
 done
 
 if [[ "$_all_prs" == true ]]; then
-    source "$(dirname "$SANDBOX_SH")/lib.sh"
-
     ENSURE_CMD=""
     for _pr_url in "$@"; do
         [[ "$_pr_url" =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)$ ]]
@@ -161,11 +184,9 @@ if [[ "$_all_prs" == true ]]; then
         repo_name="$(basename "$gh_repo")"
         ref="pr/${pr_num}"
 
-        # ${SCODE_PROFILE:-$(site_default_profile)}: the guard must see the
-        # profile the sandbox will actually be built with, and on a
-        # DEFAULT_PROFILE=personal machine that is personal even with no
-        # --profile on the command line.
-        SANDBOX_PROFILE="${SCODE_PROFILE:-$(site_default_profile)}" guard_private_repo "$repo_url"
+        # The guard must see the profile the sandbox will actually be built
+        # with, not just what was typed — hence EFFECTIVE_PROFILE.
+        SANDBOX_PROFILE="$EFFECTIVE_PROFILE" guard_private_repo "$repo_url"
 
         # Name sandbox after first PR
         if [[ -z "$ENSURE_CMD" ]]; then
@@ -261,8 +282,7 @@ repo_url="$(git -C "$source_path" remote get-url origin 2>/dev/null)" || {
 }
 
 # Block private repos for personal profile before opening VS Code
-source "$(dirname "$SANDBOX_SH")/lib.sh"
-SANDBOX_PROFILE="$SCODE_PROFILE" guard_private_repo "$repo_url"
+SANDBOX_PROFILE="$EFFECTIVE_PROFILE" guard_private_repo "$repo_url"
 
 sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
 write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG} --repo ${repo_url} --ref ${ref} --source-dir ${source_path}"

@@ -244,14 +244,8 @@ connect_sandbox() {
 }
 
 # ---------------------------------------------------------------------------
-# Short name for OpenShell (19-char limit from DNS label constraint)
+# Name resolution (short_name lives in lib.sh — scode needs it too)
 # ---------------------------------------------------------------------------
-
-short_name() {
-    local hash
-    hash=$(printf '%s' "$1" | md5sum | cut -c1-12)
-    echo "sb-${hash}"
-}
 
 # Resolve full name → openshell name from manifest
 resolve_openshell_name() {
@@ -375,29 +369,8 @@ write_manifest() {
     local now
     now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-    if [[ ! -f "$manifest" ]]; then
-        local os_name
-        os_name=$(short_name "$sandbox_name")
-        local manifest_args=(
-            --arg name "$sandbox_name"
-            --arg os_name "$os_name"
-            --arg created "$now"
-        )
-        local manifest_expr='{name: $name, openshell_name: $os_name, created: $created, repos: {}}'
-        if [[ -n "$SANDBOX_PROFILE" ]]; then
-            manifest_args+=(--arg profile "$SANDBOX_PROFILE")
-            manifest_expr='{name: $name, openshell_name: $os_name, profile: $profile, created: $created, repos: {}}'
-        fi
-        jq -n "${manifest_args[@]}" "$manifest_expr" > "${manifest}.tmp"
-        mv "${manifest}.tmp" "$manifest"
-    fi
-
-    # Update profile if specified (handles recreate with different profile)
-    if [[ -n "$SANDBOX_PROFILE" ]]; then
-        jq --arg profile "$SANDBOX_PROFILE" '.profile = $profile' \
-            "$manifest" > "${manifest}.tmp"
-        mv "${manifest}.tmp" "$manifest"
-    fi
+    # Skeleton + profile (profile update handles recreate on another profile)
+    init_manifest "$sandbox_dir" "$sandbox_name" "$SANDBOX_PROFILE"
 
     jq \
         --arg repo "$repo_name" \
@@ -750,7 +723,10 @@ upload_static() {
         sed -i '/^## Jira$/,/^## /{ /^## Jira$/d; /^## /!d; }' "${tmp}/source/CLAUDE.md"
     fi
 
-    # copy: manifest — absent on the first create, written by the repo loop
+    # copy: manifest — init_manifest() writes the skeleton before create, so
+    # this is present from the first upload. claude-wrapper.sh reads .profile
+    # out of the sandbox copy to decide the model, and it only ever gets what
+    # this function ships.
     if [[ -f "${sandbox_dir}/manifest.json" ]]; then
         cp "${sandbox_dir}/manifest.json" "${tmp}/source/manifest.json"
     fi
@@ -1451,6 +1427,11 @@ fi
 # Create sandbox
 # ---------------------------------------------------------------------------
 
+# Host-side state dir + manifest first: the manifest is how the host learns the
+# profile, and everything below is slow — an OAuth prompt from
+# ensure_gws_creds, then the 120s create. The repo loop fills in .repos later.
+init_manifest "${SANDBOXES_DIR}/${SANDBOX_NAME}" "$SANDBOX_NAME" "$SANDBOX_PROFILE"
+
 if [[ "$SANDBOX_PROFILE" != "personal" ]]; then
     ensure_gws_creds
 fi
@@ -1512,21 +1493,9 @@ else
     rm -f "$CREATE_LOG"
 fi
 
-# Create host-side state directory (full name, not short)
-if [[ -n "$SANDBOX_NAME" ]]; then
-    mkdir -p "${SANDBOXES_DIR}/${SANDBOX_NAME}"
-fi
-
 # The sandbox exists on the policy rendered above, so that render is now the
 # effective one. upload_config -> upload_static ships it below.
 install_policy "$POLICY_FILE" "${SANDBOXES_DIR}/${SANDBOX_NAME}"
-
-# Update profile in manifest (handles --recreate with --no-clone where write_manifest is never called)
-if [[ -n "$SANDBOX_PROFILE" && -f "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json" ]]; then
-    jq --arg profile "$SANDBOX_PROFILE" '.profile = $profile' \
-        "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json" > "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json.tmp"
-    mv "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json.tmp" "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json"
-fi
 
 # ---------------------------------------------------------------------------
 # Upload credentials
@@ -1581,6 +1550,10 @@ if [[ "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
         echo "  uploading ${repo_name}..." >&2
         upload_repo "$SANDBOX_TARGET" "$SANDBOX_DIR" "$repo_name"
     done
+
+    # The manifest uploaded before create lists no repos yet. Ship it again now
+    # that the loop has filled it in — the sandbox reads its repo list here.
+    upload_static "$SANDBOX_TARGET" "$SANDBOX_DIR"
 
     WORKDIR="/sandbox/source/"
 fi

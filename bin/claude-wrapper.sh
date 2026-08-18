@@ -13,8 +13,11 @@ if [[ -S "$SOCKET" ]]; then
     cmd="dtach -a $SOCKET"
 else
     claude_cmd="claude"
-    if [[ -f /sandbox/source/manifest.json ]] && \
-       [[ "$(jq -r '.profile // empty' /sandbox/source/manifest.json 2>/dev/null)" == "personal" ]]; then
+    # $SANDBOX_PROFILE comes from /sandbox/.env, written and uploaded on the
+    # create path itself. manifest.json was the old source and lost this race:
+    # on a first create it reached the sandbox after the wrapper had already
+    # started, so a personal sandbox silently came up on the default model.
+    if [[ "${SANDBOX_PROFILE:-}" == "personal" ]]; then
         claude_cmd="$claude_cmd --model claude-opus-5[1m]"
     fi
     claude_cmd="$claude_cmd --dangerously-skip-permissions"
