@@ -10,7 +10,7 @@
 # Runs sandbox.sh against a scratch HOME with --dryrun, so no openshell calls
 # are made. The hot-swap paths need a live enforcer and are not covered.
 #
-# Run: scripts/test-policy-artifact.sh
+# Run: tests/test-policy-artifact.sh
 
 set -euo pipefail
 
@@ -23,6 +23,12 @@ trap 'rm -rf "$TMP"' EXIT
 WORK="${TMP}/work"
 mkdir -p "$WORK"
 cp -r "${REPO_ROOT}/scripts" "${REPO_ROOT}/config" "${REPO_ROOT}/policies" "$WORK/"
+# site.env is gitignored and absent on a fresh clone (and in CI); sandbox.sh
+# refuses to run without one. Values are never dialled — every run is --dryrun.
+if [[ ! -f "${WORK}/config/site.env" ]]; then
+    printf 'OTEL_URL=http://x:4318\nPROMETHEUS_URL=http://x:9090\nLOKI_URL=http://x:3100\n' \
+        > "${WORK}/config/site.env"
+fi
 SANDBOX_SH="${WORK}/scripts/sandbox.sh"
 
 FAKE_HOME="${TMP}/home"

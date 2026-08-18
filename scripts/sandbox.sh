@@ -319,9 +319,7 @@ clone_repo_host() {
 
     if [[ -n "$ref" ]]; then
         if [[ "$ref" =~ ^pr/([0-9]+)$ ]]; then
-            local pr_num="${BASH_REMATCH[1]}"
-            run git -C "$target" fetch origin "pull/${pr_num}/head:pr-${pr_num}"
-            run git -C "$target" checkout "pr-${pr_num}"
+            checkout_pr "$target" "${BASH_REMATCH[1]}"
         elif [[ "$ref" =~ ^tag/ ]]; then
             run git -C "$target" checkout "tags/${ref#tag/}"
         else
@@ -999,7 +997,8 @@ elif [[ -n "$DELETE_NAME" ]]; then
     OS_NAME=$(resolve_openshell_name "$DELETE_NAME")
     run openshell sandbox delete "$OS_NAME" "${GW_FLAG[@]}" || true
     if [[ -d "${SANDBOXES_DIR}/${DELETE_NAME}" ]]; then
-        rm -rf "${SANDBOXES_DIR}/${DELETE_NAME}"
+        # ${...:?} so an empty name aborts instead of deleting ~/sandboxes
+        rm -rf "${SANDBOXES_DIR:?}/${DELETE_NAME:?}"
         echo "removed local state: ${SANDBOXES_DIR}/${DELETE_NAME}" >&2
     fi
     exit 0

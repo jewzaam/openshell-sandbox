@@ -151,6 +151,17 @@ Auto-detection: `CLAUDE_CODE_USE_VERTEX` set → work, otherwise → home.
 
 ## Development
 
+### Checks
+
+```bash
+make check        # shellcheck + self-checks — the default goal
+make test-lint    # shellcheck, warnings and up
+make test-unit    # the tests/ self-checks
+```
+
+CI runs the same two targets on every push and PR to `main` (`quality` and
+`test`). `make test-lint` needs `shellcheck`; nothing else needs installing.
+
 ### Adding scripts
 
 Put scripts in `bin/`. They are copied to `/sandbox/bin/` at image build time
