@@ -127,6 +127,91 @@ fetch_jira_context() {
 
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ---------------------------------------------------------------------------
+# Upload change detection
+# ---------------------------------------------------------------------------
+#
+# `openshell sandbox upload` is tar-over-SSH with no delta protocol, and
+# upload_repo() rm -rf's the sandbox copy first, so every upload re-sends the
+# whole repo including .git. On a multi-repo sandbox the reference repos
+# (standards, knowledgebase, a vendored upstream) never change and dominate the
+# payload. The only lever is not sending a repo at all.
+#
+# The signal is mtime against .repos[<name>].last_upload in manifest.json, and
+# only --quick consults it. A plain --upload re-sends every repo: it rm -rf's
+# the sandbox copy first, so it doubles as the way to wipe edits a session made
+# inside the sandbox, and skipping on "the host has not changed" would assume
+# the very thing it exists to fix.
+
+# Stamp .repos[<name>].<field> with an absolute UTC timestamp.
+#
+# Whole seconds, because that is all `find -newermt` accepts — bfs, the find in
+# the sandbox image, rejects a fractional timestamp outright. Truncation puts
+# the stamp at or before the moment it describes, so a file written earlier in
+# that same second reads as newer and the repo is tarred again; the next stamp
+# settles it. Rounding up instead would defer such a file to whenever the repo
+# next changes for any other reason, since the skip and the tar are both
+# whole-repo. Neither is a correctness problem. Truncating needs no arithmetic.
+record_repo_timestamp() {
+    local sandbox_dir="$1" repo_name="$2" field="$3"
+    local manifest="${sandbox_dir}/manifest.json"
+    [[ -f "$manifest" ]] || return 0
+    local ts
+    ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    jq --arg r "$repo_name" --arg f "$field" --arg ts "$ts" \
+        '.repos[$r] = (.repos[$r] // {}) + {($f): $ts}' \
+        "$manifest" > "${manifest}.tmp" && mv "${manifest}.tmp" "$manifest"
+}
+
+# True when the repo has anything modified since its last upload — including
+# never having been uploaded, or a manifest that does not say.
+#
+# ponytail: mtime only, like make and like rsync's default. A file edited and
+# restored to its original size and mtime is missed. Content hashing a 59M .git
+# costs more than the tar it saves.
+repo_changed_since_upload() {
+    local sandbox_dir="$1" repo_name="$2"
+    local manifest="${sandbox_dir}/manifest.json"
+
+    local last_upload=""
+    if [[ -f "$manifest" ]]; then
+        last_upload=$(jq -r --arg r "$repo_name" '.repos[$r].last_upload // empty' \
+            "$manifest" 2>/dev/null || true)
+    fi
+    if [[ -z "$last_upload" ]]; then
+        echo "  ${repo_name}: no last_upload recorded, uploading" >&2
+        return 0
+    fi
+
+    # -print -quit stops at the first newer path, so a changed repo usually
+    # costs far less than the full walk an unchanged one pays.
+    #
+    # The path is printed, not just the verdict: "it uploads every time" is
+    # otherwise indistinguishable from a broken stamp, and the answer is
+    # whichever file the walk tripped on.
+    #
+    # Three paths are excluded because `git status` rewrites them and nothing
+    # else does. Measured, not assumed: status touches exactly `.git` and
+    # `.git/index`, plus a transient `.git/index.lock` whose creation and
+    # deletion is what moves the `.git` directory's own mtime. Any editor or
+    # shell prompt polling status therefore made every repo look modified,
+    # forever. The rest of `.git` is still walked, so staging is caught
+    # (`git add` always writes a blob under `.git/objects`), as are commits
+    # (refs, logs) and branch switches (HEAD).
+    #
+    # ponytail: the gap is an index-only edit that writes no object — `git
+    # reset` to unstage, with nothing else touched. --quick misses that; a
+    # plain --upload sends it.
+    local repo_dir="${sandbox_dir}/${repo_name}" newer
+    newer=$(find "$repo_dir" -newermt "$last_upload" \
+        ! -path "${repo_dir}/.git" \
+        ! -path "${repo_dir}/.git/index" \
+        ! -path "${repo_dir}/.git/index.lock" \
+        -print -quit 2>/dev/null || true)
+    [[ -n "$newer" ]] || return 1
+    echo "  ${repo_name}: newer than ${last_upload} — ${newer}" >&2
+}
+
 format_open_prs() {
     python3 "${_LIB_DIR}/format-open-prs.py" "$@"
 }
@@ -264,6 +349,7 @@ generate_repo_context() {
     if [[ -f "$open_prs" ]]; then
         open_prs_age=$(( ( $(date +%s) - $(stat -c %Y "$open_prs" 2>/dev/null || echo 0) ) / 60 ))
     fi
+
     if (( open_prs_age < OPEN_PRS_TTL_MINUTES )); then
         echo "  open-prs.json is ${open_prs_age}m old (< ${OPEN_PRS_TTL_MINUTES}m), skipping PR list fetch" >&2
     elif fetch_open_prs "$gh_repo" "${open_prs}.tmp"; then

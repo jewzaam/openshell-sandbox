@@ -89,6 +89,23 @@ and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
     skipped check reads identically to a passing one. `net_check` needs
     `--max-time`, not just `--connect-timeout`: the latter only bounds the hop
     to the L7 proxy, which always succeeds, so a stalled upstream hangs forever.
+16. **Only `--quick` skips an unchanged repo. A plain `--upload` always sends.**
+    `upload_repo()` rm -rf's the sandbox copy before uploading, so a plain
+    `--upload` is how edits a session made *inside* the sandbox get wiped back
+    to host state. Skipping there on "the host has not changed" would assume
+    host and sandbox agree — the one thing that path exists to fix. `--quick`
+    takes the other bargain: no gh/Jira calls, and skip any repo untouched
+    since `.repos[<name>].last_upload`, because upload is a full tar with no
+    delta and the reference repos dominate the payload. That mtime walk must
+    keep excluding `.git`, `.git/index` and `.git/index.lock`: `git status`
+    rewrites exactly those three and nothing else, so any editor or shell
+    prompt polling status makes every repo look modified on every run. The
+    rest of `.git` is still walked, which is what keeps staging, commits and
+    branch switches detected. Relatedly, do not add
+    write-only-if-changed logic to the context writers to keep repos "clean":
+    the open-prs debounce reads `open-prs.json`'s mtime and would stop
+    advancing. `tests/test-upload-skip.sh` and `tests/test-open-prs.sh` fail if
+    either returns.
 
 ## Settled, do not re-evaluate
 
@@ -135,11 +152,12 @@ and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
   No open PRs is `{"prs": []}`, not a missing file — absence used to mean
   "none", "gh failed", and "not GitHub" at once. `gh pr list --json files` is
   the slowest call in an upload and runs per repo, so a file younger than
-  `OPEN_PRS_TTL_MINUTES` (default 60) is reused; set it to 0 to force. A failed
-  fetch writes `fetch_error` + `fetch_error_at` into the file (keeping any real
-  `prs` already there) so the failure is debounced like a success — these
-  failures are repo-pinned, and a repo gh cannot read would otherwise burn a
-  doomed call on every upload forever.
+  `OPEN_PRS_TTL_MINUTES` (default 60) is reused; set it to 0 to force. The
+  debounce reads the file's own mtime, so the file must be written on every
+  fetch. A failed fetch writes `fetch_error` + `fetch_error_at` into the file
+  (keeping any real `prs` already there) so the failure is debounced like a
+  success — these failures are repo-pinned, and a repo gh cannot read would
+  otherwise burn a doomed call on every upload forever.
 - **`scode` accepts Jira URLs.** `scode https://...atlassian.net/browse/KEY-123`
   fetches issue context into `jira-context.md`, creates a no-repo sandbox named
   `key-123` (lowercased).

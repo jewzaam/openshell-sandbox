@@ -70,6 +70,7 @@ run_context() {
     : > "$GH_LOG"
     generate_repo_context "$SBX" myrepo personal >/dev/null 2>&1 || true
 }
+age_fetch() { touch -d "$1" "$OPEN_PRS"; }
 listed() { grep -qF 'pr list' "$GH_LOG"; }
 
 # --- no open PRs still produces a file ---
@@ -87,11 +88,19 @@ listed && { echo "FAIL: refetched a file written seconds ago" >&2; fail=1; }
     || { echo "FAIL: skipped fetch still rewrote the file" >&2; fail=1; }
 
 # --- past the TTL it refetches ---
-touch -d '2 hours ago' "$OPEN_PRS"
+age_fetch '2 hours ago'
 GH_LIST_JSON="$ONE_PR" run_context
 listed || { echo "FAIL: a 2h-old file was not refetched" >&2; fail=1; }
 [[ "$(jq -r '.prs[0].number' "$OPEN_PRS")" == "5" ]] \
     || { echo "FAIL: refetch did not update the file" >&2; fail=1; }
+
+# --- a refetch returning the SAME list still resets the debounce: the file is
+# written unconditionally, so its mtime advances either way ---
+age_fetch '2 hours ago'
+GH_LIST_JSON="$ONE_PR" run_context
+listed || { echo "FAIL: a 2h-old file was not refetched (identical-content case)" >&2; fail=1; }
+GH_LIST_JSON="$ONE_PR" run_context
+listed && { echo "FAIL: an identical PR list left the debounce defeated" >&2; fail=1; }
 
 # --- TTL 0 forces a fetch ---
 GH_LIST_JSON="$EMPTY_LIST" OPEN_PRS_TTL_MINUTES=0 run_context
@@ -99,14 +108,16 @@ listed || { echo "FAIL: OPEN_PRS_TTL_MINUTES=0 did not force a fetch" >&2; fail=
 
 # --- a failed fetch keeps the previous PRs and marks the failure ---
 echo '{"prs":[{"number":9}]}' > "$OPEN_PRS"
-touch -d '2 hours ago' "$OPEN_PRS"
+age_fetch '2 hours ago'
 run_context   # no GH_LIST_JSON -> gh pr list exits 1
 [[ "$(jq -r '.prs[0].number' "$OPEN_PRS" 2>/dev/null)" == "9" ]] \
     || { echo "FAIL: a failed fetch overwrote the previous open-prs.json" >&2; fail=1; }
 [[ "$(jq -r '.fetch_error // empty' "$OPEN_PRS")" == *"org/myrepo"* ]] \
     || { echo "FAIL: a failed fetch left no fetch_error marker" >&2; fail=1; }
-[[ ! -f "${OPEN_PRS}.tmp" ]] \
-    || { echo "FAIL: a failed fetch left open-prs.json.tmp behind" >&2; fail=1; }
+# The staging file is cleaned up on every path — it sits in the repo, so a
+# leftover would be uploaded into the sandbox as if it were repo content.
+[[ -z "$(find "$REPO" -maxdepth 1 -name '*.tmp' -print -quit)" ]] \
+    || { echo "FAIL: a failed fetch left a staging file in the repo" >&2; fail=1; }
 
 # --- and the failure is debounced: these failures are repo-pinned, so the
 # next upload must not pay for the same doomed call ---
