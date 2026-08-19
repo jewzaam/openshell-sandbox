@@ -123,6 +123,25 @@ run_context
 [[ "$(jq -r '.prs // "absent"' "$OPEN_PRS")" == "absent" ]] \
     || { echo "FAIL: a failed fetch claimed a PR list it never got" >&2; fail=1; }
 
+# --- every manifest URL spelling yields the same --repo slug. `.git` and a
+# trailing slash are independent: `…/standards/` used to reach gh as
+# `jewzaam/standards/`, which it rejects, and the failure was indistinguishable
+# from a repo with no PRs. ---
+for url in \
+    "git@github.com:org/myrepo.git" \
+    "git@github.com:org/myrepo" \
+    "git@github.com:org/myrepo/" \
+    "git@github.com:org/myrepo.git/" \
+    "https://github.com/org/myrepo.git" \
+    "https://github.com/org/myrepo/"
+do
+    rm -f "$OPEN_PRS"
+    jq -n --arg u "$url" '{name:"probe",repos:{myrepo:{url:$u}}}' > "${SBX}/manifest.json"
+    GH_LIST_JSON="$EMPTY_LIST" run_context
+    grep -qF -- '--repo org/myrepo --state' "$GH_LOG" \
+        || { echo "FAIL: ${url} -> $(grep -F 'pr list' "$GH_LOG" || echo 'no pr list call')" >&2; fail=1; }
+done
+
 # --- a non-GitHub repo is left alone ---
 rm -f "$OPEN_PRS"   # the failure case above recorded one
 jq -n '{name:"probe",repos:{myrepo:{url:"git@gitlab.com:org/myrepo.git"}}}' > "${SBX}/manifest.json"

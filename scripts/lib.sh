@@ -249,7 +249,10 @@ generate_repo_context() {
     [[ "$repo_url" =~ github\.com ]] || return 0
 
     local gh_repo
-    gh_repo=$(echo "$repo_url" | sed -E 's|.*github\.com[:/]||; s|\.git/?$||')
+    # Trailing slashes are optional and independent of .git: the manifest holds
+    # both `…/standards/` and `…/knowledgebase.git/`. Stripping only `.git/?`
+    # left the first spelling as `jewzaam/standards/`, which gh rejects.
+    gh_repo=$(echo "$repo_url" | sed -E 's|.*github\.com[:/]||; s|(\.git)?/*$||')
 
     # open-prs.json — all open PRs, compact structured data
     local open_prs="${repo_dir}/open-prs.json"
