@@ -54,7 +54,8 @@ def main():
     if result.returncode != 0:
         # Exit non-zero so the caller can tell "the fetch failed" from "this
         # repo has no open PRs" — the second is a fact worth writing down.
-        print(f"  warning: gh pr list failed for {repo}", file=sys.stderr)
+        print(f"  warning: gh pr list failed for {repo}: {result.stderr.strip()}",
+              file=sys.stderr)
         sys.exit(1)
 
     prs = json.loads(result.stdout)
