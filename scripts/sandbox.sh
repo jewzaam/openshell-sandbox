@@ -70,6 +70,7 @@ NO_CLONE=false
 NO_CONNECT=false
 DOWNLOAD_MODE=false
 UPLOAD_MODE=false
+QUICK_MODE=false
 ADD_REPO_MODE=false
 CREATE_MODE=false
 ENSURE_MODE=false
@@ -173,6 +174,9 @@ OPTIONS:
     --add-repo [NAME] Add repo(s) to existing sandbox (use --repo for URL)
     --download [NAME] Download repos from sandbox to ~/sandboxes/<name>/
     --upload [NAME]   Upload local repo changes back into sandbox
+    -q, --quick       With --upload: skip context generation, and skip repos
+                      unchanged since their last upload. Plain --upload always
+                      sends, which is how sandbox-side edits get wiped
     --policy NAME     Policy name or path (e.g. research, work). Standalone: hot-swap on running sandbox
     --profile NAME    Credential profile (e.g. personal). Controls env vars, uploads, and default policy.
                       Only valid with --create, --recreate, or --ensure — applied at build, not after
@@ -197,6 +201,7 @@ EXAMPLES:
     $(basename "$0") --add-repo myapp --repo git@github.com:org/ui.git --source-dir ~/source/ui
     $(basename "$0") --download myapp
     $(basename "$0") --upload myapp --repo myapp
+    $(basename "$0") --upload myapp --quick
     $(basename "$0") --connect myapp
     $(basename "$0") --delete myapp
 EOF
@@ -350,14 +355,31 @@ upload_repo() {
             guard_private_repo "$origin_url"
         fi
     fi
-    # Auto-generate pr-context.md + jira-context.md if repo is a PR checkout
-    generate_repo_context "$sandbox_dir" "$repo_name" "${effective_profile:-${SANDBOX_PROFILE:-}}"
+    # A plain --upload always sends, even when the host copy has not changed.
+    # It rm -rf's the sandbox copy first, so it is how a session's edits inside
+    # the sandbox get wiped back to host state — an unconditional skip would
+    # take that away, and "the host and sandbox agree" is exactly what it
+    # cannot assume.
+    #
+    # --quick is the opposite bargain: skip the per-repo gh and Jira calls, and
+    # skip any repo the host has not touched since its last upload. Fast path,
+    # trusts the sandbox copy.
+    if [[ "$QUICK_MODE" != true ]]; then
+        generate_repo_context "$sandbox_dir" "$repo_name" "${effective_profile:-${SANDBOX_PROFILE:-}}"
+    elif ! repo_changed_since_upload "$sandbox_dir" "$repo_name"; then
+        echo "  ${repo_name} unchanged locally, skipping (--quick)" >&2
+        return 0
+    fi
 
     run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
         -- rm -rf "/sandbox/source/${repo_name}" 2>/dev/null || true
     run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
         --no-git-ignore \
         "${sandbox_dir}/${repo_name}" /sandbox/source/
+
+    # Only a real upload earns a stamp; a dryrun that stamped would make the
+    # next real run skip a repo it never sent.
+    [[ "$DRYRUN" == true ]] || record_repo_timestamp "$sandbox_dir" "$repo_name" last_upload
 }
 
 write_manifest() {
@@ -376,7 +398,7 @@ write_manifest() {
         --arg ref "$ref" \
         --arg sha "$sha" \
         --arg ts "$now" \
-        '.repos[$repo] = {url: $url, ref: $ref, sha: $sha, cloned_at: $ts}' \
+        '.repos[$repo] = (.repos[$repo] // {}) + {url: $url, ref: $ref, sha: $sha, cloned_at: $ts}' \
         "$manifest" > "${manifest}.tmp"
     mv "${manifest}.tmp" "$manifest"
 }
@@ -402,6 +424,7 @@ download_sandbox() {
             "/sandbox/source/${repo_name}" "${dl_tmp}/${repo_name}"
         mkdir -p "${sandbox_dir}/${repo_name}"
         run rsync -a --delete --exclude=.venv "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
+        [[ "$DRYRUN" == true ]] || record_repo_timestamp "$sandbox_dir" "$repo_name" last_download
     done
     rm -rf "$dl_tmp"
 }
@@ -762,7 +785,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --refresh)
             REFRESH_MODE=true
-            if [[ $# -ge 2 && "$2" != --* ]]; then
+            if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
             else
                 SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --refresh requires NAME (not in a sandbox directory)" >&2; exit 1; }
@@ -771,7 +794,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --recreate)
             RECREATE_MODE=true
-            if [[ $# -ge 2 && "$2" != --* ]]; then
+            if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
             else
                 SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --recreate requires NAME (not in a sandbox directory)" >&2; exit 1; }
@@ -801,7 +824,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --ensure)
             ENSURE_MODE=true
-            if [[ $# -ge 2 && "$2" != --* ]]; then
+            if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
             else
                 SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --ensure requires NAME (not in a sandbox directory)" >&2; exit 1; }
@@ -810,7 +833,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --add-repo)
             ADD_REPO_MODE=true
-            if [[ $# -ge 2 && "$2" != --* ]]; then
+            if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
             else
                 SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --add-repo requires NAME (not in a sandbox directory)" >&2; exit 1; }
@@ -819,7 +842,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --download)
             DOWNLOAD_MODE=true
-            if [[ $# -ge 2 && "$2" != --* ]]; then
+            if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
             else
                 SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --download requires NAME (not in a sandbox directory)" >&2; exit 1; }
@@ -828,15 +851,19 @@ while [[ $# -gt 0 ]]; do
             ;;
         --upload)
             UPLOAD_MODE=true
-            if [[ $# -ge 2 && "$2" != --* ]]; then
+            if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
             else
                 SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --upload requires NAME (not in a sandbox directory)" >&2; exit 1; }
                 shift
             fi
             ;;
+        -q|--quick)
+            QUICK_MODE=true
+            shift
+            ;;
         --connect)
-            if [[ $# -ge 2 && "$2" != --* ]]; then
+            if [[ $# -ge 2 && "$2" != -* ]]; then
                 CONNECT_NAME="$2"; shift 2
             else
                 CONNECT_NAME="$(infer_sandbox_name)" || { echo "error: --connect requires NAME (not in a sandbox directory)" >&2; exit 1; }
@@ -844,7 +871,7 @@ while [[ $# -gt 0 ]]; do
             fi
             ;;
         --delete)
-            if [[ $# -ge 2 && "$2" != --* ]]; then
+            if [[ $# -ge 2 && "$2" != -* ]]; then
                 DELETE_NAME="$2"; shift 2
             else
                 DELETE_NAME="$(infer_sandbox_name)" || { echo "error: --delete requires NAME (not in a sandbox directory)" >&2; exit 1; }
@@ -1050,6 +1077,14 @@ if [[ "$UPLOAD_MODE" == true ]]; then
     upload_sandbox "$OS_NAME" "$SANDBOX_DIR" "$target_repo"
     upload_static "$OS_NAME" "$SANDBOX_DIR"
     echo "done." >&2
+    # Last line, so it survives a long upload log. The change check reads
+    # mtimes and skips `.git/index`, which is the only thing an unstage
+    # touches — see repo_changed_since_upload().
+    if [[ "$QUICK_MODE" == true ]]; then
+        echo "note: --quick skips repos with no detected change, and unstaging" >&2
+        echo "  (git reset) alone is not detected. Re-run without --quick to" >&2
+        echo "  force every repo." >&2
+    fi
     exit 0
 fi
 
