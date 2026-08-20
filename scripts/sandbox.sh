@@ -176,7 +176,8 @@ OPTIONS:
     --upload [NAME]   Upload local repo changes back into sandbox
     -q, --quick       With --upload: skip context generation, and skip repos
                       unchanged since their last upload. Plain --upload always
-                      sends, which is how sandbox-side edits get wiped
+                      sends, which is how sandbox-side edits get wiped.
+                      With --refresh: skip per-repo context, config only
     --policy NAME     Policy name or path (e.g. research, work). Standalone: hot-swap on running sandbox
     --profile NAME    Credential profile (e.g. personal). Controls env vars, uploads, and default policy.
                       Only valid with --create, --recreate, or --ensure — applied at build, not after
@@ -202,6 +203,7 @@ EXAMPLES:
     $(basename "$0") --download myapp
     $(basename "$0") --upload myapp --repo myapp
     $(basename "$0") --upload myapp --quick
+    $(basename "$0") --refresh myapp --quick
     $(basename "$0") --connect myapp
     $(basename "$0") --delete myapp
 EOF
@@ -1401,15 +1403,30 @@ if [[ "$REFRESH_MODE" == true ]]; then
     echo "refreshing config on ${SANDBOX_NAME}..." >&2
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
     upload_config "$OS_NAME" "$SANDBOX_DIR"
-    # Regenerate and upload context files for PR repos
-    if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
+    # Regenerate and upload context files for PR repos.
+    #
+    # --quick means the same thing here as in --upload: skip the per-repo gh
+    # and Jira calls. There is no second half to it — --refresh uploads no
+    # repos, so there is nothing to skip on "unchanged since last upload", and
+    # re-sending context nobody regenerated is bytes for bytes' sake. The
+    # top-level jira-context.md below is one file copy and no API call, so
+    # --quick leaves it alone.
+    if [[ "$QUICK_MODE" == true ]]; then
+        echo "  --quick: skipping per-repo context generation" >&2
+    elif [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
         for repo_name in $(jq -r '.repos | keys[]' "${SANDBOX_DIR}/manifest.json"); do
             generate_repo_context "$SANDBOX_DIR" "$repo_name" "${SANDBOX_PROFILE:-}"
             for ctx_file in pr-context.md jira-context.md open-prs.json; do
                 if [[ -f "${SANDBOX_DIR}/${repo_name}/${ctx_file}" ]]; then
                     echo "  uploading ${ctx_file} for ${repo_name}..." >&2
+                    # Trailing slash is load-bearing: `sandbox upload` treats a
+                    # dest without one as the file's new *name*, so this would
+                    # try to write a regular file over the repo directory and
+                    # the remote tar fails. --no-git-ignore so the context
+                    # files upload whether or not the host gitignores them.
                     run openshell sandbox upload "$OS_NAME" "${GW_FLAG[@]}" \
-                        "${SANDBOX_DIR}/${repo_name}/${ctx_file}" "/sandbox/source/${repo_name}"
+                        --no-git-ignore \
+                        "${SANDBOX_DIR}/${repo_name}/${ctx_file}" "/sandbox/source/${repo_name}/"
                 fi
             done
         done

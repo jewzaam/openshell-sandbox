@@ -11,12 +11,20 @@ SHELLCHECK ?= shellcheck
 SHELL_SOURCES ?= $(wildcard bin/*.sh fetchsvc/*.sh scripts/*.sh scripts/explore/*.sh tests/*.sh) scripts/scode
 TEST_SCRIPTS ?= $(wildcard tests/test-*.sh)
 
-.PHONY: build check clean help test-lint test-unit
+.PHONY: build build-force check clean help test-lint test-unit
 
 check: test-lint test-unit  ## Run the full quality gate
 
 build:  ## Build the sandbox container image
 	$(CONTAINER_TOOL) build -t $(IMAGE_REF) -f Containerfile .
+
+# `npm install -g @anthropic-ai/claude-code` pins nothing, so its layer caches
+# on the Containerfile text — which never changes when a new Claude Code is
+# published. A normal `make build` then reuses the layer and ships the old CLI.
+# --no-cache is the whole point of this target; --pull picks up a newer base at
+# the same time. Rebuilds apt and pip too, so it is slow by design.
+build-force: clean  ## Rebuild the image from scratch (no cache, fresh base)
+	$(CONTAINER_TOOL) build --no-cache --pull -t $(IMAGE_REF) -f Containerfile .
 
 clean:  ## Remove built image
 	$(CONTAINER_TOOL) rmi $(IMAGE_REF) 2>/dev/null || true
