@@ -138,10 +138,10 @@ _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # payload. The only lever is not sending a repo at all.
 #
 # The signal is mtime against .repos[<name>].last_upload in manifest.json, and
-# only --quick consults it. A plain --upload re-sends every repo: it rm -rf's
-# the sandbox copy first, so it doubles as the way to wipe edits a session made
-# inside the sandbox, and skipping on "the host has not changed" would assume
-# the very thing it exists to fix.
+# every --upload consults it unless --force is given. --force re-sends every
+# repo: upload_repo() rm -rf's the sandbox copy first, so it doubles as the way
+# to wipe edits a session made inside the sandbox, and skipping on "the host has
+# not changed" would assume the very thing --force exists to fix.
 
 # Stamp .repos[<name>].<field> with an absolute UTC timestamp.
 #
@@ -200,8 +200,8 @@ repo_changed_since_upload() {
     # (refs, logs) and branch switches (HEAD).
     #
     # ponytail: the gap is an index-only edit that writes no object — `git
-    # reset` to unstage, with nothing else touched. --quick misses that; a
-    # plain --upload sends it.
+    # reset` to unstage, with nothing else touched. The walk misses that;
+    # --upload --force sends it.
     local repo_dir="${sandbox_dir}/${repo_name}" newer
     newer=$(find "$repo_dir" -newermt "$last_upload" \
         ! -path "${repo_dir}/.git" \

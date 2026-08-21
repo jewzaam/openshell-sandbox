@@ -10,8 +10,18 @@
 ARG BASE_IMAGE=docker.io/library/python:3.13-slim
 FROM ${BASE_IMAGE}
 
+# shellcheck and rsync are here for `make check`, which runs INSIDE the
+# sandbox: test-lint is shellcheck, and tests/test-upload-skip.sh silently
+# skips its --download half without rsync. shellcheck is a 34MB static Haskell
+# binary, the largest single thing in this line; the alternative is a
+# completion gate that cannot run where the work happens.
+#
+# No openssh-client, deliberately. Nothing commits in a sandbox, so git never
+# needs ssh-keygen — and adding it would make the uploaded gitconfig's
+# commit.gpgsign=true reachable. See upload_config() in scripts/sandbox.sh.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl git gawk iproute2 nftables make jq vim-nox python3-tk dtach \
+        shellcheck rsync \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js (Claude Code, MCP servers)
