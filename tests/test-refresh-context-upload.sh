@@ -62,15 +62,13 @@ for f in pr-context.md jira-context.md open-prs.json; do
         || { echo "FAIL: ${f} dest is not the repo directory: ${line}" >&2; fail=1; }
 done
 
-# --quick skips the per-repo block outright: no gh calls, and nothing to
-# re-send when nothing was regenerated. Config still uploads.
-quick_out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --refresh probe --quick --dryrun 2>&1 || true)"
-if grep -F 'sandbox upload' <<<"$quick_out" | grep -qF 'myrepo/'; then
-    echo "FAIL: --refresh --quick still uploaded per-repo context" >&2
-    fail=1
-fi
-grep -qF -- '--quick: skipping per-repo context generation' <<<"$quick_out" \
-    || { echo "FAIL: --refresh --quick did not say what it skipped" >&2; fail=1; }
+# --force is an upload/download flag; --refresh has no repos to change-check,
+# so it must regenerate and upload context either way.
+force_out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --refresh probe --force --dryrun 2>&1 || true)"
+for f in pr-context.md jira-context.md open-prs.json; do
+    grep -F "myrepo/${f}" <<<"$force_out" | grep -qF 'sandbox upload' \
+        || { echo "FAIL: --refresh --force did not upload ${f}" >&2; fail=1; }
+done
 
 [[ $fail -eq 0 ]] && echo "all refresh-context-upload checks passed"
 exit $fail

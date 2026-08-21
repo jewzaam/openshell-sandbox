@@ -15,6 +15,12 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# The fixture below commits, and the real gitconfig has commit.gpgsign=true
+# with an ssh signing key. Inside a sandbox that key is absent and there is no
+# ssh-keygen, so an inherited config failed the commit and took the whole test
+# with it. Same isolation the other committing tests use.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+
 # The function under test, lifted verbatim from scode. Kept in sync by the
 # assertion below, which fails if scode's copy stops matching this one.
 is_ref() {

@@ -99,14 +99,17 @@ and `sandbox.sh --fetch-service`, never `--profile`.
     skipped check reads identically to a passing one. `net_check` needs
     `--max-time`, not just `--connect-timeout`: the latter only bounds the hop
     to the L7 proxy, which always succeeds, so a stalled upstream hangs forever.
-16. **Only `--quick` skips an unchanged repo. A plain `--upload` always sends.**
-    `upload_repo()` rm -rf's the sandbox copy before uploading, so a plain
-    `--upload` is how edits a session made *inside* the sandbox get wiped back
-    to host state. Skipping there on "the host has not changed" would assume
-    host and sandbox agree — the one thing that path exists to fix. `--quick`
-    takes the other bargain: no gh/Jira calls, and skip any repo untouched
-    since `.repos[<name>].last_upload`, because upload is a full tar with no
-    delta and the reference repos dominate the payload. That mtime walk must
+16. **Skipping an unchanged repo is the default. `--force`/`-f` always sends.**
+    `upload_repo()` rm -rf's the sandbox copy before uploading, so
+    `--upload --force` is how edits a session made *inside* the sandbox get
+    wiped back to host state. Skipping on "the host has not changed" assumes
+    host and sandbox agree — the one thing `--force` exists to fix, which is
+    why `--recreate` passes it to both its `--download` and its `--upload`,
+    and why `--create`/`--add-repo` set it internally (a freshly cloned repo
+    has no context generated yet). The default takes the other bargain: no
+    gh/Jira calls, and skip any repo untouched since
+    `.repos[<name>].last_upload`, because upload is a full tar with no delta
+    and the reference repos dominate the payload. That mtime walk must
     keep excluding `.git`, `.git/index` and `.git/index.lock`: `git status`
     rewrites exactly those three and nothing else, so any editor or shell
     prompt polling status makes every repo look modified on every run. The
@@ -116,7 +119,7 @@ and `sandbox.sh --fetch-service`, never `--profile`.
     the open-prs debounce reads `open-prs.json`'s mtime and would stop
     advancing. `tests/test-upload-skip.sh` and `tests/test-open-prs.sh` fail if
     either returns.
-    `--download --quick` is the mirror image, and asymmetric on purpose.
+    `--download` is the mirror image, and asymmetric on purpose.
     Nothing on the host can see the sandbox, so the walk runs there, over
     `openshell sandbox exec` — one exec for every repo, because the walk is
     cheap and the round trip is not. It compares against the LATEST of
@@ -131,7 +134,7 @@ and `sandbox.sh --fetch-service`, never `--profile`.
     keeps its host mtime. `openshell sandbox download` does not preserve
     mtimes, so a plain `rsync -a` rewrote every file and left the repo newer
     than `last_upload` — and edit-in-sandbox, download, upload is the usual
-    pattern, so `--quick` had nothing left to skip. `--checksum` alone is not
+    pattern, so the upload had nothing left to skip. `--checksum` alone is not
     enough: for matching content rsync still does an attribute-only mtime
     update. Measured with rsync 3.4.1: `-a --delete` touches every path of an
     identical tree, `-a --checksum --delete` touches every path,
@@ -153,6 +156,18 @@ and `sandbox.sh --fetch-service`, never `--profile`.
     second include mechanism in `upload_config()`.
     `tests/test-profile-required.sh` fails if either section returns to the
     base, and diffs the two fragments so they cannot drift apart.
+
+18. **No signing key goes into a sandbox, and no `ssh-keygen` to use one.**
+    Nothing commits in a sandbox. `upload_config()` ships `.gitconfig` and not
+    `user.signingkey`'s target — on this host that path is the unencrypted
+    PRIVATE key, and it was landing in every sandbox on every profile. The
+    uploaded gitconfig keeps `commit.gpgsign=true` pointing at a path that no
+    longer resolves, so a commit fails loudly rather than landing unsigned.
+    A sandbox commit erroring on a missing key or a missing `ssh-keygen` is
+    the design working. The two attractive "fixes" — restoring the key upload,
+    or adding `openssh-client` to the Containerfile — both re-open it.
+    `tests/test-scode-naming.sh` needs `GIT_CONFIG_GLOBAL=/dev/null` for the
+    same reason every other committing test does.
 
 ## Settled, do not re-evaluate
 

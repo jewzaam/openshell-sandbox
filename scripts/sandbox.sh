@@ -70,7 +70,7 @@ NO_CLONE=false
 NO_CONNECT=false
 DOWNLOAD_MODE=false
 UPLOAD_MODE=false
-QUICK_MODE=false
+FORCE_MODE=false
 ADD_REPO_MODE=false
 CREATE_MODE=false
 ENSURE_MODE=false
@@ -174,12 +174,8 @@ OPTIONS:
     --add-repo [NAME] Add repo(s) to existing sandbox (use --repo for URL)
     --download [NAME] Download repos from sandbox to ~/sandboxes/<name>/
     --upload [NAME]   Upload local repo changes back into sandbox
-    -q, --quick       With --upload: skip context generation, and skip repos
-                      unchanged since their last upload. Plain --upload always
-                      sends, which is how sandbox-side edits get wiped.
-                      With --download: ask the sandbox which repos it changed
-                      and pull only those. Plain --download always pulls.
-                      With --refresh: skip per-repo context, config only
+    -f, --force       With --upload/--download: transfer every repo and
+                      regenerate context, not only what changed
     --policy NAME     Policy name or path (e.g. research). Standalone: hot-swap on running sandbox
     --profile NAME    Credential profile: work, personal, or home. Controls env vars, uploads,
                       and the policy of the same name. REQUIRED with --create and --recreate.
@@ -204,10 +200,9 @@ EXAMPLES:
     $(basename "$0") --add-repo myapp --repo git@github.com:org/lib.git --ref v2.0
     $(basename "$0") --add-repo myapp --repo git@github.com:org/ui.git --source-dir ~/source/ui
     $(basename "$0") --download myapp
-    $(basename "$0") --download myapp --quick
+    $(basename "$0") --download myapp --force
     $(basename "$0") --upload myapp --repo myapp
-    $(basename "$0") --upload myapp --quick
-    $(basename "$0") --refresh myapp --quick
+    $(basename "$0") --upload myapp --force
     $(basename "$0") --connect myapp
     $(basename "$0") --delete myapp
 EOF
@@ -361,19 +356,18 @@ upload_repo() {
             guard_private_repo "$origin_url"
         fi
     fi
-    # A plain --upload always sends, even when the host copy has not changed.
-    # It rm -rf's the sandbox copy first, so it is how a session's edits inside
-    # the sandbox get wiped back to host state — an unconditional skip would
-    # take that away, and "the host and sandbox agree" is exactly what it
-    # cannot assume.
+    # Default: skip the per-repo gh and Jira calls, and skip any repo the host
+    # has not touched since its last upload. Fast, and trusts the sandbox copy.
     #
-    # --quick is the opposite bargain: skip the per-repo gh and Jira calls, and
-    # skip any repo the host has not touched since its last upload. Fast path,
-    # trusts the sandbox copy.
-    if [[ "$QUICK_MODE" != true ]]; then
+    # --force is the opposite bargain: send even when the host copy has not
+    # changed. upload_repo() rm -rf's the sandbox copy first, so --force is how
+    # a session's edits inside the sandbox get wiped back to host state — the
+    # default path assumes host and sandbox agree, which is the one thing
+    # --force cannot assume.
+    if [[ "$FORCE_MODE" == true ]]; then
         generate_repo_context "$sandbox_dir" "$repo_name" "${effective_profile:-${SANDBOX_PROFILE:-}}"
     elif ! repo_changed_since_upload "$sandbox_dir" "$repo_name"; then
-        echo "  ${repo_name} unchanged locally, skipping (--quick)" >&2
+        echo "  ${repo_name} unchanged locally, skipping (--force to send)" >&2
         return 0
     fi
 
@@ -411,9 +405,9 @@ write_manifest() {
 
 # Names the repos the sandbox has NOT touched since host and sandbox were last
 # known equal — the mirror of repo_changed_since_upload(), run on the side that
-# actually knows. `--quick` on the upload side reads host mtimes; there is no
-# host-side equivalent for the sandbox, and downloading a repo to find out
-# whether it was worth downloading is the cost being avoided.
+# actually knows. The upload side reads host mtimes; there is no host-side
+# equivalent for the sandbox, and downloading a repo to find out whether it was
+# worth downloading is the cost being avoided.
 #
 # One exec for every repo, not one per repo: the walk is cheap and the round
 # trip is not.
@@ -428,8 +422,8 @@ sandbox_clean_repos() {
     local script="" repo since out
 
     # The reference is the LATEST of the two stamps: both mark a moment the two
-    # copies agreed. A skipped `--quick` upload deliberately does not stamp, so
-    # this cannot advance past a divergence it never resolved.
+    # copies agreed. A skipped upload deliberately does not stamp, so this
+    # cannot advance past a divergence it never resolved.
     while IFS=$'\t' read -r repo since; do
         [[ -n "$since" ]] || continue
         script+="check $(printf '%q' "$repo") $(printf '%q' "$since")"$'\n'
@@ -470,10 +464,10 @@ download_sandbox() {
     local repos
     repos=$(jq -r '.repos | keys[]' "$manifest")
 
-    # A plain --download always pulls, the same bargain a plain --upload takes:
-    # it is the path that assumes nothing about what the other side holds.
+    # --force always pulls, the same bargain --upload --force takes: it is the
+    # path that assumes nothing about what the other side holds.
     local clean=""
-    if [[ "$QUICK_MODE" == true && "$DRYRUN" != true ]]; then
+    if [[ "$FORCE_MODE" != true && "$DRYRUN" != true ]]; then
         clean=" $(sandbox_clean_repos "$sandbox_name" "$sandbox_dir" | tr '\n' ' ')"
     fi
 
@@ -481,7 +475,7 @@ download_sandbox() {
     dl_tmp="$(mktemp -d)"
     for repo_name in $repos; do
         if [[ "$clean" == *" ${repo_name} "* ]]; then
-            echo "  ${repo_name} unchanged in the sandbox, skipping (--quick)" >&2
+            echo "  ${repo_name} unchanged in the sandbox, skipping (--force to pull)" >&2
             continue
         fi
         echo "  downloading ${repo_name}..." >&2
@@ -493,8 +487,8 @@ download_sandbox() {
         # download` does not preserve mtimes, so under a plain `rsync -a` every
         # downloaded file looked newer, rsync rewrote all of them, and the whole
         # repo came out newer than .repos[<name>].last_upload — which made the
-        # next `--upload --quick` re-send everything. Edit in the sandbox,
-        # download, upload is the usual pattern, so --quick had nothing left to
+        # next `--upload` re-send everything. Edit in the sandbox, download,
+        # upload is the usual pattern, so the upload skip had nothing left to
         # skip. `--checksum` alone does not fix it: for a file whose content
         # matches it still does an attribute-only mtime update. `--no-times`
         # is what leaves the untransferred file alone; a file that really
@@ -664,19 +658,22 @@ upload_config() {
         rm -rf "$CLAUDE_TMP"
     fi
 
-    # Upload gitconfig and commit signing key
-    SIGNING_KEY="$(git config --global user.signingkey 2>/dev/null || true)"
-    if [[ -n "$SIGNING_KEY" && -f "$SIGNING_KEY" ]]; then
+    # Upload the gitconfig — user, aliases, url rewrites. NOT the signing key.
+    #
+    # This used to `cp "$(git config --global user.signingkey)"` into
+    # /sandbox/.ssh/. On this host that value is the PRIVATE key path, not the
+    # .pub, so every sandbox on every profile received an unencrypted signing
+    # key it had no use for: nothing commits in a sandbox, and the image has no
+    # ssh-keygen to sign with even if something tried.
+    #
+    # The gitconfig still ships with commit.gpgsign=true and a signingkey path
+    # that now resolves to nothing, so a commit fails instead of silently
+    # landing unsigned. That is the intent. If you are here because a commit in
+    # a sandbox errors on the missing key: it is meant to. Do not restore the
+    # upload, and do not add openssh-client to the Containerfile.
+    if [[ -f "${HOME}/.gitconfig" ]]; then
         GIT_TMP="$(mktemp -d)"
-        mkdir -p "${GIT_TMP}/.ssh"
-        cp "$SIGNING_KEY" "${GIT_TMP}/.ssh/"
-        chmod 600 "${GIT_TMP}/.ssh/$(basename "$SIGNING_KEY")"
-        # Upload gitconfig with paths rewritten for sandbox
-        if [[ -f "${HOME}/.gitconfig" ]]; then
-            sed "s|${HOME}|/sandbox|g" "${HOME}/.gitconfig" > "${GIT_TMP}/.gitconfig"
-        fi
-        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
-            "${GIT_TMP}/.ssh" /sandbox
+        sed "s|${HOME}|/sandbox|g" "${HOME}/.gitconfig" > "${GIT_TMP}/.gitconfig"
         run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
             "${GIT_TMP}/.gitconfig" /sandbox
         rm -rf "$GIT_TMP"
@@ -942,8 +939,8 @@ while [[ $# -gt 0 ]]; do
                 shift
             fi
             ;;
-        -q|--quick)
-            QUICK_MODE=true
+        -f|--force)
+            FORCE_MODE=true
             shift
             ;;
         --connect)
@@ -1007,6 +1004,14 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# A path that clones a repo always behaves as --force: the repo is new to the
+# sandbox, so there is no last_upload to skip on, and its pr/Jira/open-PR
+# context has never been generated. Leaving these on the default would create
+# sandboxes with no context at all.
+if [[ "$CREATE_MODE" == true || "$ADD_REPO_MODE" == true ]]; then
+    FORCE_MODE=true
+fi
 
 # ---------------------------------------------------------------------------
 # --profile is only applied on a path that creates a sandbox
@@ -1178,10 +1183,10 @@ if [[ "$UPLOAD_MODE" == true ]]; then
     # Last line, so it survives a long upload log. The change check reads
     # mtimes and skips `.git/index`, which is the only thing an unstage
     # touches — see repo_changed_since_upload().
-    if [[ "$QUICK_MODE" == true ]]; then
-        echo "note: --quick skips repos with no detected change, and unstaging" >&2
-        echo "  (git reset) alone is not detected. Re-run without --quick to" >&2
-        echo "  force every repo." >&2
+    if [[ "$FORCE_MODE" != true ]]; then
+        echo "note: repos with no detected change are skipped, and unstaging" >&2
+        echo "  (git reset) alone is not detected. Re-run with --force to" >&2
+        echo "  send every repo." >&2
     fi
     exit 0
 fi
@@ -1207,8 +1212,11 @@ if [[ "$RECREATE_MODE" == true ]]; then
         done
     fi
 
-    # 1. Download repos + claude state
-    "$0" --download "$SANDBOX_NAME" "${COMMON_ARGS[@]}"
+    # 1. Download repos + claude state. --force on both transfers: the sandbox
+    # is deleted in step 2, so a wrongly skipped download is unrecoverable, and
+    # step 4 uploads into a container that holds no repos at all — the change
+    # checks compare against stamps from the sandbox that no longer exists.
+    "$0" --download "$SANDBOX_NAME" --force "${COMMON_ARGS[@]}"
 
     # 2. Delete remote sandbox only (preserve local dir)
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
@@ -1218,7 +1226,7 @@ if [[ "$RECREATE_MODE" == true ]]; then
     "$0" --create "$SANDBOX_NAME" --no-clone --no-connect ${POLICY_FILE:+--policy "$POLICY_FILE"} ${SANDBOX_PROFILE:+--profile "$SANDBOX_PROFILE"} "${COMMON_ARGS[@]}"
 
     # 4. Upload local repos
-    "$0" --upload "$SANDBOX_NAME" "${COMMON_ARGS[@]}"
+    "$0" --upload "$SANDBOX_NAME" --force "${COMMON_ARGS[@]}"
 
     # 5. Connect
     exec "$0" --connect "$SANDBOX_NAME" "${COMMON_ARGS[@]}"
@@ -1497,17 +1505,11 @@ if [[ "$REFRESH_MODE" == true ]]; then
     echo "refreshing config on ${SANDBOX_NAME}..." >&2
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
     upload_config "$OS_NAME" "$SANDBOX_DIR"
-    # Regenerate and upload context files for PR repos.
-    #
-    # --quick means the same thing here as in --upload: skip the per-repo gh
-    # and Jira calls. There is no second half to it — --refresh uploads no
-    # repos, so there is nothing to skip on "unchanged since last upload", and
-    # re-sending context nobody regenerated is bytes for bytes' sake. The
-    # top-level jira-context.md below is one file copy and no API call, so
-    # --quick leaves it alone.
-    if [[ "$QUICK_MODE" == true ]]; then
-        echo "  --quick: skipping per-repo context generation" >&2
-    elif [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
+    # Regenerate and upload context files for PR repos. Unconditional: --force
+    # is about the upload and download change checks, and --refresh has no
+    # repos to check. Refreshing a sandbox whose PR moved on and leaving it
+    # with the old pr-context.md is the failure this exists to prevent.
+    if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
         for repo_name in $(jq -r '.repos | keys[]' "${SANDBOX_DIR}/manifest.json"); do
             generate_repo_context "$SANDBOX_DIR" "$repo_name" "${SANDBOX_PROFILE:-}"
             for ctx_file in pr-context.md jira-context.md open-prs.json; do
