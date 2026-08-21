@@ -177,6 +177,8 @@ OPTIONS:
     -q, --quick       With --upload: skip context generation, and skip repos
                       unchanged since their last upload. Plain --upload always
                       sends, which is how sandbox-side edits get wiped.
+                      With --download: ask the sandbox which repos it changed
+                      and pull only those. Plain --download always pulls.
                       With --refresh: skip per-repo context, config only
     --policy NAME     Policy name or path (e.g. research). Standalone: hot-swap on running sandbox
     --profile NAME    Credential profile: work, personal, or home. Controls env vars, uploads,
@@ -202,6 +204,7 @@ EXAMPLES:
     $(basename "$0") --add-repo myapp --repo git@github.com:org/lib.git --ref v2.0
     $(basename "$0") --add-repo myapp --repo git@github.com:org/ui.git --source-dir ~/source/ui
     $(basename "$0") --download myapp
+    $(basename "$0") --download myapp --quick
     $(basename "$0") --upload myapp --repo myapp
     $(basename "$0") --upload myapp --quick
     $(basename "$0") --refresh myapp --quick
@@ -406,6 +409,55 @@ write_manifest() {
     mv "${manifest}.tmp" "$manifest"
 }
 
+# Names the repos the sandbox has NOT touched since host and sandbox were last
+# known equal — the mirror of repo_changed_since_upload(), run on the side that
+# actually knows. `--quick` on the upload side reads host mtimes; there is no
+# host-side equivalent for the sandbox, and downloading a repo to find out
+# whether it was worth downloading is the cost being avoided.
+#
+# One exec for every repo, not one per repo: the walk is cheap and the round
+# trip is not.
+#
+# Fail-safe runs the other way from the upload side. A wrongly skipped upload
+# costs one redundant tar; a wrongly skipped download loses whatever the
+# session did. So a repo is clean only on a positive empty walk — the `WALKED`
+# sentinel separates "found nothing" from "the exec never ran", which both
+# otherwise print nothing. No sentinel, no skip.
+sandbox_clean_repos() {
+    local os_name="$1" sandbox_dir="$2"
+    local script="" repo since out
+
+    # The reference is the LATEST of the two stamps: both mark a moment the two
+    # copies agreed. A skipped `--quick` upload deliberately does not stamp, so
+    # this cannot advance past a divergence it never resolved.
+    while IFS=$'\t' read -r repo since; do
+        [[ -n "$since" ]] || continue
+        script+="check $(printf '%q' "$repo") $(printf '%q' "$since")"$'\n'
+    done < <(jq -r '.repos | to_entries[] |
+        [.key, ([.value.last_upload, .value.last_download]
+                | map(select(. != null)) | max // "")] | @tsv' \
+        "${sandbox_dir}/manifest.json")
+    [[ -n "$script" ]] || return 0
+
+    # Same three exclusions as the upload walk: `git status` rewrites exactly
+    # `.git`, `.git/index` and `.git/index.lock` and nothing else, so a session
+    # with a status-polling prompt would otherwise report every repo dirty.
+    out=$(openshell sandbox exec --name "$os_name" "${GW_FLAG[@]}" -- bash -c '
+check() {
+    d="/sandbox/source/$1"
+    [ -d "$d" ] || return 0
+    n=$(find "$d" -newermt "$2" \
+        ! -path "$d/.git" ! -path "$d/.git/index" ! -path "$d/.git/index.lock" \
+        -print -quit 2>/dev/null)
+    [ -n "$n" ] || echo "CLEAN $1"
+}
+'"$script"'
+echo WALKED' 2>/dev/null) || return 0
+
+    [[ "$out" == *WALKED* ]] || return 0
+    awk '/^CLEAN /{print $2}' <<<"$out"
+}
+
 download_sandbox() {
     local sandbox_name="$1" sandbox_dir="$2"
     local manifest="${sandbox_dir}/manifest.json"
@@ -418,9 +470,20 @@ download_sandbox() {
     local repos
     repos=$(jq -r '.repos | keys[]' "$manifest")
 
+    # A plain --download always pulls, the same bargain a plain --upload takes:
+    # it is the path that assumes nothing about what the other side holds.
+    local clean=""
+    if [[ "$QUICK_MODE" == true && "$DRYRUN" != true ]]; then
+        clean=" $(sandbox_clean_repos "$sandbox_name" "$sandbox_dir" | tr '\n' ' ')"
+    fi
+
     local dl_tmp
     dl_tmp="$(mktemp -d)"
     for repo_name in $repos; do
+        if [[ "$clean" == *" ${repo_name} "* ]]; then
+            echo "  ${repo_name} unchanged in the sandbox, skipping (--quick)" >&2
+            continue
+        fi
         echo "  downloading ${repo_name}..." >&2
         mkdir -p "${dl_tmp}/${repo_name}"
         run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \

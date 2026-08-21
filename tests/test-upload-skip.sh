@@ -15,6 +15,8 @@
 #   4. --quick skips context generation entirely (no gh, no Jira).
 #   5. --download writes only what actually differs, so a --quick upload after
 #      a download still skips. The download does not preserve mtimes.
+#   6. --download --quick pulls only the repos the sandbox changed, asked in
+#      one exec, and pulls everything when the answer does not arrive.
 #
 # openshell and gh are stubbed, so the test needs no gateway, auth, or network.
 #
@@ -60,6 +62,14 @@ if [[ "$1 $2" == "sandbox download" && -n "${SANDBOX_FS:-}" ]]; then
     src="${SANDBOX_FS}/$(basename "${@: -2:1}")"
     dest="${@: -1}"
     [[ -d "$src" && -d "$dest" ]] && cp -r "${src}/." "${dest}/"
+fi
+# `sandbox exec ... -- bash -c <script>`: run the script for real against
+# $SANDBOX_FS, so the walk under test is the walk that ships. $EXEC_BROKEN
+# stands in for a dead gateway — the case that must never be read as "clean".
+if [[ "$1 $2" == "sandbox exec" && -n "${SANDBOX_FS:-}" ]]; then
+    [[ -n "${EXEC_BROKEN:-}" ]] && exit 1
+    script="${@: -1}"
+    bash -c "${script//\/sandbox\/source/$SANDBOX_FS}"
 fi
 exit 0
 STUBEOF
@@ -252,6 +262,92 @@ if command -v rsync >/dev/null 2>&1; then
         || { echo "FAIL: --download did not bring the sandbox edit to the host" >&2; fail=1; }
     upload --quick
     uploaded || { echo "FAIL: a file changed by --download was not uploaded" >&2; fail=1; }
+fi
+
+# --- --download --quick asks the sandbox which repos it changed and pulls
+# only those. The upload side reads host mtimes; nothing on the host can see
+# the sandbox, and downloading a repo to learn whether it was worth
+# downloading is the cost being avoided. One exec covers every repo. ---
+if command -v rsync >/dev/null 2>&1; then
+    quick_download() {
+        sleep 1
+        : > "$CALL_LOG"
+        ( cd "$SBX" && "${WORK}/scripts/sandbox.sh" --download probe --quick ) >/dev/null 2>&1
+    }
+    pulled() { grep -q 'openshell sandbox download .*/sandbox/source/myrepo' "$CALL_LOG"; }
+    execs() { grep -c 'openshell sandbox exec' "$CALL_LOG"; }
+
+    # host and sandbox agree, and the sandbox has not touched the repo since
+    rm -rf "${SANDBOX_FS}/myrepo"
+    cp -a "$REPO" "${SANDBOX_FS}/myrepo"
+    upload --quick
+    quick_download
+    pulled && { echo "FAIL: --download --quick pulled a repo the sandbox never touched" >&2; fail=1; }
+    [[ "$(execs)" == "1" ]] \
+        || { echo "FAIL: expected exactly one exec for all repos, got $(execs)" >&2; fail=1; }
+
+    # a sandbox-side edit brings it back, and the content actually arrives
+    echo "edited in the sandbox" > "${SANDBOX_FS}/myrepo/file.txt"
+    quick_download
+    pulled || { echo "FAIL: --download --quick skipped a repo the sandbox changed" >&2; fail=1; }
+    grep -q "edited in the sandbox" "${REPO}/file.txt" \
+        || { echo "FAIL: --download --quick did not bring the edit to the host" >&2; fail=1; }
+
+    # Three repos, ONE exec, and a per-repo answer. A call per repo would
+    # multiply the round trip by the repo count, which is the whole cost being
+    # avoided — the reference repos are why a download is slow.
+    #
+    # `ball` and `baseballbat` are the names on purpose: the clean set is a
+    # space-delimited string, and the delimiters are the only thing stopping
+    # one repo's verdict from being read off another's name. Both directions
+    # are checked, because only one of them is obvious.
+    pulled_repo() { grep -q "openshell sandbox download .*/sandbox/source/$1" "$CALL_LOG"; }
+    for r in ball baseballbat; do
+        mkdir -p "${SBX}/${r}"
+        echo "$r" > "${SBX}/${r}/notes.txt"
+        jq --arg r "$r" '.repos[$r] = {url:("git@github.com:org/" + $r + ".git")}' \
+            "$MANIFEST" > "${MANIFEST}.t" && mv "${MANIFEST}.t" "$MANIFEST"
+    done
+
+    # a substring of a clean repo's name must not be read as clean itself
+    sandbox_mirror() {
+        rm -rf "${SANDBOX_FS}/myrepo" "${SANDBOX_FS}/ball" "${SANDBOX_FS}/baseballbat"
+        cp -a "$REPO" "${SANDBOX_FS}/myrepo"
+        cp -a "${SBX}/ball" "${SANDBOX_FS}/ball"
+        cp -a "${SBX}/baseballbat" "${SANDBOX_FS}/baseballbat"
+    }
+    changed_only() {
+        local target="$1" other="$2"
+        upload --quick
+        sandbox_mirror
+        echo "changed in the sandbox" > "${SANDBOX_FS}/${target}/notes.txt"
+        quick_download
+        [[ "$(execs)" == "1" ]] \
+            || { echo "FAIL: three repos took $(execs) execs, not one" >&2; fail=1; }
+        pulled_repo "$target" \
+            || { echo "FAIL: did not pull ${target}, which the sandbox changed" >&2; fail=1; }
+        pulled_repo "$other" \
+            && { echo "FAIL: pulled ${other} — its verdict came off ${target}'s name" >&2; fail=1; }
+        pulled && { echo "FAIL: pulled the repo the sandbox left alone" >&2; fail=1; }
+        grep -q "changed in the sandbox" "${SBX}/${target}/notes.txt" \
+            || { echo "FAIL: ${target}'s content did not reach the host" >&2; fail=1; }
+    }
+    changed_only baseballbat ball
+    changed_only ball baseballbat
+
+    # a plain --download pulls regardless, and asks nothing
+    upload --quick
+    download
+    pulled || { echo "FAIL: a plain --download skipped an unchanged repo" >&2; fail=1; }
+    [[ "$(execs)" == "0" ]] \
+        || { echo "FAIL: a plain --download still asked the sandbox what changed" >&2; fail=1; }
+
+    # THE FAIL-SAFE: a broken exec means no answer, and no answer means pull.
+    # A wrongly skipped upload costs one tar; a wrongly skipped download loses
+    # whatever the session did.
+    upload --quick
+    EXEC_BROKEN=1 quick_download
+    pulled || { echo "FAIL: --quick treated a failed exec as 'nothing changed'" >&2; fail=1; }
 fi
 
 # --- last_download is stamped separately from last_upload ---

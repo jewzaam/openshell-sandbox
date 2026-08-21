@@ -73,6 +73,7 @@ sandbox.sh --delete myapp
 | `--source-dir DIR` | Copy remotes from local repo and fetch (sandbox has no git auth) |
 | `--add-repo [NAME]` | Add repo(s) to existing sandbox |
 | `--download [NAME]` | Download repos from sandbox to `~/sandboxes/<name>/` |
+| `-q, --quick` | With `--upload`/`--download`: transfer only repos that changed. Plain runs always transfer |
 | `--upload [NAME]` | Upload local repo changes back into sandbox |
 | `--profile NAME` | `work`, `personal`, or `home`. Required with `--create` and `--recreate` |
 | `--policy FILE` | Override policy file (default: the profile's own) |

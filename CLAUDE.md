@@ -116,6 +116,16 @@ and `sandbox.sh --fetch-service`, never `--profile`.
     the open-prs debounce reads `open-prs.json`'s mtime and would stop
     advancing. `tests/test-upload-skip.sh` and `tests/test-open-prs.sh` fail if
     either returns.
+    `--download --quick` is the mirror image, and asymmetric on purpose.
+    Nothing on the host can see the sandbox, so the walk runs there, over
+    `openshell sandbox exec` — one exec for every repo, because the walk is
+    cheap and the round trip is not. It compares against the LATEST of
+    `last_upload`/`last_download`, both of which mark a moment the two copies
+    agreed. A repo counts as clean only on a positive empty walk: the `WALKED`
+    sentinel is what separates "found nothing" from "the exec never ran", and
+    without it a dead gateway reads as "nothing changed". The fail-safe runs
+    the other way from the upload side — a wrongly skipped upload costs one
+    redundant tar, a wrongly skipped download loses whatever the session did.
     `download_sandbox()` is the other half of the same rule: it rsyncs
     `--no-times --checksum`, so a downloaded file the sandbox never changed
     keeps its host mtime. `openshell sandbox download` does not preserve
