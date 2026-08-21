@@ -13,6 +13,8 @@
 #   3. A real upload stamps last_upload; a download stamps last_download; a
 #      --dryrun stamps neither, or the next real run skips a repo it never sent.
 #   4. --quick skips context generation entirely (no gh, no Jira).
+#   5. --download writes only what actually differs, so a --quick upload after
+#      a download still skips. The download does not preserve mtimes.
 #
 # openshell and gh are stubbed, so the test needs no gateway, auth, or network.
 #
@@ -50,6 +52,15 @@ export CALL_LOG
 cat > "${STUB}/openshell" << 'STUBEOF'
 #!/bin/bash
 echo "openshell $*" >> "$CALL_LOG"
+# `sandbox download <name> [--gateway X] <remote-path> <dest>` serves from
+# $SANDBOX_FS when one is set. Copied WITHOUT -a on purpose: the real download
+# does not preserve mtimes, and that is the whole reason a download used to
+# make every repo look modified.
+if [[ "$1 $2" == "sandbox download" && -n "${SANDBOX_FS:-}" ]]; then
+    src="${SANDBOX_FS}/$(basename "${@: -2:1}")"
+    dest="${@: -1}"
+    [[ -d "$src" && -d "$dest" ]] && cp -r "${src}/." "${dest}/"
+fi
 exit 0
 STUBEOF
 # gh answers with a stable PR and a stable PR list, so context generation
@@ -205,6 +216,43 @@ git_quiet add committed.txt
 git_quiet commit -m c
 upload --quick
 uploaded || { echo "FAIL: a commit was not detected" >&2; fail=1; }
+
+# --- a download of unchanged content leaves the host mtimes alone, so a
+# --quick upload after it still skips. `openshell sandbox download` does not
+# preserve mtimes; under a plain `rsync -a` that rewrote every file and made
+# the repo newer than last_upload. Edit in the sandbox, download, upload is
+# the usual pattern, so --quick had nothing left to skip. ---
+# The real download path, so it needs the real rsync. sandbox.sh cannot do
+# anything without it either, so this only fires where nothing would work.
+if ! command -v rsync >/dev/null 2>&1; then
+    echo "warning: rsync not installed, skipping the --download checks" >&2
+fi
+export SANDBOX_FS="${TMP}/sandboxfs"
+mkdir -p "$SANDBOX_FS"
+download() {
+    sleep 1
+    : > "$CALL_LOG"
+    ( cd "$SBX" && "${WORK}/scripts/sandbox.sh" --download probe ) >/dev/null 2>&1
+}
+
+if command -v rsync >/dev/null 2>&1; then
+    settle_quick
+    uploaded && { echo "FAIL: setup wrong — repo not in the skipped state" >&2; fail=1; }
+
+    rm -rf "${SANDBOX_FS}/myrepo"
+    cp -a "$REPO" "${SANDBOX_FS}/myrepo"
+    download
+    upload --quick
+    uploaded && { echo "FAIL: --download of unchanged content made --quick re-upload everything" >&2; fail=1; }
+
+    # ...and a real sandbox-side edit still lands, and still counts as a change
+    echo "from the sandbox" > "${SANDBOX_FS}/myrepo/file.txt"
+    download
+    grep -q "from the sandbox" "${REPO}/file.txt" \
+        || { echo "FAIL: --download did not bring the sandbox edit to the host" >&2; fail=1; }
+    upload --quick
+    uploaded || { echo "FAIL: a file changed by --download was not uploaded" >&2; fail=1; }
+fi
 
 # --- last_download is stamped separately from last_upload ---
 record_repo_timestamp "$SBX" myrepo last_download
