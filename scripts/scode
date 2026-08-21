@@ -23,8 +23,9 @@ Usage: scode [OPTIONS] [JIRA_URL | PR_URL... | SANDBOX_DIR | --name NAME | SOURC
 Open a directory in VS Code backed by an OpenShell sandbox running Claude.
 
 Options:
-  --profile NAME   Credential profile (e.g., personal). Passed to sandbox.sh.
-                   Defaults to DEFAULT_PROFILE in config/site.env.
+  --profile NAME   Credential profile: work, personal, or home. Required on
+                   every invocation, including reopening an existing sandbox.
+                   Passed to sandbox.sh.
 
 Modes:
   scode JIRA_URL                    Jira issue URL — fetch context, no repos
@@ -43,14 +44,14 @@ Arguments:
                  the default branch. For running two sandboxes on one repo.
 
 Examples:
-  scode https://redhat.atlassian.net/browse/AAP-87003
-  scode https://github.com/org/myapp/pull/1109
-  scode https://github.com/org/repo1/pull/42 https://github.com/org/repo2/pull/99
-  scode ~/sandboxes/supply-chain
-  scode ~/source/myapp pr/1176                   # ref     -> myapp-pr-1176
-  scode ~/source/my-great-project big-feature    # label   -> my-great-project-big-feature
+  scode --profile work https://redhat.atlassian.net/browse/AAP-87003
+  scode --profile work https://github.com/org/myapp/pull/1109
+  scode --profile work https://github.com/org/repo1/pull/42 https://github.com/org/repo2/pull/99
+  scode --profile work ~/sandboxes/supply-chain
+  scode --profile work ~/source/myapp pr/1176            # ref   -> myapp-pr-1176
+  scode --profile home ~/source/my-great-project big-feature  # label -> my-great-project-big-feature
   scode --profile personal ~/source/my-project
-  scode --name review-workspace
+  scode --profile home --name review-workspace
 EOF
     exit 0
 fi
@@ -75,13 +76,8 @@ set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
 
 if [[ $# -lt 1 ]]; then
     echo "error: requires --name NAME, SOURCE_PATH, or SANDBOX_DIR" >&2
-    echo "usage: scode [--profile NAME] [--name NAME | SOURCE_PATH [REF|LABEL] | ~/sandboxes/<name>]" >&2
+    echo "usage: scode --profile NAME [--name NAME | SOURCE_PATH [REF|LABEL] | ~/sandboxes/<name>]" >&2
     exit 1
-fi
-
-PROFILE_FLAG=""
-if [[ -n "$SCODE_PROFILE" ]]; then
-    PROFILE_FLAG=" --profile ${SCODE_PROFILE}"
 fi
 
 # scode's OWN lib.sh, not $SANDBOX_SH's. They are usually the same checkout,
@@ -90,9 +86,19 @@ fi
 # copy's library, and picked up whatever functions that one happened to have.
 source "${SCRIPT_DIR}/lib.sh"
 
-# The profile the sandbox will actually be built with: on a DEFAULT_PROFILE
-# machine that is the site default even with no --profile on the command line.
-EFFECTIVE_PROFILE="${SCODE_PROFILE:-$(site_default_profile)}"
+# Every invocation names the profile, reopening an existing sandbox included.
+# The alternative — reading it back from manifest.json — makes the two commands
+# that upload wildly different credentials look identical at the prompt.
+if [[ -z "$SCODE_PROFILE" ]]; then
+    echo "error: --profile is required (work, personal, home)" >&2
+    exit 1
+fi
+if ! valid_profile "$SCODE_PROFILE"; then
+    echo "error: unknown profile '${SCODE_PROFILE}' (valid: work, personal, home)" >&2
+    exit 1
+fi
+
+PROFILE_FLAG=" --profile ${SCODE_PROFILE}"
 
 write_tasks_and_open() {
     local dir="$1" cmd="$2"
@@ -104,7 +110,7 @@ write_tasks_and_open() {
     # profile is what the sandbox was built with, and sandbox.sh --ensure
     # errors on a mismatch rather than letting scode overwrite it here.
     if [[ ! -f "${dir}/manifest.json" ]]; then
-        init_manifest "$dir" "$sandbox_name" "$EFFECTIVE_PROFILE"
+        init_manifest "$dir" "$sandbox_name" "$SCODE_PROFILE"
     fi
 
     mkdir -p "${dir}/.vscode"
@@ -184,9 +190,7 @@ if [[ "$_all_prs" == true ]]; then
         repo_name="$(basename "$gh_repo")"
         ref="pr/${pr_num}"
 
-        # The guard must see the profile the sandbox will actually be built
-        # with, not just what was typed — hence EFFECTIVE_PROFILE.
-        SANDBOX_PROFILE="$EFFECTIVE_PROFILE" guard_private_repo "$repo_url"
+        SANDBOX_PROFILE="$SCODE_PROFILE" guard_private_repo "$repo_url"
 
         # Name sandbox after first PR
         if [[ -z "$ENSURE_CMD" ]]; then
@@ -206,14 +210,6 @@ fi
 target_path="$(realpath "$1" 2>/dev/null || echo "$1")"
 if [[ -f "${target_path}/manifest.json" ]]; then
     sandbox_name="$(jq -r '.name' "${target_path}/manifest.json")"
-
-    # Read profile from manifest if not specified on CLI
-    if [[ -z "$SCODE_PROFILE" ]]; then
-        manifest_profile="$(jq -r '.profile // empty' "${target_path}/manifest.json" 2>/dev/null)" || true
-        if [[ -n "$manifest_profile" ]]; then
-            PROFILE_FLAG=" --profile ${manifest_profile}"
-        fi
-    fi
 
     ENSURE_CMD="${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}"
     while IFS=$'\t' read -r repo_name repo_url repo_ref; do
@@ -281,8 +277,8 @@ repo_url="$(git -C "$source_path" remote get-url origin 2>/dev/null)" || {
     exit 1
 }
 
-# Block private repos for personal profile before opening VS Code
-SANDBOX_PROFILE="$EFFECTIVE_PROFILE" guard_private_repo "$repo_url"
+# Block private repos for personal/home profiles before opening VS Code
+SANDBOX_PROFILE="$SCODE_PROFILE" guard_private_repo "$repo_url"
 
 sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
 write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG} --repo ${repo_url} --ref ${ref} --source-dir ${source_path}"

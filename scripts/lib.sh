@@ -447,8 +447,8 @@ generate_repo_context() {
     } > "${sandbox_dir}/${repo_name}/pr-context.md"
     echo "  wrote pr-context.md" >&2
 
-    # jira-context.md — Jira issue context (skip for personal profile)
-    [[ "$profile" == "personal" ]] && return 0
+    # jira-context.md — Jira issue context (skip for personal/home profiles)
+    personal_profile "$profile" && return 0
 
     local jira_keys
     jira_keys=$(printf '%s\n%s\n%s' "$pr_title" "$pr_branch" "$pr_body" | \
@@ -474,20 +474,21 @@ generate_repo_context() {
 }
 
 # ---------------------------------------------------------------------------
-# Machine default profile
+# Profiles
 # ---------------------------------------------------------------------------
 
-# DEFAULT_PROFILE from config/site.env, or empty. sandbox.sh sources site.env
-# wholesale and reads the variable directly; scode does not, but needs the
-# effective profile for guard_private_repo — a personal-by-default machine
-# must still be warned before a private repo goes into a personal sandbox.
-# Subshell so the rest of site.env does not leak into the caller.
-site_default_profile() {
-    local site_env
-    site_env="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/site.env"
-    [[ -f "$site_env" ]] || return 0
-    # shellcheck source=/dev/null  # gitignored, per-machine — nothing to follow
-    ( set -a; . "$site_env"; echo "${DEFAULT_PROFILE:-}" )
+# The complete set. There is no default and no inference: sandbox.sh --create
+# and every scode invocation demand one by name, because the profile decides
+# which credentials leave the host, and a wrong guess there is silent.
+valid_profile() {
+    [[ "$1" == work || "$1" == personal || "$1" == home ]]
+}
+
+# Profiles that carry no work credentials. `home` is `personal` plus
+# Prometheus and Loki reads — the difference lives entirely in the policy, so
+# every credential, env var, and system-prompt decision treats the two alike.
+personal_profile() {
+    [[ "$1" == personal || "$1" == home ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -545,10 +546,10 @@ init_manifest() {
     fi
 }
 
-# Warn and confirm if personal profile is adding a private repo
+# Warn and confirm if a personal/home profile is adding a private repo
 guard_private_repo() {
     local url="$1"
-    if [[ "${SANDBOX_PROFILE:-}" != "personal" ]]; then
+    if ! personal_profile "${SANDBOX_PROFILE:-}"; then
         return 0
     fi
     if is_private_repo "$url"; then

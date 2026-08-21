@@ -7,8 +7,9 @@ SDLC skill access. Podman-based, rootless.
 
 - Sandboxed Claude Code execution — network policy is the security boundary, not
   Claude's permission system (`--dangerously-skip-permissions`)
-- Two profiles: **home** (Claude Max / Anthropic direct) and **work** (Vertex AI + Jira)
-- Auto-detects profile from env vars
+- Three profiles: **work** (Vertex AI + Jira), **personal** (Anthropic direct,
+  telemetry push-only), **home** (personal plus Prometheus/Loki reads)
+- `--profile` is required on `scode` and on `sandbox.sh --create/--recreate`
 - Clones repos on host (SSH works), uploads to sandbox for private repo support
 - Uploads `~/.claude/` config with symlinks resolved (skills, plugins, settings)
 - `/sandbox/bin/` on PATH for arbitrary user scripts
@@ -33,13 +34,13 @@ make build
 
 ```bash
 # Create sandbox with repo at specific PR
-sandbox.sh --create myapp --repo git@github.com:org/myapp.git --ref pr/42
+sandbox.sh --create myapp --profile work --repo git@github.com:org/myapp.git --ref pr/42
 
 # Create-or-connect (idempotent)
-sandbox.sh --ensure myapp-pr-42 --repo git@github.com:org/myapp.git --ref pr/42
+sandbox.sh --ensure myapp-pr-42 --profile work --repo git@github.com:org/myapp.git --ref pr/42
 
 # Multiple repos
-sandbox.sh --create myapp --repo git@github.com:org/myapp.git --repo git@github.com:org/myapp-ui.git
+sandbox.sh --create myapp --profile work --repo git@github.com:org/myapp.git --repo git@github.com:org/myapp-ui.git
 
 # Add repo to existing sandbox (infer URL from local checkout)
 sandbox.sh --add-repo myapp --source-dir ~/source/lib
@@ -65,7 +66,7 @@ sandbox.sh --delete myapp
 
 | Option | Description |
 |--------|-------------|
-| `--create NAME` | Create sandbox with this name |
+| `--create NAME` | Create sandbox with this name (requires `--profile`) |
 | `--ensure [NAME]` | Create if missing, reconnect if exists |
 | `--repo URL` | Git repo to clone on host and upload (repeatable) |
 | `--ref REF` | Ref for preceding `--repo`: branch, `pr/<num>`, `tag/<name>`, or SHA |
@@ -73,7 +74,8 @@ sandbox.sh --delete myapp
 | `--add-repo [NAME]` | Add repo(s) to existing sandbox |
 | `--download [NAME]` | Download repos from sandbox to `~/sandboxes/<name>/` |
 | `--upload [NAME]` | Upload local repo changes back into sandbox |
-| `--policy FILE` | Override policy file (default: auto-detect home/work) |
+| `--profile NAME` | `work`, `personal`, or `home`. Required with `--create` and `--recreate` |
+| `--policy FILE` | Override policy file (default: the profile's own) |
 | `--gateway NAME` | OpenShell gateway |
 | `--connect [NAME]` | Reconnect to existing sandbox (launches Claude) |
 | `--delete [NAME]` | Delete sandbox and local state |
@@ -86,13 +88,16 @@ sandbox.sh --delete myapp
 
 ```bash
 # Open sandbox for a repo + ref (auto-names sandbox <repo>-<ref>)
-scode ~/source/myapp pr/1176
+scode --profile work ~/source/myapp pr/1176
 
 # Default branch
-scode ~/source/myapp
+scode --profile home ~/source/myapp
 
 # Custom sandbox name, no repos (add repos separately)
-scode --name review-workspace
+scode --profile personal --name review-workspace
+
+# Reopen an existing sandbox — --profile is required here too
+scode --profile work ~/sandboxes/myapp-pr-1176
 ```
 
 Creates `~/sandboxes/<name>/.vscode/tasks.json` with auto-launching sandbox
@@ -102,10 +107,17 @@ and bash terminals, then opens VS Code.
 
 | Profile | Auth | Network Access |
 |---------|------|----------------|
-| `home` | Claude Max subscription (login session) | Anthropic API, npm, PyPI |
-| `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`) | Google APIs, Jira, npm, PyPI |
+| `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`) | Google APIs, Jira, npm, PyPI, OTEL push, Prometheus + Loki reads |
+| `personal` | Anthropic direct (API key or OAuth) | Anthropic API, npm, PyPI, Debian, OTEL push only |
+| `home` | Anthropic direct (API key or OAuth) | as `personal`, plus Prometheus + Loki reads |
 
-Auto-detection: `CLAUDE_CODE_USE_VERTEX` set → work, otherwise → home.
+No default and no auto-detection: name the profile or the command refuses.
+`scode` needs it on every invocation, reopening an existing sandbox included —
+the profile decides which credentials leave the host.
+
+Each profile is one word across three places: `policies/<profile>.yaml`, an
+optional `config/sandbox-claude.d/<profile>.md` appended to the system prompt,
+and `.profile` in the sandbox's `manifest.json`.
 
 ## Layout
 
@@ -115,10 +127,13 @@ Auto-detection: `CLAUDE_CODE_USE_VERTEX` set → work, otherwise → home.
 ├── Makefile                # build, clean
 ├── bin/                    # Scripts copied to /sandbox/bin/ (on PATH)
 ├── config/
-│   └── bashrc              # Base .bashrc (baked into image)
+│   ├── bashrc              # Base .bashrc (baked into image)
+│   ├── sandbox-claude.md   # System prompt, every profile
+│   └── sandbox-claude.d/   # Per-profile additions, appended to the above
 ├── policies/
-│   ├── home.yaml           # Anthropic direct
-│   └── work.yaml           # Vertex AI + Jira
+│   ├── work.yaml           # Vertex AI + Jira
+│   ├── personal.yaml       # Anthropic direct, telemetry push-only
+│   └── home.yaml           # personal + Prometheus/Loki reads
 ├── scripts/
 │   ├── sandbox.sh              # Create/manage sandboxes
 │   ├── scode                   # VS Code launcher for sandboxes

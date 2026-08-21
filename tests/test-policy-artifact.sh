@@ -117,7 +117,7 @@ grep -q "no policy artifact in" <<<"$out" \
 # --create does apply a policy, so it installs one.
 rm -rf "$D" && mkdir -p "$D"
 printf '{"name":"probe","profile":"personal","repos":{}}' > "${D}/manifest.json"
-run_sandbox --create probe --no-clone --no-connect --dryrun
+run_sandbox --create probe --profile personal --no-clone --no-connect --dryrun
 check "--create installs the policy it handed the enforcer" "$PERSONAL"
 
 [[ $fail -eq 0 ]] && echo "all policy-artifact checks passed"

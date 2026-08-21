@@ -2,8 +2,9 @@
 
 OpenShell sandbox configuration for running Claude Code in auto mode inside
 rootless Podman containers. Shell scripts, YAML policies, and a Containerfile —
-not a Python project. Profiles: `code` (default, work), `personal`, `research`,
-and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
+not a Python project. Profiles: `work`, `personal`, and `home`; there is no
+default. `research` and `fetch-service` are policies only — `--policy research`
+and `sandbox.sh --fetch-service`, never `--profile`.
 
 > This file loads into every session in this repo. It holds only what costs real
 > time to rediscover — external tool behavior, and places where the obvious
@@ -16,8 +17,9 @@ and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
   hostnames in git). Deliberately **not** auto-created from
   `config/site.env.example`: silently adopting the template's collector address
   would point a sandbox at a host that may not exist here. Do not add a `cp`
-  fallback. Supplies `OTEL_URL`, `PROMETHEUS_URL`, `LOKI_URL` (all required)
-  and optional `DEFAULT_PROFILE`.
+  fallback. Supplies `OTEL_URL`, `PROMETHEUS_URL`, `LOKI_URL`, all required.
+  It holds no default profile: that decides which credentials leave the host,
+  so it is named per command or the command does not run.
 - `policies/local.yaml` — gitignored, for local overrides.
 - `docs/configuration-model.md` — a **draft** proposal, not implemented. Do not
   read it as current behavior.
@@ -51,10 +53,14 @@ and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
    drift, with nothing checking it.
 5. **`--profile` applies at build time only** and the script rejects it
    elsewhere. It decides four things at once (`.env` contents, credential
-   uploads, rendered policy, whether the system prompt keeps its Jira section)
-   and only the create path writes all four; half-applied reads as applied.
+   uploads, rendered policy, which system-prompt fragment is appended) and
+   only the create path writes all four; half-applied reads as applied.
    `--recreate NAME --profile <name>` is the only complete way to switch an
-   existing sandbox.
+   existing sandbox. It is **required** on `--create`, `--recreate`, and on
+   every `scode` invocation — reopening an existing sandbox included. Do not
+   add a fallback (site.env default, manifest read-back, "personal unless
+   Vertex is set"): the two commands that upload wildly different credentials
+   must not look identical at the prompt. `tests/test-profile-required.sh`.
 6. **Host-owned files upload, never download.** `download_sandbox()` pulls only
    the repo directories named in the manifest, so a session cannot widen its own
    policy or rewrite its repo list by editing its copy.
@@ -70,7 +76,11 @@ and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
 10. **Personal profile telemetry is push-only by design.** Collector allowed,
     Prometheus and Loki blocked, so a personal sandbox cannot read work session
     data back. It looks like a missing rule; it is not.
-    `validate-profile.sh` asserts the asymmetry.
+    `validate-profile.sh` asserts the asymmetry. `home` is the variant that
+    may read them back — otherwise identical to personal, and every
+    credential, env, and prompt decision treats the two as one
+    (`personal_profile()` in `lib.sh`). Reaching for `== "personal"` instead
+    silently gives home a work sandbox's credentials.
 11. **No repos are baked into the image.** `knowledgebase` and `standards` are
     cloned on the host and uploaded like any other repo.
 12. **`.venv` is excluded in both directions** — host Python 3.14 vs sandbox
@@ -106,6 +116,15 @@ and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
     the open-prs debounce reads `open-prs.json`'s mtime and would stop
     advancing. `tests/test-upload-skip.sh` and `tests/test-open-prs.sh` fail if
     either returns.
+17. **Profile name, policy filename, and system-prompt fragment are one
+    word.** `--profile home` renders `policies/home.yaml` and appends
+    `config/sandbox-claude.d/home.md` if it exists. Adding a profile means
+    adding a policy of the same name, and nothing maps between them. The
+    prompt fragments are additive: a section that only some profiles should
+    see goes in `sandbox-claude.d/<profile>.md`, never in the base with a
+    subtractive `sed` — the base is what personal and home receive verbatim,
+    so `## Jira` back in it leaks work tooling into a personal sandbox.
+    `tests/test-profile-required.sh` fails if it returns.
 
 ## Settled, do not re-evaluate
 
@@ -167,11 +186,13 @@ and `fetch-service` (applied temporarily by `sandbox.sh --fetch-service`).
   uploaded `settings.json` for every profile**, by
   `scripts/strip-settings.py`. A host pins models for host reasons; in a
   sandbox available models may differ.  Pinning model is not required.
-- **Personal profile sets `--model claude-opus-5[1m]`** in the sandbox
+- **Personal and home set `--model claude-opus-5[1m]`** in the sandbox
   `claude-wrapper.sh`, off `$SANDBOX_PROFILE` from `/sandbox/.env`. Not off
   manifest.json — that is uploaded by `upload_static()` and used to lose the
   race on a first create, silently starting personal sessions on the default
-  model.
+  model. `.env` carries `SANDBOX_PROFILE` for every profile, not just the
+  credential-less ones: `validate-profile.sh` cannot tell home from personal
+  without it, and it lands in `OTEL_RESOURCE_ATTRIBUTES` as `sandbox.profile`.
 
 ## OpenShell Policy Gotchas
 

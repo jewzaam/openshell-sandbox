@@ -56,10 +56,10 @@ M="${D}/manifest.json"
 # A second call must not wipe what the repo loop filled in, and must refresh
 # the profile — that is the --recreate-on-another-profile path.
 jq '.repos.myrepo = {url: "u", ref: "r", sha: "s", cloned_at: "t"}' "$M" > "${M}.tmp" && mv "${M}.tmp" "$M"
-init_manifest "$D" "probe" "code"
+init_manifest "$D" "probe" "work"
 [[ "$(jq -r '.repos.myrepo.url' "$M")" == "u" ]] \
     || { echo "FAIL: init_manifest dropped an existing repo entry" >&2; fail=1; }
-[[ "$(profile_of "$M")" == "code" ]] \
+[[ "$(profile_of "$M")" == "work" ]] \
     || { echo "FAIL: init_manifest did not refresh .profile" >&2; fail=1; }
 
 # --- scode: the manifest is there before VS Code opens the folder ---
@@ -78,7 +78,7 @@ chmod +x "${STUB}/code"
 # fixed absolute default of SANDBOX_SH is not a hint about where scode lives.
 DECOY="${TMP}/decoy/scripts"
 mkdir -p "$DECOY"
-echo '# stale checkout: no init_manifest, no site_default_profile' > "${DECOY}/lib.sh"
+echo '# stale checkout: no init_manifest, no valid_profile' > "${DECOY}/lib.sh"
 
 SEEN="${TMP}/seen"
 
@@ -105,10 +105,10 @@ run_scode --profile personal --name probe-scode
 # mismatch, and it can only do that if the manifest still says the truth.
 EXIST="${FAKE_HOME}/sandboxes/probe-existing"
 mkdir -p "$EXIST"
-printf '{"name":"probe-existing","openshell_name":"sb-x","profile":"code","repos":{}}' \
+printf '{"name":"probe-existing","openshell_name":"sb-x","profile":"work","repos":{}}' \
     > "${EXIST}/manifest.json"
 run_scode --profile personal "$EXIST"
-[[ "$(profile_of "${EXIST}/manifest.json")" == "code" ]] \
+[[ "$(profile_of "${EXIST}/manifest.json")" == "work" ]] \
     || { echo "FAIL: scode overwrote an existing sandbox's profile" >&2; fail=1; }
 
 # With no $SANDBOX_SH at all, the VS Code task must point at the sandbox.sh

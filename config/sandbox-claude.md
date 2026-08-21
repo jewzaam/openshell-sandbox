@@ -64,12 +64,6 @@ writable.
   Changes both add and remove hosts and can change ports.  All is mutable by 
   user from the host.
 
-## Jira
-
-Use the `docs-tools:jira-reader` skill for reading Jira issues. It works
-inside the sandbox — JIRA_URL, JIRA_API_TOKEN, and JIRA_USERNAME are set
-in the environment. Do not claim Jira is inaccessible.
-
 ## Observability
 
 Endpoints are site-specific: a container stack on the host machine for some
