@@ -64,36 +64,21 @@ writable.
   Changes both add and remove hosts and can change ports.  All is mutable by 
   user from the host.
 
-## Observability
-
-Endpoints are site-specific: a container stack on the host machine for some
-sandboxes, a k3s cluster over Tailscale for others. Never assume an address —
-read one of these, both of which are current for this sandbox:
-
-- `$OTEL_EXPORTER_OTLP_ENDPOINT` — where this session ships telemetry.
-- `/sandbox/source/openshell-policy.yaml` — what is reachable at all. Under
-  `network_policies:`, each block has a `name:` and `endpoints:` carrying
-  `host:` and `port:`. The telemetry blocks are named `otel-collector`
-  (push), `prometheus-read`, and `loki-read` (PromQL via `/api/v1/query`,
-  LogQL via `/loki/api/v1/query_range`). A block that is absent means that
-  service is not reachable from here — do not try it.
-
-`yq` is installed. It is the kislyuk build, so filters are jq syntax:
+`yq` is installed for reading it. It is the kislyuk build, so filters are jq
+syntax:
 
 ```bash
 # every reachable host:port, by policy name
 yq -r '.network_policies[] | .name as $n | .endpoints[] | "\($n)\t\(.host):\(.port)"' \
     /sandbox/source/openshell-policy.yaml
-
-# just the collector
-yq -r '.network_policies.otel.endpoints[0] | "\(.host):\(.port)"' \
-    /sandbox/source/openshell-policy.yaml
 ```
 
-Claude Code emits OTEL metrics, logs, and traces. If the knowledgebase repo
-is available at `/sandbox/source/knowledgebase/`, read
-`claude-code/otel-native-telemetry.md` and `observability/` for event types,
-label taxonomies, and query patterns.
+## Telemetry
+
+This session ships OTEL metrics, logs, and traces to
+`$OTEL_EXPORTER_OTLP_ENDPOINT`. That is egress only. Whether anything can be
+read back is a per-profile matter — if this prompt says nothing about
+querying telemetry, this sandbox cannot.
 
 ## PR context
 
