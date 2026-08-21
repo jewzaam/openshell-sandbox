@@ -116,10 +116,32 @@ else
 fi
 
 # --- the split system prompt ---
-grep -q '^## Jira$' "${REPO_ROOT}/config/sandbox-claude.d/work.md" \
+BASE="${REPO_ROOT}/config/sandbox-claude.md"
+FRAG="${REPO_ROOT}/config/sandbox-claude.d"
+
+grep -q '^## Jira$' "${FRAG}/work.md" \
     || { echo "FAIL: the Jira section is not in the work-only prompt fragment" >&2; fail=1; }
-grep -q '^## Jira$' "${REPO_ROOT}/config/sandbox-claude.md" \
+grep -q '^## Jira$' "$BASE" \
     && { echo "FAIL: the Jira section is back in the base prompt every profile gets" >&2; fail=1; }
+
+# Reading telemetry back is work/home only. The base is what personal gets
+# verbatim, and personal is push-only — a prompt that tells it to query
+# Prometheus produces a session arguing with a 403.
+for p in work home; do
+    grep -q '^## Reading telemetry back$' "${FRAG}/${p}.md" \
+        || { echo "FAIL: ${p}.md has no telemetry-read section" >&2; fail=1; }
+done
+[[ -e "${FRAG}/personal.md" ]] \
+    && { echo "FAIL: personal has a prompt fragment — it gets the base alone" >&2; fail=1; }
+grep -q 'prometheus-read\|/api/v1/query' "$BASE" \
+    && { echo "FAIL: the base prompt tells every profile how to query telemetry" >&2; fail=1; }
+
+# Two copies of the same prose by choice — an include mechanism for one shared
+# section is not worth it. This is what keeps them one section. Both files end
+# with it, so tail-from-the-heading is the whole section.
+sec() { sed -n '/^## Reading telemetry back$/,$p' "$1"; }
+diff <(sec "${FRAG}/work.md") <(sec "${FRAG}/home.md") >/dev/null \
+    || { echo "FAIL: work.md and home.md telemetry sections have drifted apart" >&2; fail=1; }
 
 [[ $fail -eq 0 ]] && echo "all profile-required checks passed"
 exit $fail

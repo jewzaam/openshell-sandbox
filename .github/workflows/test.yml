@@ -18,9 +18,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # No Python setup and no install step: the self-checks are bash, and the
-      # only tools they need (git, jq, python3 for format-open-prs.py) are on
-      # the runner image. config/site.env is gitignored, so each test
-      # synthesises its own — nothing here dials a real endpoint.
+      # test-upload-skip.sh drives the real --download path, which rsyncs.
+      # It warns and skips without one, and a skipped check reads like a
+      # passing one. ubuntu-latest ships rsync, but the image is not a
+      # contract — same install-only-when-missing shape as shellcheck.
+      - name: Ensure rsync
+        run: |
+          command -v rsync >/dev/null 2>&1 || {
+            sudo apt-get update
+            sudo apt-get install -y rsync
+          }
+
+      # No Python setup and no other install step: the self-checks are bash,
+      # and the rest of what they need (git, jq, python3 for
+      # format-open-prs.py) is on the runner image. config/site.env is
+      # gitignored, so each test synthesises its own — nothing here dials a
+      # real endpoint.
       - name: Run self-checks
         run: make test-unit

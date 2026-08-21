@@ -426,7 +426,20 @@ download_sandbox() {
         run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
             "/sandbox/source/${repo_name}" "${dl_tmp}/${repo_name}"
         mkdir -p "${sandbox_dir}/${repo_name}"
-        run rsync -a --delete --exclude=.venv "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
+        # Content decides what gets written, not timestamps. `openshell sandbox
+        # download` does not preserve mtimes, so under a plain `rsync -a` every
+        # downloaded file looked newer, rsync rewrote all of them, and the whole
+        # repo came out newer than .repos[<name>].last_upload — which made the
+        # next `--upload --quick` re-send everything. Edit in the sandbox,
+        # download, upload is the usual pattern, so --quick had nothing left to
+        # skip. `--checksum` alone does not fix it: for a file whose content
+        # matches it still does an attribute-only mtime update. `--no-times`
+        # is what leaves the untransferred file alone; a file that really
+        # changed gets the current time, which is what the walk wants to see.
+        # Costs a full read of both trees, against a download that just moved
+        # the same bytes over the network.
+        run rsync -a --no-times --checksum --delete --exclude=.venv \
+            "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
         [[ "$DRYRUN" == true ]] || record_repo_timestamp "$sandbox_dir" "$repo_name" last_download
     done
     rm -rf "$dl_tmp"

@@ -116,6 +116,16 @@ and `sandbox.sh --fetch-service`, never `--profile`.
     the open-prs debounce reads `open-prs.json`'s mtime and would stop
     advancing. `tests/test-upload-skip.sh` and `tests/test-open-prs.sh` fail if
     either returns.
+    `download_sandbox()` is the other half of the same rule: it rsyncs
+    `--no-times --checksum`, so a downloaded file the sandbox never changed
+    keeps its host mtime. `openshell sandbox download` does not preserve
+    mtimes, so a plain `rsync -a` rewrote every file and left the repo newer
+    than `last_upload` — and edit-in-sandbox, download, upload is the usual
+    pattern, so `--quick` had nothing left to skip. `--checksum` alone is not
+    enough: for matching content rsync still does an attribute-only mtime
+    update. Measured with rsync 3.4.1: `-a --delete` touches every path of an
+    identical tree, `-a --checksum --delete` touches every path,
+    `-a --no-times --checksum --delete` touches none.
 17. **Profile name, policy filename, and system-prompt fragment are one
     word.** `--profile home` renders `policies/home.yaml` and appends
     `config/sandbox-claude.d/home.md` if it exists. Adding a profile means
