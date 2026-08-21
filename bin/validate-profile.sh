@@ -45,14 +45,20 @@ net_check() {
 }
 
 PROFILE="${SANDBOX_PROFILE:-work}"
-if [[ "$PROFILE" == "personal" ]]; then
+
+# personal and home carry no work credentials; home is personal plus the
+# Prometheus and Loki reads checked below. Every other expectation is shared,
+# so the two are one case here.
+personal_profile() { [[ "$PROFILE" == personal || "$PROFILE" == home ]]; }
+
+if personal_profile; then
     C_PROFILE="$LIGHT_PURPLE"
 else
     C_PROFILE="$BROWN"
 fi
 
 # --- Auth ---
-if [[ "$PROFILE" == "personal" ]]; then
+if personal_profile; then
     has_oauth=$([[ -f /sandbox/.claude/.credentials.json ]] && echo "yes" || echo "no")
     if isset ANTHROPIC_API_KEY; then
         check "personal auth (API key)" "set" "set"
@@ -77,7 +83,7 @@ else
 fi
 
 # --- Jira ---
-if [[ "$PROFILE" == "personal" ]]; then
+if personal_profile; then
     leaked=$(env | grep -iE "^(JIRA|ATLASSIAN)_" | cut -d= -f1) || true
     if [[ -n "$leaked" ]]; then
         for var in $leaked; do
@@ -92,7 +98,7 @@ else
 fi
 
 # --- Credentials on disk ---
-if [[ "$PROFILE" == "personal" ]]; then
+if personal_profile; then
     [[ -d /sandbox/.config/gcloud ]] && check "gcloud config dir" "absent" "present" || check "gcloud config dir" "absent" "absent"
     [[ -d /sandbox/.config/gws ]] && check "gws config dir" "absent" "present" || check "gws config dir" "absent" "absent"
 else
@@ -103,24 +109,24 @@ fi
 # --- OTEL ---
 isset CLAUDE_CODE_ENABLE_TELEMETRY && check "OTEL telemetry" "enabled" "enabled" || check "OTEL telemetry" "enabled" "disabled"
 isset OTEL_EXPORTER_OTLP_ENDPOINT && check "OTLP endpoint" "set" "set" || check "OTLP endpoint" "set" "unset"
-if [[ "$PROFILE" == "personal" ]]; then
-    isset SANDBOX_PROFILE && check "SANDBOX_PROFILE (OTEL tag)" "set" "set" || check "SANDBOX_PROFILE (OTEL tag)" "set" "unset"
-fi
+isset SANDBOX_PROFILE && check "SANDBOX_PROFILE (OTEL tag)" "set" "set" || check "SANDBOX_PROFILE (OTEL tag)" "set" "unset"
 
 # --- Network ---
 if command -v curl &>/dev/null; then
     actual=$(net_check https://api.anthropic.com)
-    [[ "$PROFILE" == "personal" ]] && check "api.anthropic.com" "reachable" "$actual" || check "api.anthropic.com" "blocked" "$actual"
+    personal_profile && check "api.anthropic.com" "reachable" "$actual" || check "api.anthropic.com" "blocked" "$actual"
 
     actual=$(net_check https://us-east5-aiplatform.googleapis.com)
-    [[ "$PROFILE" == "personal" ]] && check "googleapis.com" "blocked" "$actual" || check "googleapis.com" "reachable" "$actual"
+    personal_profile && check "googleapis.com" "blocked" "$actual" || check "googleapis.com" "reachable" "$actual"
 
     actual=$(net_check https://redhat.atlassian.net)
-    [[ "$PROFILE" == "personal" ]] && check "redhat.atlassian.net" "blocked" "$actual" || check "redhat.atlassian.net" "reachable" "$actual"
+    personal_profile && check "redhat.atlassian.net" "blocked" "$actual" || check "redhat.atlassian.net" "reachable" "$actual"
 
     # Telemetry query endpoints are site-specific and arrive via /sandbox/.env.
     # A missing URL fails rather than skips: a skipped check reads the same as
     # a passing one, so an endpoint that is actually reachable would go unseen.
+    # The one axis where home and personal part company: home may read the
+    # telemetry back, personal may only push it.
     [[ "$PROFILE" == "personal" ]] && query_expect="blocked" || query_expect="reachable"
     if isset SANDBOX_PROMETHEUS_URL; then
         actual=$(net_check "$SANDBOX_PROMETHEUS_URL")

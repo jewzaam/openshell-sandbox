@@ -12,6 +12,13 @@ them: `config/site.env` (§6.2), policy templating and the rendered
 Written because adding a "home" environment exposed that `--policy` and
 `--profile` are two names for overlapping concerns.
 
+**§1 is out of date and kept as written.** Since it was recorded: `code.yaml`
+is `work.yaml`, `home` is a real profile (personal plus Prometheus and Loki
+reads), `--profile` is required on `--create`/`--recreate` and on every
+`scode`, there is no `DEFAULT_PROFILE`, and `policy_for_profile()` is gone —
+profile name and policy filename are one word. Every file:line below predates
+that. The proposal itself (§2 onward) is unchanged and still unimplemented.
+
 ## 1. Current state
 
 ### 1.1 What exists

@@ -1,5 +1,7 @@
-# OpenShell sandbox policy: code profile (default)
-# Vertex AI (Google Cloud) + Jira
+# OpenShell sandbox policy: home profile
+# Personal Claude subscription (API key, not Vertex) — no work credentials.
+# Same as personal, plus Prometheus and Loki reads: this is the machine whose
+# telemetry it is, so a session can query its own history back.
 #
 # ${OTEL_HOST}, ${OTEL_PORT}, ${PROMETHEUS_HOST}, ${PROMETHEUS_PORT},
 # ${LOKI_HOST}, and ${LOKI_PORT} are substituted from config/site.env by
@@ -35,51 +37,34 @@ process:
   run_as_group: sandbox
 
 network_policies:
-  vertex_ai:
-    name: vertex-ai-inference
+  anthropic_api:
+    name: anthropic-api
     endpoints:
-      - host: "**.googleapis.com"
+      - host: api.anthropic.com
         port: 443
         protocol: rest
         enforcement: enforce
         access: full
-      - host: oauth2.googleapis.com
+      - host: console.anthropic.com
         port: 443
         protocol: rest
         enforcement: enforce
         access: full
-    binaries:
-      - { path: "/**" }
-
-  jira_api:
-    name: jira-rw
-    endpoints:
-      - host: redhat.atlassian.net
+      - host: platform.claude.com
         port: 443
         protocol: rest
         enforcement: enforce
         access: full
-      - host: api.atlassian.com
+      - host: claude.ai
         port: 443
         protocol: rest
         enforcement: enforce
         access: full
-      - host: auth.atlassian.com
+      - host: statsig.anthropic.com
         port: 443
         protocol: rest
         enforcement: enforce
         access: full
-    binaries:
-      - { path: "/**" }
-
-  npm:
-    name: npm-readonly
-    endpoints:
-      - host: registry.npmjs.org
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
     binaries:
       - { path: "/**" }
 
@@ -110,6 +95,17 @@ network_policies:
     endpoints:
       - host: ${LOKI_HOST}
         port: ${LOKI_PORT}
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
+  npm:
+    name: npm-readonly
+    endpoints:
+      - host: registry.npmjs.org
+        port: 443
         protocol: rest
         enforcement: enforce
         access: read-only

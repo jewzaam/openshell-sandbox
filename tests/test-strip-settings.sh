@@ -7,8 +7,8 @@
 # line, so they are stripped for every profile.
 #
 # Also pins the strip rules that were already there: host paths rewritten to
-# /sandbox, permissions.allow dropped, work-only env gone on personal, and only
-# the dummy OTEL hooks kept (Claude Code emits no telemetry for a hook type
+# /sandbox, permissions.allow dropped, work-only env gone on personal/home, and
+# only the dummy OTEL hooks kept (Claude Code emits no telemetry for a hook type
 # with no registered hook, which is the only reason those entries exist).
 #
 # Run: tests/test-strip-settings.sh
@@ -55,7 +55,7 @@ strip() { python3 "$STRIP" "$S" /home/me "$1"; }
 get() { jq -r "$1" "$S"; }
 
 # --- model pinning goes, on every profile ---
-for profile in personal code ""; do
+for profile in personal home work ""; do
     seed
     strip "$profile"
     for key in ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL; do
@@ -67,22 +67,24 @@ for profile in personal code ""; do
         || { echo "FAIL: unrelated env dropped on profile '${profile:-<none>}'" >&2; fail=1; }
 done
 
-# --- personal also loses work-only env; other profiles keep it ---
-seed
-strip personal
-[[ "$(get '.env.CLAUDE_CODE_USE_VERTEX // "gone"')" == "gone" ]] \
-    || { echo "FAIL: vertex env survived on personal" >&2; fail=1; }
-[[ "$(get '.env.JIRA_URL // "gone"')" == "gone" ]] \
-    || { echo "FAIL: jira env survived on personal" >&2; fail=1; }
+# --- personal and home lose work-only env; work keeps it ---
+for profile in personal home; do
+    seed
+    strip "$profile"
+    [[ "$(get '.env.CLAUDE_CODE_USE_VERTEX // "gone"')" == "gone" ]] \
+        || { echo "FAIL: vertex env survived on ${profile}" >&2; fail=1; }
+    [[ "$(get '.env.JIRA_URL // "gone"')" == "gone" ]] \
+        || { echo "FAIL: jira env survived on ${profile}" >&2; fail=1; }
+done
 
 seed
-strip code
+strip work
 [[ "$(get '.env.CLAUDE_CODE_USE_VERTEX')" == "1" ]] \
     || { echo "FAIL: work profile lost its vertex env" >&2; fail=1; }
 
 # --- the pre-existing rules ---
 seed
-strip code
+strip work
 [[ "$(get '.permissions.allow // "gone"')" == "gone" ]] \
     || { echo "FAIL: permissions.allow survived" >&2; fail=1; }
 [[ "$(get '.permissions.deny[0]')" == "Read(/etc/**)" ]] \

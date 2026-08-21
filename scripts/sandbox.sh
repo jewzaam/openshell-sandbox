@@ -178,8 +178,9 @@ OPTIONS:
                       unchanged since their last upload. Plain --upload always
                       sends, which is how sandbox-side edits get wiped.
                       With --refresh: skip per-repo context, config only
-    --policy NAME     Policy name or path (e.g. research, work). Standalone: hot-swap on running sandbox
-    --profile NAME    Credential profile (e.g. personal). Controls env vars, uploads, and default policy.
+    --policy NAME     Policy name or path (e.g. research). Standalone: hot-swap on running sandbox
+    --profile NAME    Credential profile: work, personal, or home. Controls env vars, uploads,
+                      and the policy of the same name. REQUIRED with --create and --recreate.
                       Only valid with --create, --recreate, or --ensure — applied at build, not after
     --gateway NAME    OpenShell gateway (default: \$OPENSHELL_GATEWAY)
     --refresh [NAME]  Re-upload ~/.claude/, bin/, .bashrc, .env, system prompt
@@ -196,8 +197,8 @@ OPTIONS:
     --help            Show this help
 
 EXAMPLES:
-    $(basename "$0") --create myapp --repo git@github.com:org/myapp.git --ref pr/42
-    $(basename "$0") --ensure myapp-pr-42 --repo git@github.com:org/myapp.git --ref pr/42
+    $(basename "$0") --create myapp --profile work --repo git@github.com:org/myapp.git --ref pr/42
+    $(basename "$0") --ensure myapp-pr-42 --profile work --repo git@github.com:org/myapp.git --ref pr/42
     $(basename "$0") --add-repo myapp --repo git@github.com:org/lib.git --ref v2.0
     $(basename "$0") --add-repo myapp --repo git@github.com:org/ui.git --source-dir ~/source/ui
     $(basename "$0") --download myapp
@@ -349,8 +350,8 @@ upload_repo() {
     if [[ -z "$effective_profile" && -f "${sandbox_dir}/manifest.json" ]]; then
         effective_profile=$(jq -r '.profile // empty' "${sandbox_dir}/manifest.json" 2>/dev/null || true)
     fi
-    # Personal profile: block private repos
-    if [[ "$effective_profile" == "personal" && -d "${sandbox_dir}/${repo_name}/.git" ]]; then
+    # Personal/home profiles: block private repos
+    if personal_profile "$effective_profile" && [[ -d "${sandbox_dir}/${repo_name}/.git" ]]; then
         local origin_url
         origin_url=$(git -C "${sandbox_dir}/${repo_name}" remote get-url origin 2>/dev/null || true)
         if [[ -n "$origin_url" ]]; then
@@ -605,8 +606,8 @@ upload_config() {
         rm -rf "$GIT_TMP"
     fi
 
-    # Upload gws (Google Workspace CLI) readonly credentials (skip for personal profile)
-    if [[ "$SANDBOX_PROFILE" != "personal" ]]; then
+    # Upload gws (Google Workspace CLI) readonly credentials (work profile only)
+    if ! personal_profile "$SANDBOX_PROFILE"; then
         GWS_SANDBOX_DIR="${HOME}/.config/gws-sandbox"
         if [[ -d "$GWS_SANDBOX_DIR" ]]; then
             GWS_TMP="$(mktemp -d)"
@@ -635,7 +636,14 @@ fetch_service_teardown() {
     # grant points at nothing, so there is no rush and no unsafe interval.
     "${REPO_ROOT}/fetchsvc/fetchsvc.sh" down
 
-    local revert="personal"
+    # Revert to the sandbox's own profile policy, not a fixed name: home and
+    # personal differ, and handing a home sandbox back the personal policy
+    # takes away the Prometheus and Loki reads it was built with.
+    local revert
+    revert="$(jq -r '.profile // "personal"' \
+        "${SANDBOXES_DIR}/$(infer_sandbox_name || true)/manifest.json" 2>/dev/null)" \
+        || revert="personal"
+    [[ -n "$revert" ]] || revert="personal"
     if [[ -t 0 ]]; then
         echo "" >&2
         echo "Revert policy (empty = leave fetch-service applied):" >&2
@@ -708,13 +716,18 @@ upload_static() {
         profile=$(jq -r '.profile // empty' "${sandbox_dir}/manifest.json" 2>/dev/null || true)
     fi
 
-    # copy: system prompt
+    # copy: system prompt — the base, plus this profile's additions appended
+    # from config/sandbox-claude.d/<profile>.md. Additive, not subtractive: the
+    # sed this replaced deleted from "## Jira" to the next "## " heading, so
+    # the base file's section order silently decided what a personal sandbox
+    # saw. Observability needs nothing here either way — the prompt names no
+    # endpoints, it points at openshell-policy.yaml, which already omits
+    # whatever the profile cannot reach.
     cp "${REPO_ROOT}/config/sandbox-claude.md" "${tmp}/source/CLAUDE.md"
-    if [[ "$profile" == "personal" ]]; then
-        # Strip the Jira section. Observability needs no stripping — the prompt
-        # names no endpoints, it points at openshell-policy.yaml, which already
-        # omits whatever this profile cannot reach.
-        sed -i '/^## Jira$/,/^## /{ /^## Jira$/d; /^## /!d; }' "${tmp}/source/CLAUDE.md"
+    local profile_prompt="${REPO_ROOT}/config/sandbox-claude.d/${profile}.md"
+    if [[ -n "$profile" && -f "$profile_prompt" ]]; then
+        printf '\n' >> "${tmp}/source/CLAUDE.md"
+        cat "$profile_prompt" >> "${tmp}/source/CLAUDE.md"
     fi
 
     # copy: manifest — init_manifest() writes the skeleton before create, so
@@ -742,13 +755,6 @@ upload_static() {
     run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
         "${tmp}/source" /sandbox
     rm -rf "$tmp"
-}
-
-policy_for_profile() {
-    case "$1" in
-        personal) resolve_policy "personal" ;;
-        *)        resolve_policy "code" ;;
-    esac
 }
 
 resolve_policy() {
@@ -943,6 +949,20 @@ if [[ "$PROFILE_FROM_CLI" == true \
     echo "error: --profile is only valid with --create, --recreate, or --ensure." >&2
     echo "  Profile is applied when a sandbox is built, not afterwards." >&2
     echo "  To switch an existing sandbox: $(basename "$0") --recreate NAME --profile ${SANDBOX_PROFILE}" >&2
+    exit 1
+fi
+
+# The two paths that build a sandbox name the profile or do not run. There is
+# no machine default to fall back on: the profile decides which credentials
+# leave the host, and inheriting that from a config file means the command
+# that uploads a work token looks identical to the one that does not.
+if [[ ( "$CREATE_MODE" == true || "$RECREATE_MODE" == true ) && -z "$SANDBOX_PROFILE" ]]; then
+    echo "error: --profile is required with --create and --recreate (work, personal, home)." >&2
+    exit 1
+fi
+
+if [[ -n "$SANDBOX_PROFILE" ]] && ! valid_profile "$SANDBOX_PROFILE"; then
+    echo "error: unknown profile '${SANDBOX_PROFILE}' (valid: work, personal, home)." >&2
     exit 1
 fi
 
@@ -1246,14 +1266,6 @@ if [[ -z "$SANDBOX_PROFILE" && -n "$SANDBOX_NAME" && -f "${SANDBOXES_DIR}/${SAND
     fi
 fi
 
-# Machine default, lowest precedence — after the manifest, so an existing
-# sandbox keeps the profile it was built with even on a machine that defaults
-# to another. Optional, unlike the site URLs: unset means the work default.
-if [[ -z "$SANDBOX_PROFILE" && -n "${DEFAULT_PROFILE:-}" ]]; then
-    SANDBOX_PROFILE="$DEFAULT_PROFILE"
-    echo "using default profile '${SANDBOX_PROFILE}' from ${SITE_ENV}" >&2
-fi
-
 # ---------------------------------------------------------------------------
 # Resolve policy
 # ---------------------------------------------------------------------------
@@ -1268,8 +1280,12 @@ if [[ -n "$POLICY_FILE" && "$REFRESH_MODE" == true ]]; then
     exit 1
 fi
 
+# Profile name and policy name are the same word — work, personal, home. The
+# `:-work` covers a sandbox whose manifest predates .profile: --create demands
+# a profile, and every other path that reaches here renders a temp policy it
+# never installs, so the fallback picks a file and changes nothing.
 if [[ -z "$POLICY_FILE" ]]; then
-    POLICY_FILE="$(policy_for_profile "$SANDBOX_PROFILE")" || exit 1
+    POLICY_FILE="$(resolve_policy "${SANDBOX_PROFILE:-work}")" || exit 1
 fi
 
 # Render to a temp file. It is handed to `openshell sandbox create` below and
@@ -1284,14 +1300,11 @@ POLICY_FILE="$(render_policy "$POLICY_FILE")" || exit 1
 
 # Build active var list based on profile
 ACTIVE_VARS=()
-case "$SANDBOX_PROFILE" in
-    personal)
-        ACTIVE_VARS+=("${ANTHROPIC_VARS[@]}" "${CLAUDE_VARS[@]}" "${OTEL_VARS[@]}")
-        ;;
-    *)
-        ACTIVE_VARS+=("${ALL_VARS[@]}")
-        ;;
-esac
+if personal_profile "$SANDBOX_PROFILE"; then
+    ACTIVE_VARS+=("${ANTHROPIC_VARS[@]}" "${CLAUDE_VARS[@]}" "${OTEL_VARS[@]}")
+else
+    ACTIVE_VARS+=("${ALL_VARS[@]}")
+fi
 
 ENV_CONTENT=""
 captured=0
@@ -1302,7 +1315,7 @@ for var in "${ACTIVE_VARS[@]}"; do
     fi
 done
 
-if [[ "$SANDBOX_PROFILE" != "personal" ]]; then
+if ! personal_profile "$SANDBOX_PROFILE"; then
     # JIRA env var aliases — tools use inconsistent names
     if [[ -n "${JIRA_USERNAME+x}" && -z "${JIRA_EMAIL+x}" ]]; then
         ENV_CONTENT+="$(printf 'JIRA_EMAIL=%q' "${JIRA_USERNAME}")"$'\n'
@@ -1376,9 +1389,14 @@ ENV_CONTENT+="$(printf 'SANDBOX_HOST_DIR=%q' "${SANDBOXES_DIR}/${SANDBOX_NAME}")
 # label. In manifest.json too, but exporting it saves every consumer a jq call.
 ENV_CONTENT+="$(printf 'SANDBOX_OPENSHELL_NAME=%q' "$(resolve_openshell_name "$SANDBOX_NAME")")"$'\n'
 
-# Profile-specific OTEL resource attribute tagging
-if [[ "$SANDBOX_PROFILE" == "personal" ]]; then
-    ENV_CONTENT+="SANDBOX_PROFILE=personal"$'\n'
+# The profile, by name, for every profile — not just the credential-less ones.
+# validate-profile.sh and claude-wrapper.sh both read it out of /sandbox/.env,
+# and `home` and `personal` differ only in what they may reach, so a tag that
+# lumps them together tells neither of them anything. Also lands in
+# OTEL_RESOURCE_ATTRIBUTES as sandbox.profile (bin/claude.env). Empty only on
+# a pre-.profile manifest, where a blank tag would be worse than none.
+if [[ -n "$SANDBOX_PROFILE" ]]; then
+    ENV_CONTENT+="$(printf 'SANDBOX_PROFILE=%q' "$SANDBOX_PROFILE")"$'\n'
 fi
 
 if [[ $captured -eq 0 ]]; then
@@ -1396,7 +1414,7 @@ fi
 
 # --- Refresh config on existing sandbox ---
 if [[ "$REFRESH_MODE" == true ]]; then
-    if [[ "$SANDBOX_PROFILE" != "personal" ]]; then
+    if ! personal_profile "$SANDBOX_PROFILE"; then
         ensure_gws_creds
     fi
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
@@ -1454,7 +1472,7 @@ fi
 # ensure_gws_creds, then the 120s create. The repo loop fills in .repos later.
 init_manifest "${SANDBOXES_DIR}/${SANDBOX_NAME}" "$SANDBOX_NAME" "$SANDBOX_PROFILE"
 
-if [[ "$SANDBOX_PROFILE" != "personal" ]]; then
+if ! personal_profile "$SANDBOX_PROFILE"; then
     ensure_gws_creds
 fi
 
@@ -1525,7 +1543,7 @@ install_policy "$POLICY_FILE" "${SANDBOXES_DIR}/${SANDBOX_NAME}"
 
 echo "uploading credentials..." >&2
 
-if [[ "$SANDBOX_PROFILE" != "personal" && -d "${HOME}/.config/gcloud" ]]; then
+if ! personal_profile "$SANDBOX_PROFILE" && [[ -d "${HOME}/.config/gcloud" ]]; then
     run openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
         "${HOME}/.config/gcloud" /sandbox/.config
 fi

@@ -16,13 +16,17 @@ SANDBOX_HOME = "/sandbox"
 
 # The host pins models for its own reasons (cost, a rollout, a bug). A sandbox
 # has no business inheriting that: the wrapper decides the model there
-# (personal profile pins --model), and a stale default here silently overrides
+# (personal and home pin --model), and a stale default here silently overrides
 # it with no trace in the command line. Stripped for every profile.
 MODEL_KEYS = (
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
 )
+
+# Profiles that carry no work credentials. home is personal plus Prometheus
+# and Loki reads — a network policy difference, nothing to do with settings.
+PERSONAL_PROFILES = ("personal", "home")
 
 # Personal sandboxes get no work credentials or work-only integrations.
 PERSONAL_STRIP_RE = re.compile(
@@ -46,7 +50,7 @@ def strip_env(settings, profile):
         return
     for key in MODEL_KEYS:
         env.pop(key, None)
-    if profile == "personal":
+    if profile in PERSONAL_PROFILES:
         settings["env"] = {k: v for k, v in env.items() if not PERSONAL_STRIP_RE.match(k)}
 
 
