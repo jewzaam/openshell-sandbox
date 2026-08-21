@@ -132,9 +132,17 @@ and `sandbox.sh --fetch-service`, never `--profile`.
     adding a policy of the same name, and nothing maps between them. The
     prompt fragments are additive: a section that only some profiles should
     see goes in `sandbox-claude.d/<profile>.md`, never in the base with a
-    subtractive `sed` — the base is what personal and home receive verbatim,
-    so `## Jira` back in it leaks work tooling into a personal sandbox.
-    `tests/test-profile-required.sh` fails if it returns.
+    subtractive `sed`. The base is what every profile receives verbatim, so
+    two things stay out of it: `## Jira` (work tooling in a personal sandbox)
+    and reading telemetry back (personal is push-only, and a prompt that says
+    to query Prometheus produces a session arguing with a 403). The base
+    mentions OTEL egress and says outright that silence here means no
+    read access, so a session does not infer capability from the gap.
+    `work.md` and `home.md` therefore carry an identical `## Reading telemetry
+    back` section — two copies of fifteen lines of prose, cheaper than a
+    second include mechanism in `upload_config()`.
+    `tests/test-profile-required.sh` fails if either section returns to the
+    base, and diffs the two fragments so they cannot drift apart.
 
 ## Settled, do not re-evaluate
 
