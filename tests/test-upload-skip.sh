@@ -66,21 +66,55 @@ if [[ "$1 $2" == "sandbox upload" && -n "${UPLOAD_BROKEN:-}" ]]; then
     exit 1
 fi
 # `sandbox download <name> [--gateway X] <remote-path> <dest>` serves from
-# $SANDBOX_FS when one is set. Copied WITHOUT -a on purpose: the real download
-# does not preserve mtimes, and that is the whole reason a download used to
-# make every repo look modified.
+# $SANDBOX_FS when one is set. A .tar source is the repo tarball the exec below
+# just wrote, so it is copied as a file — its path is under /sandbox/source and
+# has already been rewritten into $SANDBOX_FS. Anything else is a directory
+# pull, copied WITHOUT -a: that path does not preserve mtimes, which is the
+# whole reason a download used to make every repo look modified.
 if [[ "$1 $2" == "sandbox download" && -n "${SANDBOX_FS:-}" ]]; then
-    src="${SANDBOX_FS}/$(basename "${@: -2:1}")"
+    src="${@: -2:1}"
     dest="${@: -1}"
-    [[ -d "$src" && -d "$dest" ]] && cp -r "${src}/." "${dest}/"
+    # The real CLI resolves a download source against the workspace root it
+    # discovers with `pwd -P` and refuses anything outside it, which is a
+    # separate gate from the Landlock policy — /tmp is writable and still
+    # rejected. Staging the tarball there shipped and failed on the first real
+    # run; a stub that maps any path into $SANDBOX_FS cannot see that, so it
+    # refuses here too.
+    if [[ "$src" != /sandbox/* ]]; then
+        echo "Error:   × sandbox source path '$src' is outside the sandbox workspace (/sandbox)" >&2
+        exit 1
+    fi
+    if [[ "$src" == *.tar ]]; then
+        src="${SANDBOX_FS}/$(basename "$src")"
+        [[ -f "$src" && -d "$dest" ]] && cp "$src" "${dest}/"
+    else
+        src="${SANDBOX_FS}/$(basename "$src")"
+        [[ -d "$src" && -d "$dest" ]] && cp -r "${src}/." "${dest}/"
+    fi
 fi
-# `sandbox exec ... -- bash -c <script>`: run the script for real against
-# $SANDBOX_FS, so the walk under test is the walk that ships. $EXEC_BROKEN
-# stands in for a dead gateway — the case that must never be read as "clean".
+# `sandbox exec ... -- <command>`: run the command for real with /sandbox/source
+# rewritten to $SANDBOX_FS, so both the clean-repos walk and the download tar
+# are the ones that ship. Everything after `--` is the command, so `bash -c
+# <script>` and `tar cf ...` both work without the stub knowing which is which.
+# $EXEC_BROKEN stands in for a dead gateway — the case that must never be read
+# as "clean".
 if [[ "$1 $2" == "sandbox exec" && -n "${SANDBOX_FS:-}" ]]; then
     [[ -n "${EXEC_BROKEN:-}" ]] && exit 1
-    script="${@: -1}"
-    bash -c "${script//\/sandbox\/source/$SANDBOX_FS}"
+    cmd=(); seen=0
+    for a in "$@"; do
+        [[ $seen == 1 ]] && cmd+=("${a//\/sandbox\/source/$SANDBOX_FS}")
+        [[ "$a" == "--" ]] && seen=1
+    done
+    # Only the two execs the paths under test depend on actually run: the
+    # clean-repos walk (bash -c) and the download tar. Everything else stays a
+    # no-op, as it was before this stub could run commands at all. upload_repo's
+    # `rm -rf /sandbox/source/<repo>` is the one that matters — running it for
+    # real would have every `upload` in this file wipe the fixture, and `upload`
+    # is used throughout just to move the stamp.
+    case "${cmd[0]:-}" in
+        bash|tar) "${cmd[@]}"; exit $? ;;
+    esac
+    exit 0
 fi
 exit 0
 STUBEOF
@@ -277,7 +311,14 @@ mkdir -p "$SANDBOX_FS"
 download() {
     sleep 1
     : > "$CALL_LOG"
-    ( cd "$SBX" && "${WORK}/scripts/sandbox.sh" --download probe "$@" ) >/dev/null 2>&1
+    # Output is dropped, so an unexpected non-zero exit would abort the file
+    # under set -e with nothing said — which is how the tarball-in-/tmp bug
+    # looked here: no FAIL, no pass line, just exit 1. The status is returned
+    # unchanged, because the fail-safe check below asserts on it.
+    ( cd "$SBX" && "${WORK}/scripts/sandbox.sh" --download probe "$@" ) >/dev/null 2>&1 \
+        || { [[ -n "${EXPECT_DOWNLOAD_FAIL:-}" ]] \
+                || echo "note: sandbox.sh --download $* exited non-zero" >&2
+             return 1; }
 }
 
 if command -v rsync >/dev/null 2>&1; then
@@ -304,8 +345,14 @@ fi
 # and downloading a repo to learn whether it was worth downloading is the cost
 # being avoided. One exec covers every repo. ---
 if command -v rsync >/dev/null 2>&1; then
-    pulled() { grep -q 'openshell sandbox download .*/sandbox/source/myrepo' "$CALL_LOG"; }
-    execs() { grep -c 'openshell sandbox exec' "$CALL_LOG"; }
+    # A pull is now the download of that repo's tarball. The tar and the rm that
+    # bracket it are execs, so `execs` counts only the clean-repos walk — the
+    # one exec that runs `bash -c`. Counting every exec would make "one exec for
+    # all repos" grow with the number of repos actually pulled. Matching on the
+    # walk script's own text does not work: the stub logs `openshell $*`, and
+    # the script's embedded newlines put its body on lines of its own.
+    pulled() { grep -q 'openshell sandbox download .*openshell-dl-myrepo\.tar' "$CALL_LOG"; }
+    execs() { grep -c 'openshell sandbox exec .*bash -c' "$CALL_LOG"; }
 
     # host and sandbox agree, and the sandbox has not touched the repo since
     rm -rf "${SANDBOX_FS}/myrepo"
@@ -323,6 +370,37 @@ if command -v rsync >/dev/null 2>&1; then
     grep -q "edited in the sandbox" "${REPO}/file.txt" \
         || { echo "FAIL: --download did not bring the edit to the host" >&2; fail=1; }
 
+    # --- a write inside .venv is not a reason to pull. download_sandbox()'s
+    # rsync drops .venv on arrival, so it is the one thing the walk can find
+    # that cannot change the host copy — and a live virtualenv moves on every
+    # pip install and every .pyc rewrite, which made a Python repo dirty on
+    # every check and dragged the whole venv across to be discarded. The dir is
+    # created BEFORE the stamp on purpose: adding it rewrites the repo root's
+    # own mtime, which is a real change and pulls once. It is the writes
+    # afterwards, inside it, that must not. ---
+    mkdir -p "${SANDBOX_FS}/myrepo/.venv/lib"
+    upload
+    echo wheel > "${SANDBOX_FS}/myrepo/.venv/lib/pkg.so"
+    download
+    pulled && { echo "FAIL: a .venv write made --download pull the whole repo" >&2; fail=1; }
+
+    # ...and a real edit beside a .venv still pulls, without the venv. The
+    # exclusion is the tar's now, not the rsync's — it has to hold at the source
+    # or the bytes cross the wire anyway, which is the whole point of the tar.
+    echo "beside the venv" > "${SANDBOX_FS}/myrepo/file.txt"
+    download
+    pulled || { echo "FAIL: --download skipped a repo edited alongside a .venv" >&2; fail=1; }
+    [[ -e "${REPO}/.venv" ]] \
+        && { echo "FAIL: .venv reached the host" >&2; fail=1; }
+    # ...and specifically at the source. The rsync would drop .venv on arrival
+    # either way, so the check above passes even with the tar's exclusion
+    # removed — it cannot tell "never sent" from "sent and discarded", which is
+    # the entire difference this change exists to make.
+    grep -q 'sandbox exec .*tar cf .*--exclude=\.venv' "$CALL_LOG" \
+        || { echo "FAIL: the source-side tar did not exclude .venv" >&2; fail=1; }
+    grep -q "beside the venv" "${REPO}/file.txt" \
+        || { echo "FAIL: the tar did not carry the real edit to the host" >&2; fail=1; }
+
     # Three repos, ONE exec, and a per-repo answer. A call per repo would
     # multiply the round trip by the repo count, which is the whole cost being
     # avoided — the reference repos are why a download is slow.
@@ -331,7 +409,7 @@ if command -v rsync >/dev/null 2>&1; then
     # space-delimited string, and the delimiters are the only thing stopping
     # one repo's verdict from being read off another's name. Both directions
     # are checked, because only one of them is obvious.
-    pulled_repo() { grep -q "openshell sandbox download .*/sandbox/source/$1" "$CALL_LOG"; }
+    pulled_repo() { grep -q "openshell sandbox download .*openshell-dl-${1}\.tar" "$CALL_LOG"; }
     for r in ball baseballbat; do
         mkdir -p "${SBX}/${r}"
         echo "$r" > "${SBX}/${r}/notes.txt"
@@ -372,12 +450,20 @@ if command -v rsync >/dev/null 2>&1; then
     [[ "$(execs)" == "0" ]] \
         || { echo "FAIL: --download --force still asked the sandbox what changed" >&2; fail=1; }
 
-    # THE FAIL-SAFE: a broken exec means no answer, and no answer means pull.
-    # A wrongly skipped upload costs one tar; a wrongly skipped download loses
+    # THE FAIL-SAFE: a broken exec must never read as "nothing changed". A
+    # wrongly skipped upload costs one tar; a wrongly skipped download loses
     # whatever the session did.
+    #
+    # It used to reach that by pulling every repo when the walk got no answer.
+    # Since the pull builds its tarball over the same exec channel, a dead exec
+    # now fails the download outright instead. Both honour the rule; only a
+    # silent success would break it, so that is what is asserted. The stub's
+    # combination — exec dead, download alive — does not occur in practice:
+    # `openshell sandbox download` rides the same gateway.
     upload
-    EXEC_BROKEN=1 download
-    pulled || { echo "FAIL: --download treated a failed exec as 'nothing changed'" >&2; fail=1; }
+    EXPECT_DOWNLOAD_FAIL=1 EXEC_BROKEN=1 download \
+        && { echo "FAIL: a broken exec let --download exit 0" >&2; fail=1; }
+    pulled && { echo "FAIL: --download reported a pull it could not have made" >&2; fail=1; }
 fi
 
 # --- --download is the mirror: repos and nothing else. Claude session state
