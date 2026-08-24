@@ -90,7 +90,7 @@ fetch_jira_context() {
     local issue
     issue=$(jira_get "/rest/api/3/issue/${key}?fields=${fields}" "$auth")
     if [[ -z "$issue" ]] || echo "$issue" | jq -e '.errorMessages' &>/dev/null; then
-        echo "  warning: could not fetch Jira ${key}" >&2
+        echo "Warning: could not fetch Jira ${key}" >&2
         return
     fi
 
@@ -126,6 +126,19 @@ fetch_jira_context() {
 }
 
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Result marks — see standards/cli/conventions.md. MARK_OK is openshell's own
+# green bold ✓, reproduced because upload_repo() reprints that line to hang the
+# reason off it. Colour only on a tty, so a redirected log keeps the glyphs
+# without the escapes.
+# shellcheck disable=SC2034  # MARK_OK is used by sandbox.sh, which sources this
+if [[ -t 2 ]]; then
+    MARK_OK=$'\033[1;32m✓\033[0m'
+    MARK_SKIP=$'\033[1;33m⊘\033[0m'
+else
+    MARK_OK='✓'
+    MARK_SKIP='⊘'
+fi
 
 # ---------------------------------------------------------------------------
 # Upload change detection
@@ -166,6 +179,10 @@ record_repo_timestamp() {
 # True when the repo has anything modified since its last upload — including
 # never having been uploaded, or a manifest that does not say.
 #
+# Says why on stderr as a bare fragment, naming no repo: upload_repo() captures
+# it and hangs it off its own `✓ Upload complete` line, which sits under an
+# openshell header that has already named one.
+#
 # ponytail: mtime only, like make and like rsync's default. A file edited and
 # restored to its original size and mtime is missed. Content hashing a 59M .git
 # costs more than the tar it saves.
@@ -179,16 +196,18 @@ repo_changed_since_upload() {
             "$manifest" 2>/dev/null || true)
     fi
     if [[ -z "$last_upload" ]]; then
-        echo "  ${repo_name}: no last_upload recorded, uploading" >&2
+        echo "no last_upload recorded" >&2
         return 0
     fi
 
     # -print -quit stops at the first newer path, so a changed repo usually
     # costs far less than the full walk an unchanged one pays.
     #
-    # The path is printed, not just the verdict: "it uploads every time" is
-    # otherwise indistinguishable from a broken stamp, and the answer is
-    # whichever file the walk tripped on.
+    # The tripped path is named, not just the verdict: "it uploads every time" is
+    # otherwise indistinguishable from a broken stamp, and the answer is whichever
+    # file the walk stopped on. Repo-relative, because the absolute prefix is the
+    # same on every line and pushed the reason onto a line of its own. A walk that
+    # stops on the repo directory itself has no tail to show, and names none.
     #
     # Three paths are excluded because `git status` rewrites them and nothing
     # else does. Measured, not assumed: status touches exactly `.git` and
@@ -209,7 +228,9 @@ repo_changed_since_upload() {
         ! -path "${repo_dir}/.git/index.lock" \
         -print -quit 2>/dev/null || true)
     [[ -n "$newer" ]] || return 1
-    echo "  ${repo_name}: newer than ${last_upload} — ${newer}" >&2
+    local tail=""
+    [[ "$newer" == "$repo_dir" ]] || tail=" (${newer#"${repo_dir}/"})"
+    echo "newer than ${last_upload}${tail}" >&2
 }
 
 format_open_prs() {
@@ -247,7 +268,7 @@ gh_retry() {
     while :; do
         "$@" && return 0
         (( attempt++ >= GH_RETRY_ATTEMPTS )) && return 1
-        echo "  gh call failed, retrying in ${delay}s (attempt ${attempt}/${GH_RETRY_ATTEMPTS})..." >&2
+        echo "gh call failed, retrying in ${delay}s (attempt ${attempt}/${GH_RETRY_ATTEMPTS})..." >&2
         sleep "$delay"
         delay=$(( delay * 2 ))
     done
@@ -276,7 +297,7 @@ gh_pr_view_json() {
                 rc=2
                 ;;
             *)
-                echo "  warning: gh pr view failed: $(head -1 "$err")" >&2
+                echo "Warning: gh pr view failed: $(head -1 "$err")" >&2
                 ;;
         esac
     fi
@@ -307,8 +328,7 @@ checkout_pr() {
         return 0
     fi
 
-    echo "  warning: gh pr checkout ${pr_num} failed — falling back to a" >&2
-    echo "    refs/pull fetch, which leaves the branch without an upstream" >&2
+    echo "Warning: gh pr checkout ${pr_num} failed — falling back to a refs/pull fetch, which leaves the branch without an upstream" >&2
     git -C "$target" fetch origin "pull/${pr_num}/head:pr-${pr_num}"
     git -C "$target" checkout "pr-${pr_num}"
 }
@@ -351,7 +371,7 @@ generate_repo_context() {
     fi
 
     if (( open_prs_age < OPEN_PRS_TTL_MINUTES )); then
-        echo "  open-prs.json is ${open_prs_age}m old (< ${OPEN_PRS_TTL_MINUTES}m), skipping PR list fetch" >&2
+        echo "${MARK_SKIP} PR list fetch skipped — open-prs.json is ${open_prs_age}m old (< ${OPEN_PRS_TTL_MINUTES}m)" >&2
     elif fetch_open_prs "$gh_repo" "${open_prs}.tmp"; then
         # A repo with no open PRs gets `{"prs": []}`, not a missing file: the
         # absence of the file used to mean "none", "gh failed", and "not a
@@ -375,7 +395,7 @@ generate_repo_context() {
                 '{fetch_error: ("gh pr list failed for " + $repo), fetch_error_at: $at}' \
                 > "$open_prs"
         fi
-        echo "  open PRs unknown for ${gh_repo} — recorded, no retry for ${OPEN_PRS_TTL_MINUTES}m" >&2
+        echo "Open PRs unknown for ${gh_repo} — recorded, no retry for ${OPEN_PRS_TTL_MINUTES}m" >&2
     fi
 
     # Detect PR from current branch (git state is source of truth, not manifest ref)
@@ -398,7 +418,7 @@ generate_repo_context() {
         pr_arg="${BASH_REMATCH[1]}"
     fi
 
-    echo "  checking branch '${branch}' for PR..." >&2
+    echo "Checking branch '${branch}' for PR..." >&2
     local pr_json rc
     pr_json=$(gh_pr_view_json "$pr_arg" "$gh_repo") || rc=$?
     if [[ -n "${rc:-}" ]]; then
@@ -408,7 +428,7 @@ generate_repo_context() {
         else
             # gh could not answer. Deleting here would throw away correct
             # context on a transient API failure, so keep what is on disk.
-            echo "  keeping existing PR context for ${repo_name} (gh unreachable)" >&2
+            echo "Keeping existing PR context for ${repo_name} (gh unreachable)" >&2
         fi
         return 0
     fi
@@ -420,7 +440,7 @@ generate_repo_context() {
     jq --arg r "$repo_name" --arg ref "pr/${pr_num}" \
         '.repos[$r].ref = $ref' "$manifest" > "${manifest}.tmp" && mv "${manifest}.tmp" "$manifest"
 
-    echo "  generating context for ${repo_name} PR #${pr_num}..." >&2
+    echo "Generating context for ${repo_name} PR #${pr_num}..." >&2
 
     local pr_title pr_branch pr_base pr_body pr_labels pr_assignees
     pr_title=$(echo "$pr_json" | jq -r '.title // ""')
@@ -445,7 +465,7 @@ generate_repo_context() {
         echo ""
         echo "$pr_body"
     } > "${sandbox_dir}/${repo_name}/pr-context.md"
-    echo "  wrote pr-context.md" >&2
+    echo "    wrote pr-context.md" >&2
 
     # jira-context.md — Jira issue context (skip for personal/home profiles)
     personal_profile "$profile" && return 0
@@ -458,7 +478,7 @@ generate_repo_context() {
 
     local auth
     auth=$(jira_auth) || {
-        echo "  warning: JIRA_USERNAME/JIRA_TOKEN not set, skipping Jira context" >&2
+        echo "${MARK_SKIP} Jira context skipped — JIRA_USERNAME/JIRA_TOKEN not set" >&2
         return 0
     }
 
@@ -466,11 +486,11 @@ generate_repo_context() {
         echo "# Jira Context"
         echo ""
         for key in $jira_keys; do
-            echo "  fetching Jira ${key}..." >&2
+            echo "Fetching Jira ${key}..." >&2
             fetch_jira_context "$key" "$auth"
         done
     } > "${sandbox_dir}/${repo_name}/jira-context.md"
-    echo "  wrote jira-context.md" >&2
+    echo "    wrote jira-context.md" >&2
 }
 
 # ---------------------------------------------------------------------------
@@ -556,12 +576,11 @@ guard_private_repo() {
         local repo_name
         repo_name=$(basename "$url" .git)
         echo "" >&2
-        echo "WARNING: '${repo_name}' is a private repo." >&2
-        echo "Personal sandboxes should only use public repos." >&2
+        echo "Warning: '${repo_name}' is a private repo — personal sandboxes should only use public repos." >&2
         echo "" >&2
         read -rp "Continue anyway? [y/N]: " confirm
         if [[ "${confirm:-N}" != [yY] ]]; then
-            echo "aborted." >&2
+            echo "Aborted." >&2
             exit 1
         fi
     fi

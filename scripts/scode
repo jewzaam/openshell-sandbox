@@ -62,7 +62,7 @@ POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --profile)
-            [[ $# -ge 2 ]] || { echo "error: --profile requires NAME" >&2; exit 1; }
+            [[ $# -ge 2 ]] || { echo "Error: --profile requires NAME" >&2; exit 1; }
             SCODE_PROFILE="$2"
             shift 2
             ;;
@@ -75,8 +75,8 @@ done
 set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
 
 if [[ $# -lt 1 ]]; then
-    echo "error: requires --name NAME, SOURCE_PATH, or SANDBOX_DIR" >&2
-    echo "usage: scode --profile NAME [--name NAME | SOURCE_PATH [REF|LABEL] | ~/sandboxes/<name>]" >&2
+    echo "Error: requires --name NAME, SOURCE_PATH, or SANDBOX_DIR" >&2
+    echo "Usage: scode --profile NAME [--name NAME | SOURCE_PATH [REF|LABEL] | ~/sandboxes/<name>]" >&2
     exit 1
 fi
 
@@ -90,11 +90,11 @@ source "${SCRIPT_DIR}/lib.sh"
 # The alternative — reading it back from manifest.json — makes the two commands
 # that upload wildly different credentials look identical at the prompt.
 if [[ -z "$SCODE_PROFILE" ]]; then
-    echo "error: --profile is required (work, personal, home)" >&2
+    echo "Error: --profile is required (work, personal, home)" >&2
     exit 1
 fi
 if ! valid_profile "$SCODE_PROFILE"; then
-    echo "error: unknown profile '${SCODE_PROFILE}' (valid: work, personal, home)" >&2
+    echo "Error: unknown profile '${SCODE_PROFILE}' (valid: work, personal, home)" >&2
     exit 1
 fi
 
@@ -160,14 +160,14 @@ if [[ "$1" =~ ^https://[^/]+/browse/([A-Za-z]+-[0-9]+)$ ]]; then
     sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
     mkdir -p "${sandbox_dir}"
 
-    echo "fetching Jira context for ${jira_key}..." >&2
-    auth=$(jira_auth) || { echo "error: JIRA_USERNAME/JIRA_TOKEN not set" >&2; exit 1; }
+    echo "Fetching Jira context for ${jira_key}..." >&2
+    auth=$(jira_auth) || { echo "Error: JIRA_USERNAME/JIRA_TOKEN not set" >&2; exit 1; }
     {
         echo "# Jira Context"
         echo ""
         fetch_jira_context "$jira_key" "$auth"
     } > "${sandbox_dir}/jira-context.md"
-    echo "  wrote ${sandbox_dir}/jira-context.md" >&2
+    echo "    wrote ${sandbox_dir}/jira-context.md" >&2
 
     write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}"
     exit 0
@@ -225,7 +225,7 @@ fi
 
 # --- Name-only mode: custom sandbox, no repos ---
 if [[ "$1" == "--name" ]]; then
-    [[ $# -ge 2 ]] || { echo "error: --name requires NAME" >&2; exit 1; }
+    [[ $# -ge 2 ]] || { echo "Error: --name requires NAME" >&2; exit 1; }
     sandbox_name="$2"
     sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
 
@@ -237,7 +237,7 @@ fi
 source_path="$(realpath "$1")"
 
 if [[ ! -d "$source_path/.git" ]]; then
-    echo "error: ${source_path} is not a git repository" >&2
+    echo "Error: ${source_path} is not a git repository" >&2
     exit 1
 fi
 
@@ -264,7 +264,7 @@ else
     [[ $# -ge 2 ]] && label="${2//\//-}"
     ref="$(git -C "$source_path" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')" || true
     if [[ -z "$ref" ]]; then
-        echo "error: cannot detect default branch (no origin/HEAD). Specify REF explicitly" >&2
+        echo "Error: cannot detect default branch (no origin/HEAD). Specify REF explicitly" >&2
         exit 1
     fi
 fi
@@ -273,7 +273,7 @@ repo_name="$(basename "$source_path")"
 sandbox_name="${repo_name}-${label:-${ref//\//-}}"
 
 repo_url="$(git -C "$source_path" remote get-url origin 2>/dev/null)" || {
-    echo "error: no origin remote in ${source_path}" >&2
+    echo "Error: no origin remote in ${source_path}" >&2
     exit 1
 }
 
