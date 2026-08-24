@@ -249,6 +249,40 @@ connect_sandbox() {
         --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${workdir} && /sandbox/bin/claude-wrapper.sh"
 }
 
+sandbox_phase() {
+    openshell sandbox list "${GW_FLAG[@]}" --output json 2>/dev/null \
+        | jq -r --arg n "$1" '.[] | select(.name == $n) | .phase'
+}
+
+# An Error-phase sandbox is a stopped container, and `sandbox exec` fails
+# against one. Start it the way claude-dashboard does on click of an error row:
+# podman start, by openshell's own label (same lookup as mint-sandbox-tokens.sh).
+start_error_sandbox() {
+    local os_name="$1" cid elapsed=0
+    [[ "$(sandbox_phase "$os_name")" == "Error" ]] || return 0
+
+    cid=$(podman ps -a --format json 2>/dev/null \
+        | jq -r --arg n "$os_name" '.[] | select(.Labels["openshell.ai/sandbox-name"] == $n) | .Id' | head -1)
+    if [[ -z "$cid" ]]; then
+        echo "Error: sandbox '${os_name}' is in Error phase with no container — recreate it" >&2
+        exit 1
+    fi
+
+    echo "Sandbox in Error phase, starting container..." >&2
+    run podman start "$cid" >/dev/null
+    [[ "$DRYRUN" == true ]] && return 0
+
+    # Wait on openshell's phase, not podman's: exec goes through openshell.
+    while [[ "$(sandbox_phase "$os_name")" != "Ready" ]]; do
+        elapsed=$((elapsed + 1))
+        if [[ $elapsed -ge 30 ]]; then
+            echo "Error: sandbox '${os_name}' not Ready 30s after start" >&2
+            exit 1
+        fi
+        sleep 1
+    done
+}
+
 # ---------------------------------------------------------------------------
 # Name resolution (short_name lives in lib.sh — scode needs it too)
 # ---------------------------------------------------------------------------
@@ -1296,6 +1330,7 @@ if [[ "$ENSURE_MODE" == true ]]; then
                 exit 1
             fi
         fi
+        start_error_sandbox "$OS_NAME"
         echo "Sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
         connect_sandbox "$OS_NAME" "$WORKDIR"
     else
