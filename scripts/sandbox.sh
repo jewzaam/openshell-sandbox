@@ -509,11 +509,21 @@ sandbox_clean_repos() {
     # Same three exclusions as the upload walk: `git status` rewrites exactly
     # `.git`, `.git/index` and `.git/index.lock` and nothing else, so a session
     # with a status-polling prompt would otherwise report every repo dirty.
+    #
+    # `.venv` is pruned, not merely skipped, and the reason is downstream: the
+    # rsync in download_sandbox() drops it on arrival, so it is the one thing a
+    # walk can find that cannot possibly change the host copy. Letting it decide
+    # meant a repo with a live virtualenv was dirty on every check — one pip
+    # install or one `python` run rewriting a `.pyc` — and each verdict dragged
+    # the whole venv over the wire to be discarded. Skipping such a repo loses
+    # nothing, because there was nothing in it the host was ever going to keep.
+    # -prune also stops the walk descending it at all, which is most of the
+    # inodes in a Python repo.
     out=$(openshell sandbox exec --name "$os_name" "${GW_FLAG[@]}" -- bash -c '
 check() {
     d="/sandbox/source/$1"
     [ -d "$d" ] || return 0
-    n=$(find "$d" -newermt "$2" \
+    n=$(find "$d" -name .venv -prune -o -newermt "$2" \
         ! -path "$d/.git" ! -path "$d/.git/index" ! -path "$d/.git/index.lock" \
         -print -quit 2>/dev/null)
     [ -n "$n" ] || echo "CLEAN $1"
@@ -551,14 +561,58 @@ download_sandbox() {
             echo "${MARK_SKIP} Download skipped — ${repo_name} unchanged in the sandbox (--force to pull)" >&2
             continue
         fi
-        mkdir -p "${dl_tmp}/${repo_name}"
+        # tar at the source, pull one file, unpack here. `openshell sandbox
+        # download` takes a path and a destination and nothing else — no
+        # exclude, no filter (openshell-cli/src/main.rs, the Download
+        # subcommand) — so pulling the directory sent every regenerable tree in
+        # it across the wire for the rsync below to discard on arrival. On a
+        # real repo that was a 1.1G .venv inside a 2.4G transfer. tar applies
+        # the same exclusion at the source, so what gets thrown away is never
+        # sent.
+        #
+        # One exclusion, matching the rsync's, and deliberately no list: git's
+        # ignore rules would drop untracked work the host wants, and a
+        # hardcoded set is both incomplete and wrong the moment a virtualenv is
+        # not called .venv. This costs nothing to be wrong about — an
+        # unexcluded tree is transferred, which is exactly today's behavior.
+        #
+        # Uncompressed on purpose. The link is a loopback gRPC channel to a
+        # local container, .git/objects is already compressed, and gzip is one
+        # core against a transfer that may not be bandwidth-bound at all. There
+        # is 186G free, so the tarball costs only disk. `cf`/`xf` -> `czf`/`xzf`
+        # in the two places below if measurement says otherwise.
+        #
+        # It is staged in /sandbox/source, NOT /tmp. `sandbox download` resolves
+        # its source against the workspace root it discovers with `pwd -P` and
+        # refuses anything outside it (openshell-cli/src/ssh.rs,
+        # validate_sandbox_source_path) — a Landlock read_write entry for /tmp
+        # does not enter into it, they are different gates. The repo pulls that
+        # already work prove /sandbox/source/<repo> is inside that root, so a
+        # sibling of the repos is too, whether the root turns out to be
+        # /sandbox or /sandbox/source. It is a sibling and not inside the repo
+        # so that tar is not writing into the tree it is reading.
+        #
+        # A failed transfer leaves the tarball in the sandbox, where a session
+        # will see it. The name is derived from the repo, so the next attempt
+        # truncates it rather than accumulating.
+        local tarball="/sandbox/source/openshell-dl-${repo_name}.tar"
+        run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+            -- tar cf "$tarball" -C /sandbox/source --exclude=.venv "$repo_name"
         transfer_quiet "Download complete — ${repo_name}" \
             run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
-                "/sandbox/source/${repo_name}" "${dl_tmp}/${repo_name}"
+                "$tarball" "$dl_tmp"
+        run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+            -- rm -f "$tarball"
+        # Members are ${repo_name}/..., so this lands where the rsync expects.
+        run tar xf "${dl_tmp}/openshell-dl-${repo_name}.tar" -C "$dl_tmp"
         mkdir -p "${sandbox_dir}/${repo_name}"
-        # Content decides what gets written, not timestamps. `openshell sandbox
-        # download` does not preserve mtimes, so under a plain `rsync -a` every
-        # downloaded file looked newer, rsync rewrote all of them, and the whole
+        # Content decides what gets written, not timestamps. tar does preserve
+        # mtimes, so the original hazard here is gone — but the flags stay,
+        # because what they actually protect is the host copy of a file the
+        # sandbox never touched, and that is unchanged. Before the tar,
+        # `openshell sandbox download` did not preserve mtimes, so under a
+        # plain `rsync -a` every downloaded file looked newer, rsync rewrote
+        # all of them, and the whole
         # repo came out newer than .repos[<name>].last_upload — which made the
         # next `--upload` re-send everything. Edit in the sandbox, download,
         # upload is the usual pattern, so the upload skip had nothing left to
