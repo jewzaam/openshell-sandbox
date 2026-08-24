@@ -39,7 +39,7 @@ set +a
 # that check, and a skipped check is indistinguishable from a passing one.
 for site_var in OTEL_URL PROMETHEUS_URL LOKI_URL; do
     if [[ -z "${!site_var:-}" ]]; then
-        echo "error: ${site_var} not set in ${SITE_ENV} (all values are required)" >&2
+        echo "Error: ${site_var} not set in ${SITE_ENV} (all values are required)" >&2
         exit 1
     fi
 done
@@ -314,7 +314,7 @@ clone_repo_host() {
     local target="${sandbox_dir}/${repo_name}"
 
     if [[ -d "$target" ]]; then
-        echo "  ${repo_name} already cloned, skipping" >&2
+        echo "${MARK_SKIP} Clone skipped — ${repo_name} already cloned" >&2
         return 0
     fi
 
@@ -330,7 +330,7 @@ clone_repo_host() {
             run git -C "$target" checkout "tags/${ref#tag/}"
         else
             if ! run git -C "$target" checkout "$ref" 2>/dev/null; then
-                echo "  warning: ref '${ref}' not found, using default branch" >&2
+                echo "Warning: ref '${ref}' not found, using default branch" >&2
             fi
         fi
     fi
@@ -340,7 +340,7 @@ upload_repo() {
     local sandbox_name="$1" sandbox_dir="$2" repo_name="$3"
     # Pre-delete to avoid tar type conflicts (symlink vs dir) on re-upload
     if [[ -z "$repo_name" ]]; then
-        echo "error: upload_repo called with empty repo_name" >&2
+        echo "Error: upload_repo called with empty repo_name" >&2
         return 1
     fi
     # Resolve profile from manifest if not set (covers --upload sub-invocations)
@@ -364,18 +364,40 @@ upload_repo() {
     # a session's edits inside the sandbox get wiped back to host state — the
     # default path assumes host and sandbox agree, which is the one thing
     # --force cannot assume.
+    #
+    # No caller announces the repo. They used to, before the decision was made,
+    # so every skipped repo printed "uploading X..." directly above the line
+    # saying it was not uploading X — and the four call sites had drifted to two
+    # different indents. openshell announces a repo that really uploads; one that
+    # does not is a single ⊘ line here.
+    local why=""
     if [[ "$FORCE_MODE" == true ]]; then
         generate_repo_context "$sandbox_dir" "$repo_name" "${effective_profile:-${SANDBOX_PROFILE:-}}"
-    elif ! repo_changed_since_upload "$sandbox_dir" "$repo_name"; then
-        echo "  ${repo_name} unchanged locally, skipping (--force to send)" >&2
+    elif why=$(repo_changed_since_upload "$sandbox_dir" "$repo_name" 2>&1); then
+        : # held until the upload finishes, then hung off the ✓ line below
+    else
+        echo "${MARK_SKIP} Upload skipped — ${repo_name} unchanged locally (--force to send)" >&2
         return 0
     fi
 
-    run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
-        -- rm -rf "/sandbox/source/${repo_name}" 2>/dev/null || true
-    run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
-        --no-git-ignore \
-        "${sandbox_dir}/${repo_name}" /sandbox/source/
+    # openshell ends an upload with its own `✓ Upload complete`, which left the
+    # reason no line to sit on but its own. Drop that one line and reprint it
+    # here with the reason attached — two lines per repo instead of three.
+    #
+    # A pipeline, not `2> >(...)`: bash waits for every element of a pipeline, so
+    # the filtered line cannot land after the next repo's header. Buffering
+    # openshell's stderr instead would hold its `Uploading ...` header back until
+    # the transfer finished, which is the only progress a 59M repo shows. The
+    # filter's `|| true` keeps a no-match grep from reading as failure; openshell's
+    # own exit status still reaches `set -o pipefail`.
+    { {
+        run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+            -- rm -rf "/sandbox/source/${repo_name}" 2>/dev/null || true
+        run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
+            --no-git-ignore \
+            "${sandbox_dir}/${repo_name}" /sandbox/source/
+    } 2>&1 1>&3 | { grep --line-buffered -v 'Upload complete$' >&2 || true; } } 3>&1
+    echo "${MARK_OK} Upload complete${why:+ — ${why}}" >&2
 
     # Only a real upload earns a stamp; a dryrun that stamped would make the
     # next real run skip a repo it never sent.
@@ -457,7 +479,7 @@ download_sandbox() {
     local manifest="${sandbox_dir}/manifest.json"
 
     if [[ ! -f "$manifest" ]]; then
-        echo "error: no manifest at ${manifest}" >&2
+        echo "Error: no manifest at ${manifest}" >&2
         exit 1
     fi
 
@@ -475,10 +497,9 @@ download_sandbox() {
     dl_tmp="$(mktemp -d)"
     for repo_name in $repos; do
         if [[ "$clean" == *" ${repo_name} "* ]]; then
-            echo "  ${repo_name} unchanged in the sandbox, skipping (--force to pull)" >&2
+            echo "${MARK_SKIP} Download skipped — ${repo_name} unchanged in the sandbox (--force to pull)" >&2
             continue
         fi
-        echo "  downloading ${repo_name}..." >&2
         mkdir -p "${dl_tmp}/${repo_name}"
         run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
             "/sandbox/source/${repo_name}" "${dl_tmp}/${repo_name}"
@@ -507,23 +528,21 @@ upload_sandbox() {
     local manifest="${sandbox_dir}/manifest.json"
 
     if [[ ! -f "$manifest" ]]; then
-        echo "error: no manifest at ${manifest}" >&2
+        echo "Error: no manifest at ${manifest}" >&2
         exit 1
     fi
 
     if [[ -n "$target_repo" ]]; then
         if [[ ! -d "${sandbox_dir}/${target_repo}" ]]; then
-            echo "error: repo not found at ${sandbox_dir}/${target_repo}" >&2
+            echo "Error: repo not found at ${sandbox_dir}/${target_repo}" >&2
             exit 1
         fi
-        echo "  uploading ${target_repo}..." >&2
         upload_repo "$sandbox_name" "$sandbox_dir" "$target_repo"
     else
         local repos
         repos=$(jq -r '.repos | keys[]' "$manifest")
         for repo_name in $repos; do
             if [[ -d "${sandbox_dir}/${repo_name}" ]]; then
-                echo "  uploading ${repo_name}..." >&2
                 upload_repo "$sandbox_name" "$sandbox_dir" "$repo_name"
             fi
         done
@@ -542,7 +561,7 @@ upload_sandbox() {
 download_claude_state() {
     local sandbox_name="$1" sandbox_dir="$2"
     local claude_dir="${sandbox_dir}/claude"
-    echo "  downloading claude session state..." >&2
+    echo "Downloading Claude session state..." >&2
     local dl_tmp
     dl_tmp="$(mktemp -d)"
     mkdir -p "${dl_tmp}/projects"
@@ -558,7 +577,7 @@ download_claude_state() {
     if [[ -f "${dl_tmp}/.credentials.json" ]]; then
         mkdir -p "${claude_dir}"
         cp "${dl_tmp}/.credentials.json" "${claude_dir}/.credentials.json"
-        echo "  preserved OAuth credentials" >&2
+        echo "    preserved OAuth credentials" >&2
     fi
     # Preserve .claude.json (auth state)
     run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
@@ -566,7 +585,7 @@ download_claude_state() {
     if [[ -f "${dl_tmp}/.claude.json" ]]; then
         mkdir -p "${claude_dir}"
         cp "${dl_tmp}/.claude.json" "${claude_dir}/.claude.json"
-        echo "  preserved .claude.json" >&2
+        echo "    preserved .claude.json" >&2
     fi
     rm -rf "$dl_tmp"
 }
@@ -585,7 +604,7 @@ upload_claude_state() {
     if [[ -f "${claude_dir}/.credentials.json" ]]; then
         cp "${claude_dir}/.credentials.json" "${stage}/.claude/.credentials.json"
         has_state=true
-        echo "  restoring OAuth credentials..." >&2
+        echo "Restoring OAuth credentials..." >&2
     fi
     # Stage .claude.json inside .claude/ dir, move after upload
     local restore_claude_json=false
@@ -593,10 +612,10 @@ upload_claude_state() {
         cp "${claude_dir}/.claude.json" "${stage}/.claude/.claude.json"
         has_state=true
         restore_claude_json=true
-        echo "  restoring .claude.json..." >&2
+        echo "Restoring .claude.json..." >&2
     fi
     if [[ "$has_state" == true ]]; then
-        echo "  restoring claude session state..." >&2
+        echo "Restoring Claude session state..." >&2
         run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
             "${stage}/.claude" /sandbox
         if [[ "$restore_claude_json" == true ]]; then
@@ -611,7 +630,7 @@ upload_config() {
     local sandbox_target="$1"
     local sandbox_dir="$2"
 
-    echo "uploading claude config..." >&2
+    echo "Uploading Claude config..." >&2
     if [[ -d "${HOME}/.claude" ]]; then
         CLAUDE_TMP="$(mktemp -d)"
         rsync -rL \
@@ -722,12 +741,11 @@ fetch_service_teardown() {
         echo "Revert policy (empty = leave fetch-service applied):" >&2
         read -erp "> " -i "$revert" revert
     else
-        echo "not a terminal — reverting policy to ${revert}" >&2
+        echo "Not a terminal — reverting policy to ${revert}" >&2
     fi
 
     if [[ -z "$revert" ]]; then
-        echo "policy left as fetch-service — the sandbox keeps a grant to a" >&2
-        echo "service that is no longer running" >&2
+        echo "Policy left as fetch-service — the sandbox keeps a grant to a service that is no longer running" >&2
         return 0
     fi
     "$0" --policy "$revert" ${GATEWAY:+--gateway "$GATEWAY"}
@@ -749,7 +767,7 @@ render_policy() {
     done
     sed "${expr[@]}" "$src" > "$dest"
     if grep -q '\${' "$dest"; then
-        echo "error: unresolved placeholder in ${src} after rendering:" >&2
+        echo "Error: unresolved placeholder in ${src} after rendering:" >&2
         grep -n '\${' "$dest" >&2
         rm -f "$dest"
         return 1
@@ -820,8 +838,7 @@ upload_static() {
     if [[ -f "${sandbox_dir}/openshell-policy.yaml" ]]; then
         cp "${sandbox_dir}/openshell-policy.yaml" "${tmp}/source/openshell-policy.yaml"
     else
-        echo "warning: no policy artifact in ${sandbox_dir} — leaving the" >&2
-        echo "  sandbox's copy as-is. Run --policy NAME to set and record one." >&2
+        echo "Warning: no policy artifact in ${sandbox_dir} — leaving the sandbox's copy as-is. Run --policy NAME to set and record one." >&2
     fi
 
     # do: upload
@@ -839,7 +856,7 @@ resolve_policy() {
     elif [[ -f "${REPO_ROOT}/policies/${input}" ]]; then
         echo "${REPO_ROOT}/policies/${input}"
     else
-        echo "error: policy not found: ${input} (tried ${REPO_ROOT}/policies/${input}.yaml)" >&2
+        echo "Error: policy not found: ${input} (tried ${REPO_ROOT}/policies/${input}.yaml)" >&2
         return 1
     fi
 }
@@ -854,13 +871,13 @@ while [[ $# -gt 0 ]]; do
             usage 0
             ;;
         --create)
-            [[ $# -ge 2 ]] || { echo "error: --create requires NAME" >&2; exit 1; }
+            [[ $# -ge 2 ]] || { echo "Error: --create requires NAME" >&2; exit 1; }
             CREATE_MODE=true
             SANDBOX_NAME="$2"
             shift 2
             ;;
         --policy)
-            [[ $# -ge 2 ]] || { echo "error: --policy requires NAME" >&2; exit 1; }
+            [[ $# -ge 2 ]] || { echo "Error: --policy requires NAME" >&2; exit 1; }
             POLICY_FILE="$(resolve_policy "$2")" || exit 1
             shift 2
             ;;
@@ -869,7 +886,7 @@ while [[ $# -gt 0 ]]; do
             if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
             else
-                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --refresh requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "Error: --refresh requires NAME (not in a sandbox directory)" >&2; exit 1; }
                 shift
             fi
             ;;
@@ -878,27 +895,27 @@ while [[ $# -gt 0 ]]; do
             if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
             else
-                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --recreate requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "Error: --recreate requires NAME (not in a sandbox directory)" >&2; exit 1; }
                 shift
             fi
             ;;
         --source-dir)
-            [[ $# -ge 2 ]] || { echo "error: --source-dir requires PATH" >&2; exit 1; }
+            [[ $# -ge 2 ]] || { echo "Error: --source-dir requires PATH" >&2; exit 1; }
             SOURCE_DIR="$2"
             shift 2
             ;;
         --repo)
-            [[ $# -ge 2 ]] || { echo "error: --repo requires URL" >&2; exit 1; }
+            [[ $# -ge 2 ]] || { echo "Error: --repo requires URL" >&2; exit 1; }
             REPOS+=("$2")
             REFS+=("")
             shift 2
             ;;
         --ref)
-            [[ $# -ge 2 ]] || { echo "error: --ref requires REF" >&2; exit 1; }
+            [[ $# -ge 2 ]] || { echo "Error: --ref requires REF" >&2; exit 1; }
             if [[ ${#REFS[@]} -gt 0 ]]; then
                 REFS[${#REFS[@]}-1]="$2"
             else
-                echo "error: --ref must follow --repo or --add-repo" >&2
+                echo "Error: --ref must follow --repo or --add-repo" >&2
                 exit 1
             fi
             shift 2
@@ -908,7 +925,7 @@ while [[ $# -gt 0 ]]; do
             if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
             else
-                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --ensure requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "Error: --ensure requires NAME (not in a sandbox directory)" >&2; exit 1; }
                 shift
             fi
             ;;
@@ -917,7 +934,7 @@ while [[ $# -gt 0 ]]; do
             if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
             else
-                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --add-repo requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "Error: --add-repo requires NAME (not in a sandbox directory)" >&2; exit 1; }
                 shift
             fi
             ;;
@@ -926,7 +943,7 @@ while [[ $# -gt 0 ]]; do
             if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
             else
-                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --download requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "Error: --download requires NAME (not in a sandbox directory)" >&2; exit 1; }
                 shift
             fi
             ;;
@@ -935,7 +952,7 @@ while [[ $# -gt 0 ]]; do
             if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
             else
-                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "error: --upload requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                SANDBOX_NAME="$(infer_sandbox_name)" || { echo "Error: --upload requires NAME (not in a sandbox directory)" >&2; exit 1; }
                 shift
             fi
             ;;
@@ -947,7 +964,7 @@ while [[ $# -gt 0 ]]; do
             if [[ $# -ge 2 && "$2" != -* ]]; then
                 CONNECT_NAME="$2"; shift 2
             else
-                CONNECT_NAME="$(infer_sandbox_name)" || { echo "error: --connect requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                CONNECT_NAME="$(infer_sandbox_name)" || { echo "Error: --connect requires NAME (not in a sandbox directory)" >&2; exit 1; }
                 shift
             fi
             ;;
@@ -955,7 +972,7 @@ while [[ $# -gt 0 ]]; do
             if [[ $# -ge 2 && "$2" != -* ]]; then
                 DELETE_NAME="$2"; shift 2
             else
-                DELETE_NAME="$(infer_sandbox_name)" || { echo "error: --delete requires NAME (not in a sandbox directory)" >&2; exit 1; }
+                DELETE_NAME="$(infer_sandbox_name)" || { echo "Error: --delete requires NAME (not in a sandbox directory)" >&2; exit 1; }
                 shift
             fi
             ;;
@@ -976,7 +993,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --profile)
-            [[ $# -ge 2 ]] || { echo "error: --profile requires NAME" >&2; exit 1; }
+            [[ $# -ge 2 ]] || { echo "Error: --profile requires NAME" >&2; exit 1; }
             SANDBOX_PROFILE="$2"
             PROFILE_FROM_CLI=true
             shift 2
@@ -990,16 +1007,16 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --gateway|-g)
-            [[ $# -ge 2 ]] || { echo "error: --gateway requires NAME" >&2; exit 1; }
+            [[ $# -ge 2 ]] || { echo "Error: --gateway requires NAME" >&2; exit 1; }
             GATEWAY="$2"
             shift 2
             ;;
         --*)
-            echo "error: unknown option: $1" >&2
+            echo "Error: unknown option: $1" >&2
             usage 1
             ;;
         *)
-            echo "error: unexpected argument: $1" >&2
+            echo "Error: unexpected argument: $1" >&2
             usage 1
             ;;
     esac
@@ -1027,9 +1044,9 @@ if [[ "$PROFILE_FROM_CLI" == true \
       && "$CREATE_MODE" != true \
       && "$RECREATE_MODE" != true \
       && "$ENSURE_MODE" != true ]]; then
-    echo "error: --profile is only valid with --create, --recreate, or --ensure." >&2
-    echo "  Profile is applied when a sandbox is built, not afterwards." >&2
-    echo "  To switch an existing sandbox: $(basename "$0") --recreate NAME --profile ${SANDBOX_PROFILE}" >&2
+    echo "Error: --profile is only valid with --create, --recreate, or --ensure." >&2
+    echo "    profile is applied when a sandbox is built, not afterwards" >&2
+    echo "    to switch an existing sandbox: $(basename "$0") --recreate NAME --profile ${SANDBOX_PROFILE}" >&2
     exit 1
 fi
 
@@ -1038,12 +1055,12 @@ fi
 # leave the host, and inheriting that from a config file means the command
 # that uploads a work token looks identical to the one that does not.
 if [[ ( "$CREATE_MODE" == true || "$RECREATE_MODE" == true ) && -z "$SANDBOX_PROFILE" ]]; then
-    echo "error: --profile is required with --create and --recreate (work, personal, home)." >&2
+    echo "Error: --profile is required with --create and --recreate (work, personal, home)." >&2
     exit 1
 fi
 
 if [[ -n "$SANDBOX_PROFILE" ]] && ! valid_profile "$SANDBOX_PROFILE"; then
-    echo "error: unknown profile '${SANDBOX_PROFILE}' (valid: work, personal, home)." >&2
+    echo "Error: unknown profile '${SANDBOX_PROFILE}' (valid: work, personal, home)." >&2
     exit 1
 fi
 
@@ -1063,10 +1080,10 @@ fi
 # --- Fetch service: run in the foreground, tear down on exit ---
 if [[ "$FETCH_SERVICE_MODE" == true ]]; then
     FETCHSVC="${REPO_ROOT}/fetchsvc/fetchsvc.sh"
-    [[ -x "$FETCHSVC" ]] || { echo "error: ${FETCHSVC} not executable" >&2; exit 1; }
+    [[ -x "$FETCHSVC" ]] || { echo "Error: ${FETCHSVC} not executable" >&2; exit 1; }
 
     if "$FETCHSVC" running; then
-        echo "fetch service already running — will stop it on exit" >&2
+        echo "Fetch service already running — will stop it on exit" >&2
     else
         "$FETCHSVC" up || exit 1
     fi
@@ -1078,7 +1095,7 @@ if [[ "$FETCH_SERVICE_MODE" == true ]]; then
     trap 'trap - INT TERM EXIT; fetch_service_teardown' INT TERM EXIT
     "$0" --policy fetch-service ${GATEWAY:+--gateway "$GATEWAY"} || exit 1
 
-    echo "following log — Ctrl-C stops the service" >&2
+    echo "Following log — Ctrl-C stops the service" >&2
     "$FETCHSVC" logs
     exit 0
 fi
@@ -1100,7 +1117,7 @@ elif [[ -n "$DELETE_NAME" ]]; then
     if [[ -d "${SANDBOXES_DIR}/${DELETE_NAME}" ]]; then
         # ${...:?} so an empty name aborts instead of deleting ~/sandboxes
         rm -rf "${SANDBOXES_DIR:?}/${DELETE_NAME:?}"
-        echo "removed local state: ${SANDBOXES_DIR}/${DELETE_NAME}" >&2
+        echo "Removed local state: ${SANDBOXES_DIR}/${DELETE_NAME}" >&2
     fi
     exit 0
 elif [[ -n "$CONNECT_NAME" ]]; then
@@ -1121,7 +1138,7 @@ if [[ "$ADD_REPO_MODE" == true ]]; then
         REFS+=("")
     fi
     if [[ ${#REPOS[@]} -eq 0 ]]; then
-        echo "error: --add-repo requires --repo URL or --source-dir PATH" >&2
+        echo "Error: --add-repo requires --repo URL or --source-dir PATH" >&2
         exit 1
     fi
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
@@ -1138,20 +1155,19 @@ if [[ "$ADD_REPO_MODE" == true ]]; then
         ref="${REFS[$i]:-}"
         repo_name=$(basename "$repo" .git)
 
-        echo "adding ${repo_name} to sandbox ${SANDBOX_NAME}..." >&2
+        echo "Adding ${repo_name} to sandbox ${SANDBOX_NAME}..." >&2
         clone_repo_host "$repo" "$ref" "$SANDBOX_DIR"
 
         sha=$(git -C "${SANDBOX_DIR}/${repo_name}" rev-parse HEAD)
         write_manifest "$SANDBOX_DIR" "$SANDBOX_NAME" "$repo_name" "$repo" "$ref" "$sha"
 
-        echo "uploading ${repo_name}..." >&2
         upload_repo "$OS_NAME" "$SANDBOX_DIR" "$repo_name"
     done
 
     # Re-upload so the sandbox has the updated repo list
     upload_static "$OS_NAME" "$SANDBOX_DIR"
 
-    echo "done." >&2
+    echo "Done." >&2
     exit 0
 fi
 
@@ -1160,10 +1176,10 @@ if [[ "$DOWNLOAD_MODE" == true ]]; then
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
 
-    echo "downloading from sandbox ${SANDBOX_NAME}..." >&2
+    echo "Downloading from sandbox ${SANDBOX_NAME}..." >&2
     download_sandbox "$OS_NAME" "$SANDBOX_DIR"
     download_claude_state "$OS_NAME" "$SANDBOX_DIR"
-    echo "done. files in ${SANDBOX_DIR}/" >&2
+    echo "Done. Files in ${SANDBOX_DIR}/" >&2
     exit 0
 fi
 
@@ -1176,15 +1192,15 @@ if [[ "$UPLOAD_MODE" == true ]]; then
         target_repo=$(basename "${REPOS[0]}" .git)
     fi
 
-    echo "uploading to sandbox ${SANDBOX_NAME}..." >&2
+    echo "Uploading to sandbox ${SANDBOX_NAME}..." >&2
     upload_sandbox "$OS_NAME" "$SANDBOX_DIR" "$target_repo"
     upload_static "$OS_NAME" "$SANDBOX_DIR"
-    echo "done." >&2
+    echo "Done." >&2
     # Last line, so it survives a long upload log. The change check reads
     # mtimes and skips `.git/index`, which is the only thing an unstage
     # touches — see repo_changed_since_upload().
     if [[ "$FORCE_MODE" != true ]]; then
-        echo "note: repos with no detected change are skipped, and unstaging" >&2
+        echo "Note: repos with no detected change are skipped, and unstaging" >&2
         echo "  (git reset) alone is not detected. Re-run with --force to" >&2
         echo "  send every repo." >&2
     fi
@@ -1197,7 +1213,7 @@ if [[ "$RECREATE_MODE" == true ]]; then
     [[ -n "$GATEWAY" ]] && COMMON_ARGS+=(--gateway "$GATEWAY")
     [[ "$DRYRUN" == true ]] && COMMON_ARGS+=(--dryrun)
 
-    echo "recreating sandbox ${SANDBOX_NAME}..." >&2
+    echo "Recreating sandbox ${SANDBOX_NAME}..." >&2
 
     # Pre-flight: check all repos before touching anything
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
@@ -1250,13 +1266,13 @@ if [[ "$ENSURE_MODE" == true ]]; then
         if [[ "$PROFILE_FROM_CLI" == true ]]; then
             manifest_profile=$(jq -r '.profile // empty' "${SANDBOX_DIR}/manifest.json" 2>/dev/null || true)
             if [[ "$SANDBOX_PROFILE" != "$manifest_profile" ]]; then
-                echo "error: sandbox '${SANDBOX_NAME}' exists with profile '${manifest_profile:-<none>}', cannot connect as '${SANDBOX_PROFILE}'." >&2
-                echo "  --ensure connects an existing sandbox; profile is only applied at create." >&2
-                echo "  To switch it: $(basename "$0") --recreate ${SANDBOX_NAME} --profile ${SANDBOX_PROFILE}" >&2
+                echo "Error: sandbox '${SANDBOX_NAME}' exists with profile '${manifest_profile:-<none>}', cannot connect as '${SANDBOX_PROFILE}'." >&2
+                echo "    --ensure connects an existing sandbox; profile is only applied at create" >&2
+                echo "    to switch it: $(basename "$0") --recreate ${SANDBOX_NAME} --profile ${SANDBOX_PROFILE}" >&2
                 exit 1
             fi
         fi
-        echo "sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
+        echo "Sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
         connect_sandbox "$OS_NAME" "$WORKDIR"
     else
         ENSURE_ARGS=(--create "$SANDBOX_NAME")
@@ -1277,11 +1293,11 @@ fi
 
 # --- Policy hot-swap on existing sandbox ---
 if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_MODE" != true ]]; then
-    POLICY_TARGET="$(infer_sandbox_name)" || { echo "error: --policy requires sandbox NAME or CWD under ~/sandboxes/<name>/" >&2; exit 1; }
+    POLICY_TARGET="$(infer_sandbox_name)" || { echo "Error: --policy requires sandbox NAME or CWD under ~/sandboxes/<name>/" >&2; exit 1; }
     OS_NAME=$(resolve_openshell_name "$POLICY_TARGET")
     POLICY_DIR="${SANDBOXES_DIR}/${POLICY_TARGET}"
     POLICY_FILE="$(render_policy "$POLICY_FILE")" || exit 1
-    echo "setting policy on ${POLICY_TARGET}..." >&2
+    echo "Setting policy on ${POLICY_TARGET}..." >&2
     if [[ "$DRYRUN" == true ]]; then
         run openshell policy set "${GW_FLAG[@]}" --policy "$POLICY_FILE" "$OS_NAME"
         exit 0
@@ -1297,7 +1313,7 @@ if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_
         latest_status=$(openshell policy list "${GW_FLAG[@]}" "$OS_NAME" 2>/dev/null \
             | awk 'NR>1 && $1 ~ /^[0-9]+$/ {print $1, $3}' | sort -rn | head -1 | awk '{print $2}')
         if [[ "$latest_status" == "Failed" ]]; then
-            echo "error: policy validation failed" >&2
+            echo "Error: policy validation failed" >&2
             openshell policy list "${GW_FLAG[@]}" "$OS_NAME" >&2
             exit 1
         fi
@@ -1307,9 +1323,9 @@ if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_
         sleep 1
         elapsed=$((elapsed + 1))
         if [[ $elapsed -ge 30 ]]; then
-            echo "error: policy update not applied within 30s" >&2
+            echo "Error: policy update not applied within 30s" >&2
             openshell policy list "${GW_FLAG[@]}" "$OS_NAME" >&2
-            echo "artifact left on the previous policy — re-run once it settles" >&2
+            echo "Artifact left on the previous policy — re-run once it settles" >&2
             exit 1
         fi
     done
@@ -1317,7 +1333,7 @@ if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_
     # Accepted: this is now the effective policy, so it becomes the artifact.
     install_policy "$POLICY_FILE" "$POLICY_DIR"
     upload_static "$OS_NAME" "$POLICY_DIR"
-    echo "done." >&2
+    echo "Done." >&2
     exit 0
 fi
 
@@ -1326,7 +1342,7 @@ fi
 # ---------------------------------------------------------------------------
 
 if [[ -z "$SANDBOX_NAME" && "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
-    echo "error: --create required when --repo is specified" >&2
+    echo "Error: --create required when --repo is specified" >&2
     exit 1
 fi
 
@@ -1335,7 +1351,7 @@ fi
 # empty name — short_name "" hashes to sb-d41d8cd98f00 — and installs the
 # policy into ~/sandboxes//, a directory no sandbox will ever look for.
 if [[ -z "$SANDBOX_NAME" ]]; then
-    echo "error: no sandbox name — nothing to do. See --help for modes." >&2
+    echo "Error: no sandbox name — nothing to do. See --help for modes." >&2
     exit 1
 fi
 
@@ -1346,7 +1362,7 @@ fi
 if [[ -z "$SANDBOX_PROFILE" && -n "$SANDBOX_NAME" && -f "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json" ]]; then
     SANDBOX_PROFILE=$(jq -r '.profile // empty' "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json" 2>/dev/null || true)
     if [[ -n "$SANDBOX_PROFILE" ]]; then
-        echo "using profile '${SANDBOX_PROFILE}' from manifest" >&2
+        echo "Using profile '${SANDBOX_PROFILE}' from manifest" >&2
     fi
 fi
 
@@ -1358,9 +1374,8 @@ fi
 # it take a --policy would render and ship an artifact for a policy the
 # enforcer never received. Standalone --policy is the path that changes one.
 if [[ -n "$POLICY_FILE" && "$REFRESH_MODE" == true ]]; then
-    echo "error: --policy is not valid with --refresh — it would upload a policy" >&2
-    echo "  artifact without applying it to the enforcer." >&2
-    echo "  To change the policy: cd ~/sandboxes/${SANDBOX_NAME} && $(basename "$0") --policy NAME" >&2
+    echo "Error: --policy is not valid with --refresh — it would upload a policy artifact without applying it to the enforcer" >&2
+    echo "    to change the policy: cd ~/sandboxes/${SANDBOX_NAME} && $(basename "$0") --policy NAME" >&2
     exit 1
 fi
 
@@ -1484,9 +1499,9 @@ if [[ -n "$SANDBOX_PROFILE" ]]; then
 fi
 
 if [[ $captured -eq 0 ]]; then
-    echo "warning: no env vars captured, sandbox will have no credentials" >&2
+    echo "Warning: no env vars captured, sandbox will have no credentials" >&2
 else
-    echo "captured $captured env vars" >&2
+    echo "Captured $captured env vars" >&2
 fi
 
 if [[ "$DRYRUN" == true ]]; then
@@ -1502,7 +1517,7 @@ if [[ "$REFRESH_MODE" == true ]]; then
         ensure_gws_creds
     fi
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
-    echo "refreshing config on ${SANDBOX_NAME}..." >&2
+    echo "Refreshing config on ${SANDBOX_NAME}..." >&2
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
     upload_config "$OS_NAME" "$SANDBOX_DIR"
     # Regenerate and upload context files for PR repos. Unconditional: --force
@@ -1514,7 +1529,7 @@ if [[ "$REFRESH_MODE" == true ]]; then
             generate_repo_context "$SANDBOX_DIR" "$repo_name" "${SANDBOX_PROFILE:-}"
             for ctx_file in pr-context.md jira-context.md open-prs.json; do
                 if [[ -f "${SANDBOX_DIR}/${repo_name}/${ctx_file}" ]]; then
-                    echo "  uploading ${ctx_file} for ${repo_name}..." >&2
+                    echo "Uploading ${ctx_file} for ${repo_name}..." >&2
                     # Trailing slash is load-bearing: `sandbox upload` treats a
                     # dest without one as the file's new *name*, so this would
                     # try to write a regular file over the repo directory and
@@ -1529,7 +1544,7 @@ if [[ "$REFRESH_MODE" == true ]]; then
     fi
     # Upload top-level jira-context.md (Jira-seeded sandboxes, no repos)
     if [[ -f "${SANDBOX_DIR}/jira-context.md" ]]; then
-        echo "  uploading jira-context.md..." >&2
+        echo "Uploading jira-context.md..." >&2
         JIRA_TMP="$(mktemp -d)"
         mkdir -p "${JIRA_TMP}/source"
         cp "${SANDBOX_DIR}/jira-context.md" "${JIRA_TMP}/source/jira-context.md"
@@ -1537,7 +1552,7 @@ if [[ "$REFRESH_MODE" == true ]]; then
             "${JIRA_TMP}/source" /sandbox
         rm -rf "$JIRA_TMP"
     fi
-    echo "done. reconnect to apply (sandbox.sh --connect)" >&2
+    echo "Done. Reconnect to apply (sandbox.sh --connect)" >&2
     exit 0
 fi
 
@@ -1568,8 +1583,8 @@ CREATE_CMD+=(--label "source.directory=${SANDBOX_NAME}")
 
 SANDBOX_TARGET="${OPENSHELL_NAME:-}"
 
-echo "creating sandbox '${SANDBOX_NAME}' (openshell: ${OPENSHELL_NAME})..." >&2
-echo "  policy:  ${POLICY_FILE}" >&2
+echo "Creating sandbox '${SANDBOX_NAME}' (openshell: ${OPENSHELL_NAME})..." >&2
+echo "    policy: ${POLICY_FILE}" >&2
 echo "" >&2
 
 # sandbox create hangs on SSH connect (podman driver issue).
@@ -1586,7 +1601,7 @@ else
     while true; do
         if ! kill -0 "$CREATE_PID" 2>/dev/null; then
             if ! wait "$CREATE_PID" 2>/dev/null; then
-                echo "error: sandbox create failed:" >&2
+                echo "Error: sandbox create failed:" >&2
                 cat "$CREATE_LOG" >&2
                 rm -f "$CREATE_LOG"
                 exit 1
@@ -1599,7 +1614,7 @@ else
         elapsed=$((elapsed + 1))
         if [[ $elapsed -ge 120 ]]; then
             kill "$CREATE_PID" 2>/dev/null || true
-            echo "error: sandbox did not reach Ready within 120s" >&2
+            echo "Error: sandbox did not reach Ready within 120s" >&2
             cat "$CREATE_LOG" >&2
             rm -f "$CREATE_LOG"
             exit 1
@@ -1619,7 +1634,7 @@ install_policy "$POLICY_FILE" "${SANDBOXES_DIR}/${SANDBOX_NAME}"
 # Upload credentials
 # ---------------------------------------------------------------------------
 
-echo "uploading credentials..." >&2
+echo "Uploading credentials..." >&2
 
 if ! personal_profile "$SANDBOX_PROFILE" && [[ -d "${HOME}/.config/gcloud" ]]; then
     run openshell sandbox upload "${SANDBOX_TARGET}" "${GW_FLAG[@]}" \
@@ -1648,24 +1663,23 @@ if [[ "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
     mkdir -p "$SANDBOX_DIR"
 
-    echo "cloning repos on host..." >&2
+    echo "Cloning repos on host..." >&2
     for i in "${!REPOS[@]}"; do
         repo="${REPOS[$i]}"
         ref="${REFS[$i]:-}"
         repo_name=$(basename "$repo" .git)
 
-        echo "  ${repo_name}${ref:+ (${ref})}" >&2
+        echo "    ${repo_name}${ref:+ (${ref})}" >&2
         clone_repo_host "$repo" "$ref" "$SANDBOX_DIR"
 
         sha=$(git -C "${SANDBOX_DIR}/${repo_name}" rev-parse HEAD)
         write_manifest "$SANDBOX_DIR" "$SANDBOX_NAME" "$repo_name" "$repo" "$ref" "$sha"
     done
 
-    echo "uploading repos to sandbox..." >&2
+    echo "Uploading repos to sandbox..." >&2
     for i in "${!REPOS[@]}"; do
         repo="${REPOS[$i]}"
         repo_name=$(basename "$repo" .git)
-        echo "  uploading ${repo_name}..." >&2
         upload_repo "$SANDBOX_TARGET" "$SANDBOX_DIR" "$repo_name"
     done
 
@@ -1679,7 +1693,7 @@ fi
 # Upload jira-context.md if present (generated by scode for Jira-seeded sandboxes)
 SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
 if [[ -f "${SANDBOX_DIR}/jira-context.md" ]]; then
-    echo "uploading jira-context.md..." >&2
+    echo "Uploading jira-context.md..." >&2
     JIRA_TMP="$(mktemp -d)"
     mkdir -p "${JIRA_TMP}/source"
     cp "${SANDBOX_DIR}/jira-context.md" "${JIRA_TMP}/source/jira-context.md"
@@ -1694,10 +1708,10 @@ fi
 # ---------------------------------------------------------------------------
 
 if [[ "$NO_CONNECT" == true ]]; then
-    echo "sandbox ready. connect with: sandbox.sh --connect ${SANDBOX_NAME}" >&2
+    echo "Sandbox ready. Connect with: sandbox.sh --connect ${SANDBOX_NAME}" >&2
     exit 0
 fi
 
-echo "starting claude in ${WORKDIR}..." >&2
+echo "Starting Claude in ${WORKDIR}..." >&2
 connect_sandbox "$SANDBOX_TARGET" "$WORKDIR"
 exit $?

@@ -301,6 +301,10 @@ Two things break after a host reboot:
 ## Standards
 
 - Shell scripts: `set -euo pipefail`, no semicolons for chaining (use `&&`)
+- CLI output: `~/source/standards/cli/conventions.md` § Output — sentence case,
+  status at column 0, detail lines indented 4, `⊘` for skipped. openshell prints
+  its own `Uploading ...` / `✓ Upload complete` around every transfer, so this
+  repo announces only what openshell cannot: why a transfer was skipped.
 - Makefile: follows `~/source/standards/build/makefile.md` — `check` is the
   default goal; `test-*` targets are the gate. The standard's Python targets
   (`test-format`, `test-typecheck`, `test-coverage`, `install-dev`) have no

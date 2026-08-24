@@ -55,6 +55,13 @@ export CALL_LOG
 cat > "${STUB}/openshell" << 'STUBEOF'
 #!/bin/bash
 echo "openshell $*" >> "$CALL_LOG"
+# $UPLOAD_BROKEN stands in for a transfer that fails. It prints openshell's own
+# completion line first, because the filter upload_repo() pipes this through must
+# not be what decides the exit status.
+if [[ "$1 $2" == "sandbox upload" && -n "${UPLOAD_BROKEN:-}" ]]; then
+    echo "✓ Upload complete" >&2
+    exit 1
+fi
 # `sandbox download <name> [--gateway X] <remote-path> <dest>` serves from
 # $SANDBOX_FS when one is set. Copied WITHOUT -a on purpose: the real download
 # does not preserve mtimes, and that is the whole reason a download used to
@@ -194,6 +201,18 @@ grep -q '^gh ' "$CALL_LOG" \
 ( cd "$SBX" && "${WORK}/scripts/sandbox.sh" --upload -f ) >/dev/null 2>&1 || true
 grep -q 'sandbox upload' "$CALL_LOG" \
     || { echo "FAIL: --upload -f did nothing — -f was consumed as the sandbox name" >&2; fail=1; }
+
+# --- a failed upload still fails the run. upload_repo() pipes openshell's stderr
+# through a filter to drop its `✓ Upload complete` and reprint it with the reason
+# attached; a pipeline reports the LAST element's status, so without pipefail
+# reaching openshell, a failed tar would exit 0 and go on to stamp last_upload —
+# which then skips the repo that never arrived. ---
+BEFORE_BROKEN="$(stamp_of last_upload)"
+export UPLOAD_BROKEN=1
+upload --force && { echo "FAIL: a failed openshell upload exited 0" >&2; fail=1; }
+unset UPLOAD_BROKEN
+[[ "$(stamp_of last_upload)" == "$BEFORE_BROKEN" ]] \
+    || { echo "FAIL: a failed upload stamped last_upload" >&2; fail=1; }
 
 source "${WORK}/scripts/lib.sh"
 
