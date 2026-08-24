@@ -755,6 +755,29 @@ upload_config() {
         rm -rf "$GIT_TMP"
     fi
 
+    # Upload the host's global excludes. Git reads $XDG_CONFIG_HOME/git/ignore
+    # with no config key, so copying the file is the whole mechanism — nothing
+    # to add to the gitconfig above. Without it the sandbox disagrees with the
+    # host about what is ignored: repo upload and download both run
+    # --no-git-ignore, so globally-ignored files are present here, and every
+    # in-sandbox `git status`, bare `rg`, and skill that enumerates through
+    # `git ls-files` sees files the host treats as invisible.
+    #
+    # ponytail: assumes the host uses the XDG default. A host that sets
+    # core.excludesFile to some other path gets that path sed-rewritten to
+    # /sandbox/... in the gitconfig above, and this copy lands where git will
+    # not look. Read the key and mirror its rewritten destination if that ever
+    # becomes true.
+    GLOBAL_IGNORE="${XDG_CONFIG_HOME:-${HOME}/.config}/git/ignore"
+    if [[ -f "$GLOBAL_IGNORE" ]]; then
+        IGN_TMP="$(mktemp -d)"
+        mkdir -p "${IGN_TMP}/.config/git"
+        cp "$GLOBAL_IGNORE" "${IGN_TMP}/.config/git/ignore"
+        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+            "${IGN_TMP}/.config" /sandbox
+        rm -rf "$IGN_TMP"
+    fi
+
     # Upload gws (Google Workspace CLI) readonly credentials (work profile only)
     if ! personal_profile "$SANDBOX_PROFILE"; then
         GWS_SANDBOX_DIR="${HOME}/.config/gws-sandbox"
