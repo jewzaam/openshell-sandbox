@@ -600,12 +600,12 @@ upload_sandbox() {
         done
     fi
 
-    # The manifest is NOT re-uploaded here. It used to be, and the only caller
-    # runs upload_static() on the next line — which ships the same
-    # ${sandbox_dir}/manifest.json from the same place, so the file went twice
-    # and the log carried two unattributable "✓ Upload complete" lines. Ordering
-    # is unchanged either way: upload_repo() stamps last_upload during the loop
-    # above, and upload_static() runs after it.
+    # The manifest is NOT re-uploaded here, and neither is anything else that
+    # is not a repo. What --upload changes about manifest.json is the
+    # last_upload stamps upload_repo() writes above, which are host bookkeeping
+    # for the skip checks — nothing in the sandbox reads them. The fields the
+    # sandbox does read (name, profile, repo list) can only change on the paths
+    # that call upload_static() themselves.
 }
 
 download_claude_state() {
@@ -871,8 +871,11 @@ upload_static() {
     # openshell-policy.yaml (what this sandbox may reach). All three go in one
     # staged-directory upload (#12) — they are inert once written, so
     # re-sending an unchanged one costs nothing and there is no reason to
-    # decide per file. The only path that uploads any of them; called on
-    # create, refresh, and policy hot-swap.
+    # decide per file. The only path that uploads any of them, and it runs
+    # exactly where one of the three can have changed: create and refresh
+    # (through upload_config), --add-repo once the repo list is rewritten, and
+    # --policy once the enforcer has accepted. Deliberately NOT on --upload,
+    # which moves repos and nothing else.
     #
     # None is ever downloaded: download_sandbox() pulls only the repo
     # directories named in the manifest, so the host copies stay authoritative.
@@ -1257,9 +1260,12 @@ if [[ "$DOWNLOAD_MODE" == true ]]; then
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
 
+    # Repos, and nothing else. Claude session state used to come down here too,
+    # which made every routine `--download` pull the OAuth token and the whole
+    # transcript directory for the benefit of one caller. --recreate does that
+    # itself now; see step 1 there.
     echo "Downloading from sandbox ${SANDBOX_NAME}..." >&2
     download_sandbox "$OS_NAME" "$SANDBOX_DIR"
-    download_claude_state "$OS_NAME" "$SANDBOX_DIR"
     echo "Done. Files in ${SANDBOX_DIR}/" >&2
     exit 0
 fi
@@ -1273,9 +1279,14 @@ if [[ "$UPLOAD_MODE" == true ]]; then
         target_repo=$(basename "${REPOS[0]}" .git)
     fi
 
+    # Repos, and nothing else. upload_static() used to run here as well, so the
+    # system prompt, manifest and policy went up on every --upload including the
+    # ones where every repo was skipped. Every path that can change one of those
+    # three ships them itself: --create and --refresh through upload_config(),
+    # --add-repo after it rewrites the repo list, --policy after the enforcer
+    # accepts. Nothing --upload does can change any of them.
     echo "Uploading to sandbox ${SANDBOX_NAME}..." >&2
     upload_sandbox "$OS_NAME" "$SANDBOX_DIR" "$target_repo"
-    upload_static "$OS_NAME" "$SANDBOX_DIR"
     echo "Done." >&2
     # Last line, so it survives a long upload log. The change check reads
     # mtimes and skips `.git/index`, which is the only thing an unstage
@@ -1309,14 +1320,23 @@ if [[ "$RECREATE_MODE" == true ]]; then
         done
     fi
 
-    # 1. Download repos + claude state. --force on both transfers: the sandbox
-    # is deleted in step 2, so a wrongly skipped download is unrecoverable, and
-    # step 4 uploads into a container that holds no repos at all — the change
-    # checks compare against stamps from the sandbox that no longer exists.
+    # 1. Download repos, then claude state. --force on the repo transfers: the
+    # sandbox is deleted in step 2, so a wrongly skipped download is
+    # unrecoverable, and step 4 uploads into a container that holds no repos at
+    # all — the change checks compare against stamps from the sandbox that no
+    # longer exists.
+    #
+    # download_claude_state() is called here rather than inherited from
+    # --download, which moves repos and nothing else. Recreate is its only
+    # consumer: the OAuth token and .claude.json it preserves are read back by
+    # upload_claude_state() during the create in step 3, and step 2 deletes the
+    # only other copy. A direct call, not a flag on --download — there is one
+    # caller, and a flag would be a second way to say "recreate".
+    OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     "$0" --download "$SANDBOX_NAME" --force "${COMMON_ARGS[@]}"
+    download_claude_state "$OS_NAME" "$SANDBOX_DIR"
 
     # 2. Delete remote sandbox only (preserve local dir)
-    OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     run openshell sandbox delete "$OS_NAME" "${GW_FLAG[@]}" || true
 
     # 3. Create fresh sandbox without connecting

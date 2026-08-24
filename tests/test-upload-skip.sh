@@ -18,6 +18,9 @@
 #      download still skips. The download does not preserve mtimes.
 #   6. --download pulls only the repos the sandbox changed, asked in one exec,
 #      and pulls everything when the answer does not arrive.
+#   7. Both move repos and nothing else. --upload does not ship the system
+#      prompt, manifest or policy (upload_static's callers each do), and
+#      --download does not pull Claude session state (--recreate does).
 #
 # openshell and gh are stubbed, so the test needs no gateway, auth, or network.
 #
@@ -202,6 +205,17 @@ grep -q '^gh ' "$CALL_LOG" \
 grep -q 'sandbox upload' "$CALL_LOG" \
     || { echo "FAIL: --upload -f did nothing — -f was consumed as the sandbox name" >&2; fail=1; }
 
+# --- --upload moves repos and nothing else. upload_static() stages the system
+# prompt, manifest and policy into <tmp>/source and uploads that to /sandbox; a
+# repo goes to /sandbox/source/. So a destination of exactly /sandbox is those
+# three riding along on a command that cannot change any of them — including
+# every run where all repos were skipped. --create and --refresh ship them
+# through upload_config(), --add-repo once it has rewritten the repo list,
+# --policy once the enforcer has accepted. ---
+upload --force
+grep -qE 'openshell sandbox upload .* /sandbox$' "$CALL_LOG" \
+    && { echo "FAIL: --upload shipped sandbox config, not just repos" >&2; fail=1; }
+
 # --- a failed upload still fails the run. upload_repo() pipes openshell's stderr
 # through a filter to drop its `✓ Upload complete` and reprint it with the reason
 # attached; a pipeline reports the LAST element's status, so without pipefail
@@ -365,6 +379,16 @@ if command -v rsync >/dev/null 2>&1; then
     EXEC_BROKEN=1 download
     pulled || { echo "FAIL: --download treated a failed exec as 'nothing changed'" >&2; fail=1; }
 fi
+
+# --- --download is the mirror: repos and nothing else. Claude session state
+# (the OAuth token, .claude.json, and the whole transcript directory) is
+# --recreate's business — it is the only consumer, through
+# upload_claude_state() on the create that follows. Pulling it on every
+# download meant a routine pull of a repo also copied the token to the host and
+# re-fetched every transcript. --dryrun so this runs without rsync. ---
+out="$( cd "$SBX" && "${WORK}/scripts/sandbox.sh" --download probe --dryrun 2>&1 || true )"
+grep -q 'sandbox download .*\.claude' <<<"$out" \
+    && { echo "FAIL: --download pulled Claude session state, not just repos" >&2; fail=1; }
 
 # --- last_download is stamped separately from last_upload ---
 record_repo_timestamp "$SBX" myrepo last_download

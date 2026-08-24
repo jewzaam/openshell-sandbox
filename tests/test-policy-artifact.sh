@@ -102,8 +102,10 @@ fi
 cp "${REPO_ROOT}/policies/fetch-service.yaml" "${WORK}/policies/fetch-service.yaml"
 
 # No artifact means no policy was ever applied through this script, so what
-# the enforcer holds is unknown. Nothing may invent one: --upload must not
-# manufacture a profile-default artifact, it must warn and stage nothing.
+# the enforcer holds is unknown. Nothing may invent one, and the path that
+# ships it must say so rather than staging silence. --refresh is that path.
+# --upload does not ship the artifact at all any more, so all it owes is to
+# leave the missing file missing.
 seed_applied
 rm -f "${D}/openshell-policy.yaml"
 out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --upload probe --dryrun 2>&1 || true)"
@@ -111,8 +113,13 @@ if [[ -f "${D}/openshell-policy.yaml" ]]; then
     echo "FAIL: --upload invented an artifact for an unknown policy" >&2
     fail=1
 fi
+out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --refresh probe --dryrun 2>&1 || true)"
+if [[ -f "${D}/openshell-policy.yaml" ]]; then
+    echo "FAIL: --refresh invented an artifact for an unknown policy" >&2
+    fail=1
+fi
 grep -q "no policy artifact in" <<<"$out" \
-    || { echo "FAIL: --upload should warn when there is no artifact" >&2; fail=1; }
+    || { echo "FAIL: --refresh should warn when there is no artifact" >&2; fail=1; }
 
 # --create does apply a policy, so it installs one.
 rm -rf "$D" && mkdir -p "$D"
