@@ -196,7 +196,7 @@ repo_changed_since_upload() {
             "$manifest" 2>/dev/null || true)
     fi
     if [[ -z "$last_upload" ]]; then
-        echo "no last_upload recorded" >&2
+        echo "has no last_upload recorded" >&2
         return 0
     fi
 

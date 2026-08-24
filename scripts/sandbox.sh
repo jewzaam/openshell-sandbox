@@ -307,6 +307,35 @@ run() {
 
 source "${SCRIPT_DIR}/lib.sh"
 
+# Run an openshell transfer and report it in one line.
+#
+# openshell narrates every transfer twice: `Uploading <host path> -> sandbox:...`
+# (or `Downloading sandbox:... -> <local>`) and then its own `✓ Upload complete`.
+# Both are noise here. The paths are this script's own arguments, and on the
+# download side the destination is a mktemp staging dir nobody asked about; the
+# completion line names nothing at all, so consecutive ones read as
+# "complete — what?". Both are dropped and replaced by $label, which names the
+# thing. openshell's indented `  Uploading [n/m] files ...` progress lines do not
+# match the filter, so a big repo still shows movement while it transfers.
+#
+# An empty $label prints nothing, for a caller reporting a group of transfers
+# once rather than each in turn.
+#
+# A pipeline, not `2> >(...)`: bash waits for every element of a pipeline, so a
+# filtered line cannot land after the next transfer's. The `|| true` is scoped to
+# the grep alone — a no-match grep exits 1 and must not read as failure, while
+# openshell's own status still reaches `set -o pipefail`, which is what keeps a
+# failed upload from going on to stamp last_upload.
+transfer_quiet() {
+    local label="$1"
+    shift
+    { { "$@"; } 2>&1 1>&3 \
+        | { grep --line-buffered -Ev \
+                '^(Uploading|Downloading) .*sandbox:|(Upload|Download) complete$' >&2 \
+            || true; } } 3>&1
+    [[ -z "$label" || "$DRYRUN" == true ]] || echo "${MARK_OK} ${label}" >&2
+}
+
 clone_repo_host() {
     local url="$1" ref="$2" sandbox_dir="$3"
     local repo_name
@@ -380,24 +409,12 @@ upload_repo() {
         return 0
     fi
 
-    # openshell ends an upload with its own `✓ Upload complete`, which left the
-    # reason no line to sit on but its own. Drop that one line and reprint it
-    # here with the reason attached — two lines per repo instead of three.
-    #
-    # A pipeline, not `2> >(...)`: bash waits for every element of a pipeline, so
-    # the filtered line cannot land after the next repo's header. Buffering
-    # openshell's stderr instead would hold its `Uploading ...` header back until
-    # the transfer finished, which is the only progress a 59M repo shows. The
-    # filter's `|| true` keeps a no-match grep from reading as failure; openshell's
-    # own exit status still reaches `set -o pipefail`.
-    { {
-        run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
-            -- rm -rf "/sandbox/source/${repo_name}" 2>/dev/null || true
+    run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+        -- rm -rf "/sandbox/source/${repo_name}" 2>/dev/null || true
+    transfer_quiet "Upload complete — ${repo_name}${why:+ ${why}}" \
         run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
             --no-git-ignore \
             "${sandbox_dir}/${repo_name}" /sandbox/source/
-    } 2>&1 1>&3 | { grep --line-buffered -v 'Upload complete$' >&2 || true; } } 3>&1
-    echo "${MARK_OK} Upload complete${why:+ — ${why}}" >&2
 
     # Only a real upload earns a stamp; a dryrun that stamped would make the
     # next real run skip a repo it never sent.
@@ -501,8 +518,9 @@ download_sandbox() {
             continue
         fi
         mkdir -p "${dl_tmp}/${repo_name}"
-        run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
-            "/sandbox/source/${repo_name}" "${dl_tmp}/${repo_name}"
+        transfer_quiet "Download complete — ${repo_name}" \
+            run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+                "/sandbox/source/${repo_name}" "${dl_tmp}/${repo_name}"
         mkdir -p "${sandbox_dir}/${repo_name}"
         # Content decides what gets written, not timestamps. `openshell sandbox
         # download` does not preserve mtimes, so under a plain `rsync -a` every
@@ -548,45 +566,50 @@ upload_sandbox() {
         done
     fi
 
-    # Re-upload manifest so sandbox has current repo list
-    local manifest_tmp
-    manifest_tmp="$(mktemp -d)"
-    mkdir -p "${manifest_tmp}/source"
-    cp "$manifest" "${manifest_tmp}/source/manifest.json"
-    run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
-        "${manifest_tmp}/source" /sandbox
-    rm -rf "$manifest_tmp"
+    # The manifest is NOT re-uploaded here. It used to be, and the only caller
+    # runs upload_static() on the next line — which ships the same
+    # ${sandbox_dir}/manifest.json from the same place, so the file went twice
+    # and the log carried two unattributable "✓ Upload complete" lines. Ordering
+    # is unchanged either way: upload_repo() stamps last_upload during the loop
+    # above, and upload_static() runs after it.
 }
 
 download_claude_state() {
     local sandbox_name="$1" sandbox_dir="$2"
     local claude_dir="${sandbox_dir}/claude"
-    echo "Downloading Claude session state..." >&2
     local dl_tmp
     dl_tmp="$(mktemp -d)"
+
+    # Three transfers, one line. Each is reported with an empty label so only the
+    # group speaks, and what each one preserved is collected and printed under
+    # that line rather than as it happens — a detail line has to follow the line
+    # it explains, and the ✓ cannot be printed until all three are done.
+    local notes=""
     mkdir -p "${dl_tmp}/projects"
-    run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+    transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
         "/sandbox/.claude/projects" "${dl_tmp}/projects" || true
     if [[ "$(ls -A "${dl_tmp}/projects" 2>/dev/null)" ]]; then
         mkdir -p "${claude_dir}"
         rsync -a "${dl_tmp}/projects/" "${claude_dir}/projects/"
     fi
     # Preserve OAuth credentials from sandbox
-    run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+    transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
         "/sandbox/.claude/.credentials.json" "${dl_tmp}/" || true
     if [[ -f "${dl_tmp}/.credentials.json" ]]; then
         mkdir -p "${claude_dir}"
         cp "${dl_tmp}/.credentials.json" "${claude_dir}/.credentials.json"
-        echo "    preserved OAuth credentials" >&2
+        notes+="    preserved OAuth credentials"$'\n'
     fi
     # Preserve .claude.json (auth state)
-    run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+    transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
         "/sandbox/.claude.json" "${dl_tmp}/" || true
     if [[ -f "${dl_tmp}/.claude.json" ]]; then
         mkdir -p "${claude_dir}"
         cp "${dl_tmp}/.claude.json" "${claude_dir}/.claude.json"
-        echo "    preserved .claude.json" >&2
+        notes+="    preserved .claude.json"$'\n'
     fi
+    [[ "$DRYRUN" == true ]] || echo "${MARK_OK} Download complete — Claude session state" >&2
+    [[ -z "$notes" ]] || printf '%s' "$notes" >&2
     rm -rf "$dl_tmp"
 }
 
@@ -842,8 +865,9 @@ upload_static() {
     fi
 
     # do: upload
-    run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
-        "${tmp}/source" /sandbox
+    transfer_quiet "Upload complete — sandbox config (prompt, manifest, policy)" \
+        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+            "${tmp}/source" /sandbox
     rm -rf "$tmp"
 }
 
