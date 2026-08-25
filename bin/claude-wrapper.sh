@@ -1,6 +1,17 @@
 #!/bin/bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Re-source runtime env before claude.env: the wrapper may run from a shell
+# whose .env snapshot predates a `sandbox.sh --refresh` (bashrc sourced it at
+# shell start). claude.env builds OTEL_RESOURCE_ATTRIBUTES from these values,
+# and the claude process freezes its env at launch — stale values here mean
+# every session and sub-agent reports without telemetry until relaunch.
+if [[ -f /sandbox/.env ]]; then
+    set -a
+    source /sandbox/.env
+    set +a
+fi
 source "${SCRIPT_DIR}/claude.env"
 
 # Always validate profile
