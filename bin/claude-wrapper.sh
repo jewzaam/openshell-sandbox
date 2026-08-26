@@ -2,17 +2,19 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Re-source runtime env before claude.env: the wrapper may run from a shell
-# whose .env snapshot predates a `sandbox.sh --refresh` (bashrc sourced it at
-# shell start). claude.env builds OTEL_RESOURCE_ATTRIBUTES from these values,
-# and the claude process freezes its env at launch — stale values here mean
-# every session and sub-agent reports without telemetry until relaunch.
+# Re-source runtime env: the wrapper may run from a shell whose .env snapshot
+# predates a `sandbox.sh --refresh` (bashrc sourced it at shell start), and the
+# claude process freezes its env at launch — stale values here mean every
+# session and sub-agent reports against the old collector until relaunch. Also
+# supplies $SANDBOX_PROFILE for the branching below.
+#
+# Telemetry behaviour is not sourced here. It lives in config/bashrc so every
+# process in the container inherits it, not just the ones this wrapper starts.
 if [[ -f /sandbox/.env ]]; then
     set -a
     source /sandbox/.env
     set +a
 fi
-source "${SCRIPT_DIR}/claude.env"
 
 # Always validate profile
 "${SCRIPT_DIR}/validate-profile.sh"

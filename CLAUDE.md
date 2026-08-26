@@ -202,7 +202,7 @@ is no default. `research` and `fetch-service` are policies only —
       `tui/src/slash_command.rs` has `Logout` and no login variant — so the
       onboarding screen is the only way in, which is why it must not be
       bypassed.
-    - **No codex telemetry.** `claude.env` configures Claude Code's exporter;
+    - **No codex telemetry.** `config/bashrc` configures Claude Code's exporter;
       Codex reads `[otel]` out of `~/.codex/config.toml`, which nothing
       writes. A codex sandbox pushes nothing and can still read back what
       other sandboxes pushed.
@@ -220,10 +220,11 @@ is no default. `research` and `fetch-service` are policies only —
       `--connect` nor `--ensure`-on-existing re-uploads `bin/` first — only
       `--create`, `--recreate` and `--refresh` do. So renaming the file breaks
       every sandbox built before the rename, at connect time, with a bare
-      `No such file or directory`. `bin/claude.env` stays for the matching
-      reason plus one more: its contents really are Claude-specific, so a
-      generic name would over-claim. Revisit only alongside a migration, and
+      `No such file or directory`. Revisit only alongside a migration, and
       expect a fallback clause in `connect_sandbox()` to be part of it.
+      (`bin/claude.env` used to be named here for the same reason. It is gone —
+      its contents are container policy and moved to `config/bashrc`, which
+      every process inherits; see the telemetry entry below.)
 
 ## Settled, do not re-evaluate
 
@@ -291,7 +292,21 @@ is no default. `research` and `fetch-service` are policies only —
   race on a first create, silently starting personal sessions on the default
   model. `.env` carries `SANDBOX_PROFILE` for every profile, not just the
   credential-less ones: `validate-profile.sh` cannot tell home from personal
-  without it, and it lands in `OTEL_RESOURCE_ATTRIBUTES` as `sandbox.profile`.
+  without it, and `sandbox.sh` folds it into `OTEL_RESOURCE_ATTRIBUTES` as
+  `sandbox.profile`.
+- **`/sandbox/.env` is host knowledge; `config/bashrc` is container policy.**
+  What only the host can know — credentials, collector address, which machine
+  and sandbox this is, and the `OTEL_RESOURCE_ATTRIBUTES` assembled from them —
+  is written into `.env` at create time. How the agent behaves in here —
+  telemetry toggles, exporters, intervals, log detail — lives in `config/bashrc`
+  and is never captured from the host env, so a host preference cannot silently
+  change a sandbox. Both halves have to be inherited, not sourced by a
+  launcher: `bin/claude.env` held the policy and only `claude-wrapper.sh` read
+  it, so a bare `claude` came up with an endpoint and telemetry off; the
+  attributes were assembled there too, so every review-orchestrator sub-agent
+  reported with no identity at all.
+  `docs/environment-variables.md` has the full chain and the evidence that
+  Claude Code strips `OTEL_*` from the env it hands to tool subprocesses.
 
 ## OpenShell Policy Gotchas
 

@@ -118,27 +118,24 @@ CLAUDE_VARS=(
     CLAUDE_CODE_USE_BEDROCK
 )
 
-OTEL_VARS=(
-    CLAUDE_CODE_ENABLE_TELEMETRY
-    CLAUDE_CODE_ENHANCED_TELEMETRY_BETA
-    OTEL_METRICS_EXPORTER
-    OTEL_METRIC_EXPORT_INTERVAL
-    OTEL_LOGS_EXPORTER
-    OTEL_LOGS_EXPORT_INTERVAL
-    OTEL_TRACES_EXPORTER
-    OTEL_EXPORTER_OTLP_PROTOCOL
-    OTEL_EXPORTER_OTLP_ENDPOINT
-    OTEL_LOG_TOOL_DETAILS
-    OTEL_LOG_USER_PROMPTS
-    OTEL_RESOURCE_ATTRIBUTES
-)
+# No OTEL_VARS list: nothing telemetry-related is captured from the host env.
+#
+# Two kinds of value used to be in here and neither belongs. The exporter
+# selections, intervals, toggles and log-detail flags are a decision about how
+# the agent behaves inside the container — container policy, which config/bashrc
+# owns, and which a host's local preference must not silently change. The
+# endpoint, protocol and resource attributes are host knowledge, but they are
+# written unconditionally further down from site.env and the sandbox's own
+# identity, which always overrode whatever capture produced anyway.
+#
+# OTEL_RESOURCE_ATTRIBUTES specifically must never be captured: the host's value
+# names the host's project and session, so every attribute in it is wrong here.
 
 ALL_VARS=(
     "${ANTHROPIC_VARS[@]}"
     "${VERTEX_VARS[@]}"
     "${JIRA_VARS[@]}"
     "${CLAUDE_VARS[@]}"
-    "${OTEL_VARS[@]}"
 )
 
 # ---------------------------------------------------------------------------
@@ -1653,7 +1650,7 @@ POLICY_FILE="$(render_policy "$POLICY_FILE")" || exit 1
 # Build active var list based on profile
 ACTIVE_VARS=()
 if personal_profile "$SANDBOX_PROFILE"; then
-    ACTIVE_VARS+=("${ANTHROPIC_VARS[@]}" "${CLAUDE_VARS[@]}" "${OTEL_VARS[@]}")
+    ACTIVE_VARS+=("${ANTHROPIC_VARS[@]}" "${CLAUDE_VARS[@]}")
 else
     ACTIVE_VARS+=("${ALL_VARS[@]}")
 fi
@@ -1726,7 +1723,8 @@ ENV_CONTENT+="$(printf 'SANDBOX_SOURCE_NAME=%q' "${SANDBOX_NAME}")"$'\n'
 # several machines shipping to one collector, host.name has to be the machine.
 # Must be the same `hostname` invocation the host's own claude.env uses, or the
 # same laptop splits into two series (short name vs FQDN).
-ENV_CONTENT+="$(printf 'SANDBOX_HOST_NAME=%q' "$(hostname)")"$'\n'
+HOST_NAME_VALUE="$(hostname)"
+ENV_CONTENT+="$(printf 'SANDBOX_HOST_NAME=%q' "$HOST_NAME_VALUE")"$'\n'
 
 # This sandbox's directory on the host, for OTEL project. A sandbox session's
 # $(pwd) is /sandbox/source/ for every sandbox on every machine, because
@@ -1734,22 +1732,58 @@ ENV_CONTENT+="$(printf 'SANDBOX_HOST_NAME=%q' "$(hostname)")"$'\n'
 # into one value. The full host path is deliberate: the dashboards' existing
 # ^/home/<user> -> ~ rewrite turns it into ~/sandboxes/<name>, which is what
 # they already synthesise for the sandbox case.
-ENV_CONTENT+="$(printf 'SANDBOX_HOST_DIR=%q' "${SANDBOXES_DIR}/${SANDBOX_NAME}")"$'\n'
+HOST_DIR_VALUE="${SANDBOXES_DIR}/${SANDBOX_NAME}"
+ENV_CONTENT+="$(printf 'SANDBOX_HOST_DIR=%q' "$HOST_DIR_VALUE")"$'\n'
 
 # The openshell name (sb-<hash>). The only handle tying a session to its
 # container, `openshell sandbox list`, and the openshell.ai/sandbox-name podman
 # label. In manifest.json too, but exporting it saves every consumer a jq call.
-ENV_CONTENT+="$(printf 'SANDBOX_OPENSHELL_NAME=%q' "$(resolve_openshell_name "$SANDBOX_NAME")")"$'\n'
+OPENSHELL_NAME_VALUE="$(resolve_openshell_name "$SANDBOX_NAME")"
+ENV_CONTENT+="$(printf 'SANDBOX_OPENSHELL_NAME=%q' "$OPENSHELL_NAME_VALUE")"$'\n'
 
 # The profile, by name, for every profile — not just the credential-less ones.
 # validate-profile.sh and claude-wrapper.sh both read it out of /sandbox/.env,
 # and `home` and `personal` differ only in what they may reach, so a tag that
 # lumps them together tells neither of them anything. Also lands in
-# OTEL_RESOURCE_ATTRIBUTES as sandbox.profile (bin/claude.env). Empty only on
-# a pre-.profile manifest, where a blank tag would be worse than none.
+# OTEL_RESOURCE_ATTRIBUTES as sandbox.profile below. Empty only on a
+# pre-.profile manifest, where a blank tag would be worse than none.
 if [[ -n "$SANDBOX_PROFILE" ]]; then
     ENV_CONTENT+="$(printf 'SANDBOX_PROFILE=%q' "$SANDBOX_PROFILE")"$'\n'
 fi
+
+# The OTEL identity, assembled from the values just written. Every attribute is
+# host knowledge and none of it is observable from inside the container:
+# `hostname` there is sandbox-sb-<hash>, and $(pwd) is /sandbox/source for every
+# sandbox on every machine.
+#
+# Assembled here rather than at launch (an earlier version built it in a file
+# the wrapper sourced) because
+# every input is fixed the moment this file is written, and a launch-time
+# assembly only reaches processes that source that file. A nested `claude -p` —
+# every review-orchestrator sub-agent — does not, so it reported with no
+# identity at all. In .env it travels with the endpoint, through every consumer
+# that already reads .env.
+#
+# No user.name: single-user hosts, and the container-side ${USER} this replaces
+# was the constant `sandbox` on every sandbox on every machine. Add it here if
+# that stops being true.
+#
+# Consumers append their own attributes to this (the review orchestrator stamps
+# review.run_id/stage/agent per sub-agent), so nothing downstream may assign
+# over it.
+OTEL_ATTRS="project=${HOST_DIR_VALUE}"
+OTEL_ATTRS+=",host.name=${HOST_NAME_VALUE}"
+OTEL_ATTRS+=",sandbox.source=${SANDBOX_NAME}"
+OTEL_ATTRS+=",sandbox.openshell_name=${OPENSHELL_NAME_VALUE}"
+if [[ -n "$SANDBOX_PROFILE" ]]; then
+    OTEL_ATTRS+=",sandbox.profile=${SANDBOX_PROFILE}"
+fi
+# Single-quoted, not %q: %q escapes the separating commas as \, and the
+# consumers disagree about what that means. `source` unescapes them, but
+# anything reading .env as text does not — the review orchestrator's parser
+# (jewzaam-reviews backend.py) would ingest literal backslashes and ship
+# malformed attributes. Both consumers strip surrounding single quotes.
+ENV_CONTENT+="OTEL_RESOURCE_ATTRIBUTES='${OTEL_ATTRS}'"$'\n'
 
 if [[ $captured -eq 0 ]]; then
     echo "Warning: no env vars captured, sandbox will have no credentials" >&2
