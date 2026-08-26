@@ -46,10 +46,15 @@ net_check() {
 
 PROFILE="${SANDBOX_PROFILE:-work}"
 
-# personal and home carry no work credentials; home is personal plus the
-# Prometheus and Loki reads checked below. Every other expectation is shared,
-# so the two are one case here.
-personal_profile() { [[ "$PROFILE" == personal || "$PROFILE" == home ]]; }
+# personal, home and codex carry no work credentials; home is personal plus the
+# Prometheus and Loki reads checked below, and codex is home with OpenAI in
+# place of Anthropic. Every other expectation is shared, so the three are one
+# case here.
+personal_profile() { [[ "$PROFILE" == personal || "$PROFILE" == home || "$PROFILE" == codex ]]; }
+
+# The one profile whose agent is not Claude. Separate from the above because it
+# answers a different question: which API this sandbox is supposed to reach.
+codex_profile() { [[ "$PROFILE" == codex ]]; }
 
 if personal_profile; then
     C_PROFILE="$LIGHT_PURPLE"
@@ -58,7 +63,31 @@ else
 fi
 
 # --- Auth ---
-if personal_profile; then
+if codex_profile; then
+    # Codex writes $CODEX_HOME/auth.json for both sign-in methods — ChatGPT
+    # OAuth and `--with-api-key` alike — so the file is the whole test. Nothing
+    # uploads it from the host and nothing preserves it across --recreate, so
+    # "unset" here is the expected state of a fresh sandbox and the prompt to
+    # run `codex login --device-auth`.
+    if isset OPENAI_API_KEY; then
+        check "codex auth (API key)" "set" "set"
+    elif [[ -f /sandbox/.codex/auth.json ]]; then
+        check "codex auth (auth.json)" "set" "set"
+    else
+        check "codex auth (run codex login)" "set" "unset"
+    fi
+
+    isset ANTHROPIC_API_KEY && check "ANTHROPIC_API_KEY" "unset" "set" || check "ANTHROPIC_API_KEY" "unset" "unset"
+
+    leaked=$(env | grep -iE "^(GOOGLE|CLOUDSDK|CLOUD_ML|VERTEX|ANTHROPIC_VERTEX)_" | cut -d= -f1) || true
+    if [[ -n "$leaked" ]]; then
+        for var in $leaked; do
+            check "$var" "unset" "set"
+        done
+    else
+        check "Google/Vertex vars" "unset" "unset"
+    fi
+elif personal_profile; then
     has_oauth=$([[ -f /sandbox/.claude/.credentials.json ]] && echo "yes" || echo "no")
     if isset ANTHROPIC_API_KEY; then
         check "personal auth (API key)" "set" "set"
@@ -113,8 +142,26 @@ isset SANDBOX_PROFILE && check "SANDBOX_PROFILE (OTEL tag)" "set" "set" || check
 
 # --- Network ---
 if command -v curl &>/dev/null; then
+    # The swap is asserted in both directions. A codex sandbox that can still
+    # reach Anthropic is a home sandbox with an extra CLI in it, and nothing in
+    # a running session would say which agent it was talking to.
     actual=$(net_check https://api.anthropic.com)
-    personal_profile && check "api.anthropic.com" "reachable" "$actual" || check "api.anthropic.com" "blocked" "$actual"
+    if codex_profile; then
+        check "api.anthropic.com" "blocked" "$actual"
+    elif personal_profile; then
+        check "api.anthropic.com" "reachable" "$actual"
+    else
+        check "api.anthropic.com" "blocked" "$actual"
+    fi
+
+    # Three hosts, three failure modes: chatgpt.com is the default provider on a
+    # ChatGPT sign-in, api.openai.com the provider on an API key, and
+    # auth.openai.com every login and token refresh. Checking one would leave
+    # two ways to be silently broken.
+    for host in chatgpt.com api.openai.com auth.openai.com; do
+        actual=$(net_check "https://${host}")
+        codex_profile && check "$host" "reachable" "$actual" || check "$host" "blocked" "$actual"
+    done
 
     actual=$(net_check https://us-east5-aiplatform.googleapis.com)
     personal_profile && check "googleapis.com" "blocked" "$actual" || check "googleapis.com" "reachable" "$actual"
@@ -125,8 +172,8 @@ if command -v curl &>/dev/null; then
     # Telemetry query endpoints are site-specific and arrive via /sandbox/.env.
     # A missing URL fails rather than skips: a skipped check reads the same as
     # a passing one, so an endpoint that is actually reachable would go unseen.
-    # The one axis where home and personal part company: home may read the
-    # telemetry back, personal may only push it.
+    # The one axis where personal parts company with home and codex: those two
+    # may read the telemetry back, personal may only push it.
     [[ "$PROFILE" == "personal" ]] && query_expect="blocked" || query_expect="reachable"
     if isset SANDBOX_PROMETHEUS_URL; then
         actual=$(net_check "$SANDBOX_PROMETHEUS_URL")

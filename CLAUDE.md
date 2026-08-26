@@ -2,9 +2,9 @@
 
 OpenShell sandbox configuration for running Claude Code in auto mode inside
 rootless Podman containers. Shell scripts, YAML policies, and a Containerfile —
-not a Python project. Profiles: `work`, `personal`, and `home`; there is no
-default. `research` and `fetch-service` are policies only — `--policy research`
-and `sandbox.sh --fetch-service`, never `--profile`.
+not a Python project. Profiles: `work`, `personal`, `home`, and `codex`; there
+is no default. `research` and `fetch-service` are policies only —
+`--policy research` and `sandbox.sh --fetch-service`, never `--profile`.
 
 > This file loads into every session in this repo. It holds only what costs real
 > time to rediscover — external tool behavior, and places where the obvious
@@ -31,9 +31,10 @@ and `sandbox.sh --fetch-service`, never `--profile`.
 ## Rules where the obvious change is wrong
 
 1. **The sandbox is the security boundary.**
-   `--dangerously-skip-permissions` is intentional. Network policy (L4/L7),
-   Landlock filesystem, and process isolation replace Claude's permission
-   system. Do not "fix" the flag.
+   `--dangerously-skip-permissions` is intentional, as is Codex's
+   `--dangerously-bypass-approvals-and-sandbox` on the `codex` profile.
+   Network policy (L4/L7), Landlock filesystem, and process isolation replace
+   the agent's own permission system. Do not "fix" either flag.
 2. **Never hand `policies/*.yaml` to `openshell` directly.** They are templates.
    An unsubstituted `${OTEL_HOST}` is valid YAML, and OpenShell accepts it as a
    literal hostname — the sandbox then silently denies all traffic.
@@ -79,8 +80,9 @@ and `sandbox.sh --fetch-service`, never `--profile`.
     `validate-profile.sh` asserts the asymmetry. `home` is the variant that
     may read them back — otherwise identical to personal, and every
     credential, env, and prompt decision treats the two as one
-    (`personal_profile()` in `lib.sh`). Reaching for `== "personal"` instead
-    silently gives home a work sandbox's credentials.
+    (`personal_profile()` in `lib.sh`, which also covers `codex`). Reaching
+    for `== "personal"` instead silently gives home a work sandbox's
+    credentials.
 11. **No repos are baked into the image.** `knowledgebase` and `standards` are
     cloned on the host and uploaded like any other repo.
 12. **`.venv` is excluded in both directions** — host Python 3.14 vs sandbox
@@ -151,11 +153,13 @@ and `sandbox.sh --fetch-service`, never `--profile`.
     to query Prometheus produces a session arguing with a 403). The base
     mentions OTEL egress and says outright that silence here means no
     read access, so a session does not infer capability from the gap.
-    `work.md` and `home.md` therefore carry an identical `## Reading telemetry
-    back` section — two copies of fifteen lines of prose, cheaper than a
-    second include mechanism in `upload_config()`.
+    `work.md`, `home.md` and `codex.md` therefore carry an identical
+    `## Reading telemetry back` section — three copies of fifteen lines of
+    prose, cheaper than a second include mechanism in `upload_config()`. It is
+    last in all three files, because the test compares them by tailing from
+    the heading; `codex.md`'s own section goes before it for that reason.
     `tests/test-profile-required.sh` fails if either section returns to the
-    base, and diffs the two fragments so they cannot drift apart.
+    base, and diffs the fragments so they cannot drift apart.
 
 18. **No signing key goes into a sandbox, and no `ssh-keygen` to use one.**
     Nothing commits in a sandbox. `upload_config()` ships `.gitconfig` and not
@@ -168,6 +172,58 @@ and `sandbox.sh --fetch-service`, never `--profile`.
     or adding `openssh-client` to the Containerfile — both re-open it.
     `tests/test-scode-naming.sh` needs `GIT_CONFIG_GLOBAL=/dev/null` for the
     same reason every other committing test does.
+
+19. **The `codex` profile swaps the agent, and the swap has to go both ways.**
+    `policies/codex.yaml` is `home.yaml` with `anthropic-api` replaced by
+    `openai-api` (`chatgpt.com`, `api.openai.com`, `auth.openai.com` — the
+    provider on a ChatGPT sign-in, the provider on an API key, and the OAuth
+    issuer; each missing host breaks a different operation as an unexplained
+    403). Leaving Anthropic reachable "so Claude still works there" is the
+    tempting change and the wrong one: that is a `home` sandbox with an extra
+    CLI in it, and nothing in a running session says which agent it is talking
+    to. `validate-profile.sh` and `tests/test-profile-required.sh` both assert
+    the swap in both directions.
+    Five things it deliberately does **not** do, all of which look like
+    oversights:
+    - **No credential upload and no preservation.** `/sandbox/.codex/auth.json`
+      is written by signing in inside the sandbox and is gone on `--recreate`.
+      Claude's OAuth survives only because `download_claude_state()` explicitly
+      carries it; there is no codex equivalent yet. Signed out on a fresh
+      sandbox is the expected state, and `validate-profile.sh` reports it as
+      such. The browser flow binds `127.0.0.1:1455`, so device code is not a
+      preference — it is the only flow that can complete in here.
+    - **No login detection in the wrapper.** Codex already does it: `run_main`
+      (`tui/src/lib.rs`) calls `should_show_onboarding()`, which returns true
+      on `LoginStatus::NotAuthenticated`, and the auth step it then shows
+      offers "Sign in with Device Code" for exactly this case. That check runs
+      *before* resume selection, so the `codex resume --last` branch is covered
+      too. A probe in the wrapper would duplicate a state machine that changes
+      upstream. Note there is no `/login` slash command to fall back on —
+      `tui/src/slash_command.rs` has `Logout` and no login variant — so the
+      onboarding screen is the only way in, which is why it must not be
+      bypassed.
+    - **No codex telemetry.** `claude.env` configures Claude Code's exporter;
+      Codex reads `[otel]` out of `~/.codex/config.toml`, which nothing
+      writes. A codex sandbox pushes nothing and can still read back what
+      other sandboxes pushed.
+    - **No second copy of the system prompt.** `upload_static()` writes
+      `/sandbox/source/CLAUDE.md`, which Codex does not read.
+      `claude-wrapper.sh` symlinks `$CODEX_HOME/AGENTS.md` at it on every
+      launch — that path is loaded unconditionally regardless of cwd
+      (`codex-home/src/instructions/mod.rs`), and relinking each time is what
+      keeps it correct across `--refresh`. Do not add a `.codex/` upload
+      instead: gotcha 12 makes a directory upload a plausible way to delete
+      `auth.json` on every refresh.
+    - **No rename of `claude-wrapper.sh`.** It launches Codex on this profile
+      and the name does not say so; that was weighed and kept. `connect_sandbox()`
+      execs `/sandbox/bin/claude-wrapper.sh` by absolute path, and neither
+      `--connect` nor `--ensure`-on-existing re-uploads `bin/` first — only
+      `--create`, `--recreate` and `--refresh` do. So renaming the file breaks
+      every sandbox built before the rename, at connect time, with a bare
+      `No such file or directory`. `bin/claude.env` stays for the matching
+      reason plus one more: its contents really are Claude-specific, so a
+      generic name would over-claim. Revisit only alongside a migration, and
+      expect a fallback clause in `connect_sandbox()` to be part of it.
 
 ## Settled, do not re-evaluate
 
@@ -264,6 +320,7 @@ Hard-won, and referenced by number from `sandbox.sh` and
 20. `sandbox exec` connections drop during idle. No gRPC keepalive configuration exposed. Workaround: background ENQ keepalive in the exec bash command.
 21. `openshell sandbox exec` requires `--name` flag. The sandbox name is not positional for exec. Pattern: `openshell sandbox exec --name "$name" "${GW_FLAG[@]}" -- command`.
 22. A policy endpoint needs both `protocol: rest` and `enforcement: enforce` for CONNECT to work. Omitting them (e.g. for intended L4-only passthrough) forwards an absolute-URI `GET` to that host:port but returns 403 on `CONNECT` to the same host:port. Match every working endpoint in `policies/` — both fields are always present together.
+23. The proxy resets any request whose path contains `%2f` or `%2F`, so **no scoped npm package can be installed from inside a sandbox**. Measured against `registry.npmjs.org` with the `npm-readonly` block in force: `/express` → 200, `/@openai/codex` → 200, `/@openai%2fcodex` → connection reset (curl exit 56, `%{http_code}` 000). npm always encodes the scope separator, so `npm install @scope/pkg` fails with `ECONNRESET ... socket hang up` and reads as a flaky network. Every scoped tool has to be baked into the Containerfile. The image build runs on the host and is not subject to this.
 
 ## Other gotchas
 

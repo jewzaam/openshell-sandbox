@@ -25,8 +25,9 @@ MODEL_KEYS = (
 )
 
 # Profiles that carry no work credentials. home is personal plus Prometheus
-# and Loki reads — a network policy difference, nothing to do with settings.
-PERSONAL_PROFILES = ("personal", "home")
+# and Loki reads, and codex is home with OpenAI in place of Anthropic — both
+# are network policy differences, nothing to do with settings.
+PERSONAL_PROFILES = ("personal", "home", "codex")
 
 # Personal sandboxes get no work credentials or work-only integrations.
 PERSONAL_STRIP_RE = re.compile(

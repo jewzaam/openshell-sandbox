@@ -7,8 +7,9 @@ SDLC skill access. Podman-based, rootless.
 
 - Sandboxed Claude Code execution — network policy is the security boundary, not
   Claude's permission system (`--dangerously-skip-permissions`)
-- Three profiles: **work** (Vertex AI + Jira), **personal** (Anthropic direct,
-  telemetry push-only), **home** (personal plus Prometheus/Loki reads)
+- Four profiles: **work** (Vertex AI + Jira), **personal** (Anthropic direct,
+  telemetry push-only), **home** (personal plus Prometheus/Loki reads),
+  **codex** (home with OpenAI in place of Anthropic — the agent is Codex CLI)
 - `--profile` is required on `scode` and on `sandbox.sh --create/--recreate`
 - Clones repos on host (SSH works), uploads to sandbox for private repo support
 - Uploads `~/.claude/` config with symlinks resolved (skills, plugins, settings)
@@ -75,7 +76,7 @@ sandbox.sh --delete myapp
 | `--download [NAME]` | Download repos from sandbox to `~/sandboxes/<name>/` |
 | `-f, --force` | With `--upload`/`--download`: transfer every repo and regenerate context. Plain runs transfer only what changed |
 | `--upload [NAME]` | Upload local repo changes back into sandbox |
-| `--profile NAME` | `work`, `personal`, or `home`. Required with `--create` and `--recreate` |
+| `--profile NAME` | `work`, `personal`, `home`, or `codex`. Required with `--create` and `--recreate` |
 | `--policy FILE` | Override policy file (default: the profile's own) |
 | `--gateway NAME` | OpenShell gateway |
 | `--connect [NAME]` | Reconnect to existing sandbox (launches Claude) |
@@ -111,6 +112,7 @@ and bash terminals, then opens VS Code.
 | `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`) | Google APIs, Jira, npm, PyPI, OTEL push, Prometheus + Loki reads |
 | `personal` | Anthropic direct (API key or OAuth) | Anthropic API, npm, PyPI, Debian, OTEL push only |
 | `home` | Anthropic direct (API key or OAuth) | as `personal`, plus Prometheus + Loki reads |
+| `codex` | OpenAI via `codex login` (`/sandbox/.codex/auth.json`) | as `home`, with OpenAI in place of Anthropic |
 
 No default and no auto-detection: name the profile or the command refuses.
 `scode` needs it on every invocation, reopening an existing sandbox included —
@@ -134,7 +136,8 @@ and `.profile` in the sandbox's `manifest.json`.
 ├── policies/
 │   ├── work.yaml           # Vertex AI + Jira
 │   ├── personal.yaml       # Anthropic direct, telemetry push-only
-│   └── home.yaml           # personal + Prometheus/Loki reads
+│   ├── home.yaml           # personal + Prometheus/Loki reads
+│   └── codex.yaml          # home, OpenAI instead of Anthropic
 ├── scripts/
 │   ├── sandbox.sh              # Create/manage sandboxes
 │   ├── scode                   # VS Code launcher for sandboxes
