@@ -177,7 +177,7 @@ OPTIONS:
     -f, --force       With --upload/--download: transfer every repo and
                       regenerate context, not only what changed
     --policy NAME     Policy name or path (e.g. research). Standalone: hot-swap on running sandbox
-    --profile NAME    Credential profile: work, personal, or home. Controls env vars, uploads,
+    --profile NAME    Credential profile: work, personal, home, or codex. Controls env vars, uploads,
                       and the policy of the same name. REQUIRED with --create and --recreate.
                       Only valid with --create, --recreate, or --ensure — applied at build, not after
     --gateway NAME    OpenShell gateway (default: \$OPENSHELL_GATEWAY)
@@ -1193,12 +1193,12 @@ fi
 # leave the host, and inheriting that from a config file means the command
 # that uploads a work token looks identical to the one that does not.
 if [[ ( "$CREATE_MODE" == true || "$RECREATE_MODE" == true ) && -z "$SANDBOX_PROFILE" ]]; then
-    echo "Error: --profile is required with --create and --recreate (work, personal, home)." >&2
+    echo "Error: --profile is required with --create and --recreate (work, personal, home, codex)." >&2
     exit 1
 fi
 
 if [[ -n "$SANDBOX_PROFILE" ]] && ! valid_profile "$SANDBOX_PROFILE"; then
-    echo "Error: unknown profile '${SANDBOX_PROFILE}' (valid: work, personal, home)." >&2
+    echo "Error: unknown profile '${SANDBOX_PROFILE}' (valid: work, personal, home, codex)." >&2
     exit 1
 fi
 
@@ -1535,7 +1535,7 @@ if [[ -n "$POLICY_FILE" && "$REFRESH_MODE" == true ]]; then
     exit 1
 fi
 
-# Profile name and policy name are the same word — work, personal, home. The
+# Profile name and policy name are the same word — work, personal, home, codex. The
 # `:-work` covers a sandbox whose manifest predates .profile: --create demands
 # a profile, and every other path that reaches here renders a temp policy it
 # never installs, so the fallback picks a file and changes nothing.

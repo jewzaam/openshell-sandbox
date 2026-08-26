@@ -1,0 +1,151 @@
+# OpenShell sandbox policy: codex profile
+# home with OpenAI in place of Anthropic. Everything else — telemetry push,
+# Prometheus and Loki reads, the read-only package registries — is identical,
+# because this is the same machine and the same person; only the agent changed.
+#
+# The Anthropic block is absent on purpose, not by oversight. A codex sandbox
+# that could also reach api.anthropic.com would be a home sandbox with an extra
+# CLI in it, and nothing would say which agent a session was actually running.
+# validate-profile.sh asserts the swap in both directions.
+#
+# ${OTEL_HOST}, ${OTEL_PORT}, ${PROMETHEUS_HOST}, ${PROMETHEUS_PORT},
+# ${LOKI_HOST}, and ${LOKI_PORT} are substituted from config/site.env by
+# render_policy() in scripts/sandbox.sh. This file is a template — do not
+# pass it to `openshell` directly.
+
+version: 1
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /lib64
+    - /proc
+    - /sys
+    - /dev/urandom
+    - /app
+    - /etc
+    - /var/log
+  read_write:
+    - /sandbox
+    - /tmp
+    - /dev/null
+    - /dev/pts
+    - /home
+
+landlock:
+  compatibility: best_effort
+
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+network_policies:
+  openai_api:
+    name: openai-api
+    # Three hosts, one per thing Codex does, taken from its own source rather
+    # than guessed:
+    #   chatgpt.com     — default provider base URL for a ChatGPT sign-in
+    #                     (`https://chatgpt.com/backend-api/codex`), plus the
+    #                     account/profile calls in backend-client.
+    #   api.openai.com  — the built-in `openai` provider, used when signed in
+    #                     with an API key instead.
+    #   auth.openai.com — the OAuth issuer for `codex login`, including
+    #                     `--device-auth` and every token refresh after it.
+    # Dropping any one of them fails a different operation, and each fails as
+    # a 403 from the proxy rather than as anything Codex explains.
+    endpoints:
+      - host: chatgpt.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+      - host: api.openai.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+      - host: auth.openai.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+    binaries:
+      - { path: "/**" }
+
+  otel:
+    name: otel-collector
+    endpoints:
+      - host: ${OTEL_HOST}
+        port: ${OTEL_PORT}
+        protocol: rest
+        enforcement: enforce
+        access: full
+    binaries:
+      - { path: "/**" }
+
+  prometheus:
+    name: prometheus-read
+    endpoints:
+      - host: ${PROMETHEUS_HOST}
+        port: ${PROMETHEUS_PORT}
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
+  loki:
+    name: loki-read
+    endpoints:
+      - host: ${LOKI_HOST}
+        port: ${LOKI_PORT}
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
+  npm:
+    name: npm-readonly
+    endpoints:
+      - host: registry.npmjs.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
+  debian:
+    name: debian-readonly
+    endpoints:
+      - host: deb.debian.org
+        port: 80
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: deb.debian.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }
+
+  pypi:
+    name: pypi-readonly
+    endpoints:
+      - host: pypi.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: files.pythonhosted.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }

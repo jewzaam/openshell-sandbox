@@ -29,8 +29,19 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Claude Code + gws (Google Workspace CLI)
-RUN npm install -g @anthropic-ai/claude-code @googleworkspace/cli
+# Claude Code + gws (Google Workspace CLI) + Codex CLI
+#
+# Codex is baked, not installed on demand: the OpenShell L7 proxy resets any
+# request whose path contains %2f, and that is exactly how npm asks for a
+# scoped package (registry.npmjs.org/@openai%2fcodex). Verified from inside a
+# sandbox — the unencoded path returns 200, the encoded one returns nothing.
+# So `npm install -g @scope/pkg` cannot work in a sandbox at all, and every
+# scoped tool has to arrive in the image.
+#
+# It is also the largest single thing here: ~126MB compressed, ~309MB
+# unpacked, because the platform package vendors a musl codex binary plus
+# bwrap, rg and zsh.
+RUN npm install -g @anthropic-ai/claude-code @googleworkspace/cli @openai/codex
 
 # uv (Python package manager)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv

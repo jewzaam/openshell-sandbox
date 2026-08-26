@@ -23,7 +23,7 @@ Usage: scode [OPTIONS] [JIRA_URL | PR_URL... | SANDBOX_DIR | --name NAME | SOURC
 Open a directory in VS Code backed by an OpenShell sandbox running Claude.
 
 Options:
-  --profile NAME   Credential profile: work, personal, or home. Required on
+  --profile NAME   Credential profile: work, personal, home, or codex. Required on
                    every invocation, including reopening an existing sandbox.
                    Passed to sandbox.sh.
 
@@ -90,11 +90,11 @@ source "${SCRIPT_DIR}/lib.sh"
 # The alternative — reading it back from manifest.json — makes the two commands
 # that upload wildly different credentials look identical at the prompt.
 if [[ -z "$SCODE_PROFILE" ]]; then
-    echo "Error: --profile is required (work, personal, home)" >&2
+    echo "Error: --profile is required (work, personal, home, codex)" >&2
     exit 1
 fi
 if ! valid_profile "$SCODE_PROFILE"; then
-    echo "Error: unknown profile '${SCODE_PROFILE}' (valid: work, personal, home)" >&2
+    echo "Error: unknown profile '${SCODE_PROFILE}' (valid: work, personal, home, codex)" >&2
     exit 1
 fi
 
