@@ -75,4 +75,51 @@ if (start_error_sandbox sb-test 2>/dev/null); then
 fi
 if [[ -f "${TMP}/started" ]]; then fail "podman start ran without a container"; fi
 
+# ---------------------------------------------------------------------------
+# Call sites: every mode that talks to the container must start a stopped one
+# ---------------------------------------------------------------------------
+#
+# End-to-end through sandbox.sh with the same stubs, --dryrun so the openshell
+# calls are only printed. Lifting the function proves it works; this proves it
+# is reached.
+
+WORK="${TMP}/work"
+mkdir -p "$WORK"
+cp -r "${REPO_ROOT}/scripts" "${REPO_ROOT}/config" "${REPO_ROOT}/policies" "$WORK/"
+if [[ ! -f "${WORK}/config/site.env" ]]; then
+    printf 'OTEL_URL=http://x:4318\nPROMETHEUS_URL=http://x:9090\nLOKI_URL=http://x:3100\n' \
+        > "${WORK}/config/site.env"
+fi
+SANDBOX_SH="${WORK}/scripts/sandbox.sh"
+
+FAKE_HOME="${TMP}/home"
+mkdir -p "${FAKE_HOME}/sandboxes/probe"
+printf '{"name":"probe","openshell_name":"sb-test","profile":"personal","repos":{}}' \
+    > "${FAKE_HOME}/sandboxes/probe/manifest.json"
+
+echo Error > "${TMP}/phase"
+with_container
+
+for mode in "--connect probe" "--refresh probe" "--recreate probe --profile personal --no-connect"; do
+    # shellcheck disable=SC2086  # deliberate word split: mode carries flags
+    out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" $mode --dryrun 2>&1 || true)"
+    grep -qF "Sandbox in Error phase, starting container..." <<<"$out" \
+        || fail "${mode%% *} did not start the stopped container"
+done
+
+# A container that will not start is fatal everywhere. --recreate most of all:
+# its next step deletes the container the download was supposed to drain, so
+# proceeding would rebuild from stale local state and lose the session's work.
+no_container
+for mode in "--connect probe" "--refresh probe" "--recreate probe --profile personal --no-connect"; do
+    # shellcheck disable=SC2086  # deliberate word split: mode carries flags
+    if HOME="$FAKE_HOME" bash "$SANDBOX_SH" $mode --dryrun >/dev/null 2>&1; then
+        fail "${mode%% *} proceeded against an unstartable sandbox"
+    fi
+done
+# shellcheck disable=SC2086
+rc_out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --recreate probe --profile personal --no-connect --dryrun 2>&1 || true)"
+grep -qF "sandbox delete" <<<"$rc_out" \
+    && fail "--recreate deleted the container after failing to download from it"
+
 echo "PASS: tests/test-error-sandbox-start.sh"

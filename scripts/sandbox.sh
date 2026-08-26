@@ -76,6 +76,7 @@ CREATE_MODE=false
 ENSURE_MODE=false
 REFRESH_MODE=false
 RECREATE_MODE=false
+ALL_MODE=false
 GATEWAY=""
 POLICY_FILE=""
 SANDBOX_PROFILE=""
@@ -183,6 +184,8 @@ OPTIONS:
     --gateway NAME    OpenShell gateway (default: \$OPENSHELL_GATEWAY)
     --refresh [NAME]  Re-upload ~/.claude/, bin/, .bashrc, .env, system prompt
     --recreate [NAME] Download, delete sandbox container, recreate with new image, re-upload repos
+    --all             With --refresh/--recreate: apply to every sandbox in ~/sandboxes/
+                      instead of one NAME. --recreate --all never connects.
     --connect [NAME]  Reconnect to an existing sandbox
     --delete [NAME]   Delete a sandbox and local state
 
@@ -205,6 +208,8 @@ EXAMPLES:
     $(basename "$0") --upload myapp --force
     $(basename "$0") --connect myapp
     $(basename "$0") --delete myapp
+    $(basename "$0") --refresh --all
+    $(basename "$0") --recreate --all
 EOF
     exit "${1:-0}"
 }
@@ -255,8 +260,13 @@ sandbox_phase() {
 }
 
 # An Error-phase sandbox is a stopped container, and `sandbox exec` fails
-# against one. Start it the way claude-dashboard does on click of an error row:
-# podman start, by openshell's own label (same lookup as mint-sandbox-tokens.sh).
+# against one — so does `sandbox upload`/`download`. Start it the way
+# claude-dashboard does on click of an error row: podman start, by openshell's
+# own label (same lookup as mint-sandbox-tokens.sh).
+#
+# Returns non-zero rather than exiting so the caller's `|| exit 1` is visible
+# at the call site. Every caller stops — --recreate included, because its next
+# step deletes the container the download was supposed to drain.
 start_error_sandbox() {
     local os_name="$1" cid elapsed=0
     [[ "$(sandbox_phase "$os_name")" == "Error" ]] || return 0
@@ -265,7 +275,7 @@ start_error_sandbox() {
         | jq -r --arg n "$os_name" '.[] | select(.Labels["openshell.ai/sandbox-name"] == $n) | .Id' | head -1)
     if [[ -z "$cid" ]]; then
         echo "Error: sandbox '${os_name}' is in Error phase with no container — recreate it" >&2
-        exit 1
+        return 1
     fi
 
     echo "Sandbox in Error phase, starting container..." >&2
@@ -277,7 +287,7 @@ start_error_sandbox() {
         elapsed=$((elapsed + 1))
         if [[ $elapsed -ge 30 ]]; then
             echo "Error: sandbox '${os_name}' not Ready 30s after start" >&2
-            exit 1
+            return 1
         fi
         sleep 1
     done
@@ -1003,6 +1013,10 @@ resolve_policy() {
 # Parse args
 # ---------------------------------------------------------------------------
 
+# Pre-scan, because --refresh/--recreate resolve their NAME as they are parsed
+# and would infer-or-die before a later --all is ever seen.
+[[ " $* " == *" --all "* ]] && ALL_MODE=true
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help|-h)
@@ -1023,6 +1037,8 @@ while [[ $# -gt 0 ]]; do
             REFRESH_MODE=true
             if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
+            elif [[ "$ALL_MODE" == true ]]; then
+                shift
             else
                 SANDBOX_NAME="$(infer_sandbox_name)" || { echo "Error: --refresh requires NAME (not in a sandbox directory)" >&2; exit 1; }
                 shift
@@ -1032,10 +1048,15 @@ while [[ $# -gt 0 ]]; do
             RECREATE_MODE=true
             if [[ $# -ge 2 && "$2" != -* ]]; then
                 SANDBOX_NAME="$2"; shift 2
+            elif [[ "$ALL_MODE" == true ]]; then
+                shift
             else
                 SANDBOX_NAME="$(infer_sandbox_name)" || { echo "Error: --recreate requires NAME (not in a sandbox directory)" >&2; exit 1; }
                 shift
             fi
+            ;;
+        --all)
+            shift
             ;;
         --source-dir)
             [[ $# -ge 2 ]] || { echo "Error: --source-dir requires PATH" >&2; exit 1; }
@@ -1169,6 +1190,69 @@ if [[ "$CREATE_MODE" == true || "$ADD_REPO_MODE" == true ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# --all: re-invoke this script once per local sandbox
+# ---------------------------------------------------------------------------
+
+# ~/sandboxes/*/manifest.json is the list. Not `openshell sandbox list`: both
+# modes read and write host-side state under ~/sandboxes/<name>/, and a remote
+# container with no local directory has neither a name to resolve back to nor
+# repos to re-upload.
+if [[ "$ALL_MODE" == true ]]; then
+    if [[ "$REFRESH_MODE" != true && "$RECREATE_MODE" != true ]]; then
+        echo "Error: --all is only valid with --refresh or --recreate" >&2
+        exit 1
+    fi
+    if [[ -n "$SANDBOX_NAME" ]]; then
+        echo "Error: --all and a sandbox NAME are mutually exclusive" >&2
+        exit 1
+    fi
+
+    ALL_MODE_FLAG=--refresh
+    [[ "$RECREATE_MODE" == true ]] && ALL_MODE_FLAG=--recreate
+
+    ALL_COMMON=()
+    [[ -n "$GATEWAY" ]] && ALL_COMMON+=(--gateway "$GATEWAY")
+    [[ "$DRYRUN" == true ]] && ALL_COMMON+=(--dryrun)
+    [[ "$DEBUG" == true ]] && ALL_COMMON+=(--debug)
+
+    ALL_FAILED=()
+    ALL_FOUND=false
+    for manifest in "${SANDBOXES_DIR}"/*/manifest.json; do
+        [[ -f "$manifest" ]] || continue
+        ALL_FOUND=true
+        name="$(basename "$(dirname "$manifest")")"
+        one=("$ALL_MODE_FLAG" "$name" "${ALL_COMMON[@]}")
+        if [[ "$RECREATE_MODE" == true ]]; then
+            # --recreate rejects a missing --profile before the manifest
+            # fallback runs, and ends by exec'ing --connect. Neither is
+            # workable unattended, so read the profile here and suppress the
+            # connect. A sandbox with no .profile predates the field; guessing
+            # one would rebuild it on the wrong credentials (see gotcha 5).
+            profile="$(jq -r '.profile // empty' "$manifest" 2>/dev/null || true)"
+            if [[ -z "$profile" ]]; then
+                echo "Skipped ${name}: no profile in manifest — recreate it by name with --profile" >&2
+                ALL_FAILED+=("$name")
+                continue
+            fi
+            one+=(--profile "$profile" --no-connect)
+        fi
+        echo "=== ${ALL_MODE_FLAG#--} ${name} ===" >&2
+        "$0" "${one[@]}" || { echo "Failed: ${name}" >&2; ALL_FAILED+=("$name"); }
+    done
+
+    if [[ "$ALL_FOUND" != true ]]; then
+        echo "Error: no sandboxes found in ${SANDBOXES_DIR}" >&2
+        exit 1
+    fi
+    if [[ ${#ALL_FAILED[@]} -gt 0 ]]; then
+        echo "Failed sandboxes: ${ALL_FAILED[*]}" >&2
+        exit 1
+    fi
+    echo "Done." >&2
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # --profile is only applied on a path that creates a sandbox
 # ---------------------------------------------------------------------------
 
@@ -1265,6 +1349,7 @@ elif [[ -n "$CONNECT_NAME" ]]; then
     if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
         WORKDIR="/sandbox/source/"
     fi
+    start_error_sandbox "$OS_NAME" || exit 1
     connect_sandbox "$OS_NAME" "$WORKDIR"
     exit $?
 fi
@@ -1386,7 +1471,15 @@ if [[ "$RECREATE_MODE" == true ]]; then
     # upload_claude_state() during the create in step 3, and step 2 deletes the
     # only other copy. A direct call, not a flag on --download — there is one
     # caller, and a flag would be a second way to say "recreate".
+    #
+    # A stopped container has to come up first or both transfers fail against
+    # it, and a failed start is fatal: step 2 destroys the only copy of
+    # everything this step was supposed to save. Recreating from stale local
+    # state silently discards whatever the session did. Stop instead — the
+    # container is still there to retry against. Deliberately rebuilding from
+    # local state is `--delete NAME` then `--create`.
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
+    start_error_sandbox "$OS_NAME" || exit 1
     "$0" --download "$SANDBOX_NAME" --force "${COMMON_ARGS[@]}"
     download_claude_state "$OS_NAME" "$SANDBOX_DIR"
 
@@ -1400,6 +1493,10 @@ if [[ "$RECREATE_MODE" == true ]]; then
     "$0" --upload "$SANDBOX_NAME" --force "${COMMON_ARGS[@]}"
 
     # 5. Connect
+    if [[ "$NO_CONNECT" == true ]]; then
+        echo "Recreated ${SANDBOX_NAME}. Connect with: $(basename "$0") --connect ${SANDBOX_NAME}" >&2
+        exit 0
+    fi
     exec "$0" --connect "$SANDBOX_NAME" "${COMMON_ARGS[@]}"
 fi
 
@@ -1427,7 +1524,7 @@ if [[ "$ENSURE_MODE" == true ]]; then
                 exit 1
             fi
         fi
-        start_error_sandbox "$OS_NAME"
+        start_error_sandbox "$OS_NAME" || exit 1
         echo "Sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
         connect_sandbox "$OS_NAME" "$WORKDIR"
     else
@@ -1673,6 +1770,7 @@ if [[ "$REFRESH_MODE" == true ]]; then
         ensure_gws_creds
     fi
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
+    start_error_sandbox "$OS_NAME" || exit 1
     echo "Refreshing config on ${SANDBOX_NAME}..." >&2
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
     upload_config "$OS_NAME" "$SANDBOX_DIR"
