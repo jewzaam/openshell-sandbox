@@ -197,7 +197,7 @@ OpenShell replaces `/sandbox/.bashrc` during `sandbox create` with its own versi
 
 ### Single-file upload clobbers directory contents
 
-`openshell sandbox upload <name> bin/claude.env /sandbox/bin/` replaces ALL of `/sandbox/bin/` with just `claude.env`. Other scripts disappear.
+`openshell sandbox upload <name> bin/validate-profile.sh /sandbox/bin/` replaces ALL of `/sandbox/bin/` with just `validate-profile.sh`. Other scripts disappear.
 
 **Cause:** `sandbox upload` treats the destination as the target for the source item, not the parent directory.
 

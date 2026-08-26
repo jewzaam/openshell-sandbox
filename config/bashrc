@@ -5,6 +5,30 @@
 export XDG_CONFIG_HOME=/sandbox/.config
 export PATH="/sandbox/bin:${PATH}"
 
+# Telemetry: container policy — how the agent behaves in here. Set before the
+# .env source so a host-written value still wins, and set HERE rather than in a
+# file some launcher sources, which is what bin/claude.env used to be: only
+# claude-wrapper.sh ever read it, so a bare `claude` came up with an endpoint
+# and telemetry switched off and exported nothing. Everything a process needs
+# has to be inherited, because the only universal ancestor is the shell.
+#
+# Where telemetry goes and who is reporting — endpoint, protocol,
+# OTEL_RESOURCE_ATTRIBUTES — is host knowledge and comes from .env below.
+# See docs/environment-variables.md.
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
+
+# Metrics → Prometheus, logs/events → Loki, traces → Tempo, all via the collector
+export OTEL_METRICS_EXPORTER=otlp
+export OTEL_METRIC_EXPORT_INTERVAL=10000
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_LOGS_EXPORT_INTERVAL=5000
+export OTEL_TRACES_EXPORTER=otlp
+
+# Tool details and user prompts (POC only — review before sharing)
+export OTEL_LOG_TOOL_DETAILS=1
+export OTEL_LOG_USER_PROMPTS=1
+
 # Source runtime env vars (credentials, API config) injected at sandbox creation
 if [[ -f /sandbox/.env ]]; then
     set -a
