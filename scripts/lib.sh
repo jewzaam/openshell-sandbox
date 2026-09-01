@@ -545,7 +545,7 @@ short_name() {
 # credential uploads, and the host clone — and until then every shell in that
 # directory shows no profile at all.
 init_manifest() {
-    local sandbox_dir="$1" sandbox_name="$2" profile="${3:-}"
+    local sandbox_dir="$1" sandbox_name="$2" profile="${3:-}" harness="${4:-}"
     local manifest="${sandbox_dir}/manifest.json"
 
     mkdir -p "$sandbox_dir"
@@ -565,6 +565,32 @@ init_manifest() {
             "$manifest" > "${manifest}.tmp"
         mv "${manifest}.tmp" "$manifest"
     fi
+
+    # Which agent this sandbox launches by default. The manifest is the ONLY
+    # store: it lives on the host, so it survives --recreate (which deletes the
+    # remote sandbox, never ~/sandboxes/<name>) and host tooling can read it
+    # without entering the container. A sandbox cannot write it back — gotcha 6
+    # — so a harness picked at the wrapper's prompt is a one-off, and --harness
+    # is what changes the memory.
+    #
+    # Unlike .profile this IS defaulted from the manifest on later commands.
+    # Gotcha 5 requires --profile every time because the profile decides which
+    # credentials leave the host; the harness decides nothing of the sort — on
+    # work both agents' credentials ship regardless.
+    if [[ -n "$harness" ]]; then
+        jq --arg harness "$harness" '.harness = $harness' \
+            "$manifest" > "${manifest}.tmp"
+        mv "${manifest}.tmp" "$manifest"
+    fi
+}
+
+# The remembered harness for a sandbox directory, empty when unset.
+manifest_harness() {
+    jq -r '.harness // ""' "${1}/manifest.json" 2>/dev/null || true
+}
+
+valid_harness() {
+    [[ "$1" == claude || "$1" == codex ]]
 }
 
 # Warn and confirm if a personal/home profile is adding a private repo

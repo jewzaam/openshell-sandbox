@@ -8,7 +8,7 @@ export PATH="/sandbox/bin:${PATH}"
 # Telemetry: container policy — how the agent behaves in here. Set before the
 # .env source so a host-written value still wins, and set HERE rather than in a
 # file some launcher sources, which is what bin/claude.env used to be: only
-# claude-wrapper.sh ever read it, so a bare `claude` came up with an endpoint
+# harness-wrapper.sh ever read it, so a bare `claude` came up with an endpoint
 # and telemetry switched off and exported nothing. Everything a process needs
 # has to be inherited, because the only universal ancestor is the shell.
 #
@@ -42,4 +42,7 @@ export EDITOR=vi
 export PYTHONDONTWRITEBYTECODE=1
 
 alias ll="ls -l"
-alias claude="/sandbox/bin/claude-wrapper.sh"
+# Both agents launch through the wrapper, which gives each its own dtach
+# socket. Naming the harness here skips the wrapper's prompt.
+alias claude="/sandbox/bin/harness-wrapper.sh claude"
+alias codex="/sandbox/bin/harness-wrapper.sh codex"

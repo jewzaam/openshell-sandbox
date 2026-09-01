@@ -39,7 +39,7 @@ sandbox.sh literals + assembled OTEL identity ────┴──▶ /sandbox/
                                                           │
                           ┌───────────────────────────────┴──────────┐
                           ▼                                          ▼
-                   config/bashrc                         bin/claude-wrapper.sh
+                   config/bashrc                         bin/harness-wrapper.sh
                    (login shells)                        (interactive launch)
                           │                                          │
                    (container policy)                              │
@@ -117,7 +117,7 @@ inherits from:
   selections, two intervals, two log-detail flags
 - sources `/sandbox/.env` with `set -a` (lines 33-37), *after* the policy, so a
   host-written value still wins
-- `alias claude="/sandbox/bin/claude-wrapper.sh"` (line 45)
+- `alias claude="/sandbox/bin/harness-wrapper.sh"` (line 45)
 
 A login shell reaches this file indirectly: `/sandbox/.profile` sources
 `$HOME/.bashrc`. Testing with `bash -lc` and a synthetic `$HOME` that has no
@@ -128,7 +128,7 @@ The alias applies **only to interactive bash**. It does not apply to
 `claude` through `$PATH` to `/usr/bin/claude` — which is the point: those
 callers get the policy by inheritance, not by resolving to a wrapper.
 
-## Stage 3 — `bin/claude-wrapper.sh`
+## Stage 3 — `bin/harness-wrapper.sh`
 
 `connect_sandbox()` execs the wrapper by absolute path (`sandbox.sh:251`). It
 re-sources `/sandbox/.env` because a shell that started before a
@@ -198,15 +198,15 @@ to match session logs.
 
 | Caller | Resolves to | Why |
 |---|---|---|
-| Interactive shell, typed `claude` | `claude-wrapper.sh` | bashrc alias beats `$PATH` |
+| Interactive shell, typed `claude` | `harness-wrapper.sh` | bashrc alias beats `$PATH` |
 | `dtach -c $SOCKET claude ...` inside the wrapper | `/usr/bin/claude` | no shell, so no alias |
 | `subprocess` from a session tool call | `/usr/bin/claude` | `$PATH` |
-| `connect_sandbox()` | `claude-wrapper.sh` | absolute path, `sandbox.sh:251` |
+| `connect_sandbox()` | `harness-wrapper.sh` | absolute path, `sandbox.sh:251` |
 
 ## History
 
 `bin/claude.env` held both halves of the telemetry config and was sourced by
-exactly one launcher, `claude-wrapper.sh`. Two bugs followed, and they are the
+exactly one launcher, `harness-wrapper.sh`. Two bugs followed, and they are the
 same bug:
 
 - A bare `claude` — anything not started by the wrapper — inherited an endpoint
