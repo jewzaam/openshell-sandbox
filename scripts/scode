@@ -58,6 +58,15 @@ EOF
     exit 0
 fi
 
+# scode's OWN lib.sh, not $SANDBOX_SH's. They are usually the same checkout,
+# but SANDBOX_SH defaults to a fixed absolute path — so `./scripts/scode` out
+# of a second checkout or a worktree used to run this script against the other
+# copy's library, and picked up whatever functions that one happened to have.
+#
+# Sourced before arg parsing: the --harness case below calls valid_harness(),
+# defined in here.
+source "${SCRIPT_DIR}/lib.sh"
+
 SCODE_PROFILE=""
 SCODE_HARNESS=""
 POSITIONAL=()
@@ -88,12 +97,6 @@ if [[ $# -lt 1 ]]; then
     echo "Usage: scode --profile NAME [--name NAME | SOURCE_PATH [REF|LABEL] | ~/sandboxes/<name>]" >&2
     exit 1
 fi
-
-# scode's OWN lib.sh, not $SANDBOX_SH's. They are usually the same checkout,
-# but SANDBOX_SH defaults to a fixed absolute path — so `./scripts/scode` out
-# of a second checkout or a worktree used to run this script against the other
-# copy's library, and picked up whatever functions that one happened to have.
-source "${SCRIPT_DIR}/lib.sh"
 
 # Every invocation names the profile, reopening an existing sandbox included.
 # The alternative — reading it back from manifest.json — makes the two commands
