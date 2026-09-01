@@ -55,6 +55,9 @@ personal_profile() { [[ "$PROFILE" == personal || "$PROFILE" == home || "$PROFIL
 # The one profile whose agent is not Claude. Separate from the above because it
 # answers a different question: which API this sandbox is supposed to reach.
 codex_profile() { [[ "$PROFILE" == codex ]]; }
+# Profiles that may reach OpenAI. The codex profile swaps Anthropic out for it;
+# work carries both, because a work sandbox runs both agents.
+openai_profile() { [[ "$PROFILE" == codex || "$PROFILE" == work ]]; }
 
 if personal_profile; then
     C_PROFILE="$LIGHT_PURPLE"
@@ -160,7 +163,7 @@ if command -v curl &>/dev/null; then
     # two ways to be silently broken.
     for host in chatgpt.com api.openai.com auth.openai.com; do
         actual=$(net_check "https://${host}")
-        codex_profile && check "$host" "reachable" "$actual" || check "$host" "blocked" "$actual"
+        openai_profile && check "$host" "reachable" "$actual" || check "$host" "blocked" "$actual"
     done
 
     actual=$(net_check https://us-east5-aiplatform.googleapis.com)

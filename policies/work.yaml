@@ -35,6 +35,31 @@ process:
   run_as_group: sandbox
 
 network_policies:
+  openai_api:
+    name: openai-api
+    # Identical to the codex profile's block — see policies/codex.yaml for why
+    # all three hosts are required. Work carries it *in addition to*
+    # vertex-ai-inference rather than instead of it: a work sandbox runs both
+    # agents, unlike the codex profile where openai-api replaces anthropic-api.
+    endpoints:
+      - host: chatgpt.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+      - host: api.openai.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+      - host: auth.openai.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+    binaries:
+      - { path: "/**" }
+
   vertex_ai:
     name: vertex-ai-inference
     endpoints:
