@@ -183,12 +183,14 @@ is no default. `research` and `fetch-service` are policies only —
     CLI in it, and nothing in a running session says which agent it is talking
     to. `validate-profile.sh` and `tests/test-profile-required.sh` both assert
     the swap in both directions.
-    Five things it deliberately does **not** do, all of which look like
+    Four things it deliberately does **not** do, all of which look like
     oversights:
     - **No credential upload and no preservation.** `/sandbox/.codex/auth.json`
       is written by signing in inside the sandbox and is gone on `--recreate`.
       Claude's OAuth survives only because `download_claude_state()` explicitly
-      carries it; there is no codex equivalent yet. Signed out on a fresh
+      carries it, and `download_codex_state()` (gotcha 23) deliberately does
+      not do the same for `auth.json`: on `work` the host ships it, so a
+      preserved copy would let a stale key beat a rotated one. Signed out on a fresh
       sandbox is the expected state, and `validate-profile.sh` reports it as
       such. The browser flow binds `127.0.0.1:1455`, so device code is not a
       preference — it is the only flow that can complete in here.
@@ -208,24 +210,13 @@ is no default. `research` and `fetch-service` are policies only —
       other sandboxes pushed.
     - **No second copy of the system prompt.** `upload_static()` writes
       `/sandbox/source/CLAUDE.md`, which Codex does not read.
-      `claude-wrapper.sh` symlinks `$CODEX_HOME/AGENTS.md` at it on every
+      `harness-wrapper.sh` symlinks `$CODEX_HOME/AGENTS.md` at it on every
       launch — that path is loaded unconditionally regardless of cwd
       (`codex-home/src/instructions/mod.rs`), and relinking each time is what
       keeps it correct across `--refresh`. The symlink is still the right
       mechanism because the target is repo content, not host config.
-      (This entry used to say a `.codex/` upload would delete `auth.json` on
-      every refresh. That was wrong — see gotcha 20.)
-    - **No rename of `claude-wrapper.sh`.** It launches Codex on this profile
-      and the name does not say so; that was weighed and kept. `connect_sandbox()`
-      execs `/sandbox/bin/claude-wrapper.sh` by absolute path, and neither
-      `--connect` nor `--ensure`-on-existing re-uploads `bin/` first — only
-      `--create`, `--recreate` and `--refresh` do. So renaming the file breaks
-      every sandbox built before the rename, at connect time, with a bare
-      `No such file or directory`. Revisit only alongside a migration, and
-      expect a fallback clause in `connect_sandbox()` to be part of it.
-      (`bin/claude.env` used to be named here for the same reason. It is gone —
-      its contents are container policy and moved to `config/bashrc`, which
-      every process inherits; see the telemetry entry below.)
+      A `.codex/` directory upload is safe (gotcha 20); the mechanism here is
+      the symlink because the target is repo content, not host config.
 
 20. **`openshell sandbox upload` merges; it does not clobber.** The pre-delete
     that gotcha 16 describes belongs to `upload_repo()`, which `rm -rf`s the
@@ -269,12 +260,110 @@ is no default. `research` and `fetch-service` are policies only —
       `tests/test-profile-required.sh` assert the membership for work, codex,
       home and personal in both directions.
 
+22. **`--harness claude|codex` picks the agent, one dtach socket each.**
+    Valid with `--create`, `--connect` and `--recreate`, and on `scode`.
+    `connect_sandbox()` passes the harness to `/sandbox/bin/harness-wrapper.sh`
+    as `$1`; the wrapper derives `SOCKET=/sandbox/.dtach-${HARNESS}`, so Claude
+    and Codex can both be live in one sandbox and each `--connect` reattaches
+    to its own.
+    - **`--connect` uploads `bin/` unconditionally.** `connect_sandbox()` execs
+      the wrapper by absolute path, so a sandbox whose copy is older than the
+      script either fails with a bare `No such file or directory` or ignores an
+      argument it does not know and silently starts the wrong agent. Two small
+      files; do not make it conditional.
+    - **With no harness named, the wrapper asks.** The prompt is bounded by
+      `HARNESS_PROMPT_TIMEOUT` (5s) and falls back to a computed default.
+      `read -t` returns non-zero and leaves the variable **empty** on timeout —
+      the `-i` prefill is not retained — so `${answer:-$default}` is load
+      bearing, not defensive: trust `-i` and a timed-out prompt launches
+      nothing. The same path covers a non-tty stdin, which hits EOF at once.
+    - **`manifest.json` `.harness` is the only store, and it is host-side.**
+      `--recreate` deletes the remote sandbox, never `~/sandboxes/<name>`, so
+      the remembered harness survives a rebuild with no preservation path and
+      no round trip — host tooling can also read it without entering the
+      container. Nothing is written inside the sandbox. **A session cannot
+      write it back** (gotcha 6), which is the deliberate cost: a harness
+      picked at the wrapper's prompt applies to that launch only, and
+      `--harness` is what changes the memory. Do not add a container-side
+      last-used file to "fix" that — two stores drift, and the prompt is the
+      deviation path by design.
+    - **Unlike `--profile`, `--harness` IS defaulted from the manifest.**
+      Gotcha 5 requires the profile every time because it decides which
+      credentials leave the host; the harness decides nothing of the sort, so
+      the same argument does not carry over.
+    - **Two channels into the wrapper, meaning different things.** An explicit
+      `--harness` goes as argv and skips the prompt — the decision is already
+      made. The manifest's value goes as `$HARNESS_DEFAULT` and only
+      preselects. Collapsing them into one would either stall an explicit
+      choice for the timeout or make the remembered value unoverridable.
+    - **The default is never profile-based.** In precedence: exactly one live
+      dtach socket (reattaching to the running session is the reason to ask at
+      all), then `$HARNESS_DEFAULT`, then `HARNESS_FALLBACK` (claude). Two live
+      sockets is not a signal — both agents are up and neither is the better
+      guess. The profile decides which credentials and which network policy a
+      sandbox got, not which agent the human wants this time: `work` carries
+      both Anthropic and OpenAI egress and runs either, which is what made a
+      profile-keyed default unstatable. `tests/test-connect-harness.sh` drives
+      the precedence against real AF_UNIX sockets and asserts `default_harness`
+      does not read `$SANDBOX_PROFILE`.
+    - **`default_harness` emits `"<harness> <reason>"` from one set of
+      branches**, and the prompt shows the reason (`[codex - remembered]`).
+      Recomputing the reason in a second function drifts from the chooser and
+      reports a value the chooser rejected. Keep them together.
+    - **The harness is a flag, not a positional.** A positional would collide
+      with sandboxes actually named "claude" or "codex", including through
+      `--recreate`, which re-execs `--connect "$SANDBOX_NAME"`. A flag also
+      works on `--create` and `--recreate`, which have no positional to spare.
+    - **Codex launches `codex resume` unconditionally**, with no check for
+      existing sessions. Its picker starts a new session as readily as it
+      resumes one and works with none recorded, so testing for
+      `/sandbox/.codex/sessions` first buys nothing. It carries
+      `--dangerously-bypass-approvals-and-sandbox` **and**
+      `--dangerously-bypass-hook-trust`: every hook in the sandbox was uploaded
+      from the host by `upload_config()`, so the trust gate has no untrusted
+      hook to catch and only costs a prompt on the observe-hook that reports
+      state to claude-dashboard. There is **no `--yolo`** in codex 0.152.0 —
+      the long flags are the flags, and the test asserts it has not crept in.
+    - **The `AGENTS.md` symlink is keyed on the harness, not the profile.** Any
+      profile can run Codex, so gating it on `SANDBOX_PROFILE == codex` leaves
+      a work sandbox's Codex without the system prompt.
+
+23. **Codex conversation history survives `--recreate`.**
+    `download_codex_state()` / `upload_codex_state()` mirror the Claude pair.
+    `codex resume` needs *both* halves — the `threads` table in the state
+    database to list sessions, and the rollout jsonl each row's `rollout_path`
+    points at — so preserving one without the other restores nothing.
+    `rollout_path` is stored absolute (`/sandbox/.codex/sessions/...`) and that
+    path is identical in the rebuilt container, so nothing is rewritten.
+    - **One download of the whole `~/.codex`, filtered on the host.** The state
+      databases are schema-versioned (`state_5.sqlite`, and a machine can carry
+      several), so there is no static name to ask for. Filtering where a glob
+      works beats guessing names over the wire.
+    - **A database travels with its `-wal`, never with its `-shm`.** A
+      `state_5.sqlite` moved without the write-ahead log is nearly empty —
+      measured in a live sandbox at 4KB of database against 2.1MB of log. The
+      `-shm` is a rebuildable index SQLite regenerates from the `-wal`, and
+      SQLite says not to move it between machines: a stale one is worse than
+      none. `tests/test-codex-state.sh` asserts both directions.
+    - **`CODEX_STATE_KEEP` is an allowlist.** `sessions/`, `history.jsonl`,
+      `session_index.jsonl`, `config.toml`, plus the databases. Everything else
+      — `auth.json` (above), `thread-writer-locks/`, `shell_snapshots/`,
+      `tmp/`, `installation_id` — stays behind. Note this is the *opposite*
+      shape from the `~/.claude` upload in `upload_config()`, which is a
+      denylist of `rsync --exclude`s: what a sandbox produces is open-ended, so
+      naming what to rescue is safer than naming what to drop.
+    - **The filter reports failure on an empty source.** Otherwise an empty
+      `~/.codex` stages an empty upload over the real one on the next create.
+    - **`codex_state_filter()` is split out of the download** purely so
+      `tests/test-codex-state.sh` can drive it against a fake tree; the
+      download needs a live sandbox, the filtering does not.
+
 ## Settled, do not re-evaluate
 
 - **screen and tmux were tested and rejected** for session persistence — both
   mangle Claude Code's TUI through their terminal emulation layers. `dtach`
-  only, socket at `/sandbox/.dtach-claude`, requires `/dev/pts` in policy
-  `read_write`. See
+  only, one socket per harness at `/sandbox/.dtach-<harness>`, requires
+  `/dev/pts` in policy `read_write`. See
   `knowledgebase/containers/terminal-multiplexers-in-sandboxes.md`.
 - **`.claude.json` and `.credentials.json` are both required** to preserve
   OAuth across `--recreate`. See
@@ -330,7 +419,7 @@ is no default. `research` and `fetch-service` are policies only —
   `scripts/strip-settings.py`. A host pins models for host reasons; in a
   sandbox available models may differ.  Pinning model is not required.
 - **Personal and home set `--model claude-opus-5[1m]`** in the sandbox
-  `claude-wrapper.sh`, off `$SANDBOX_PROFILE` from `/sandbox/.env`. Not off
+  `harness-wrapper.sh`, off `$SANDBOX_PROFILE` from `/sandbox/.env`. Not off
   manifest.json — that is uploaded by `upload_static()` and used to lose the
   race on a first create, silently starting personal sessions on the default
   model. `.env` carries `SANDBOX_PROFILE` for every profile, not just the
@@ -344,7 +433,7 @@ is no default. `research` and `fetch-service` are policies only —
   telemetry toggles, exporters, intervals, log detail — lives in `config/bashrc`
   and is never captured from the host env, so a host preference cannot silently
   change a sandbox. Both halves have to be inherited, not sourced by a
-  launcher: `bin/claude.env` held the policy and only `claude-wrapper.sh` read
+  launcher: `bin/claude.env` held the policy and only `harness-wrapper.sh` read
   it, so a bare `claude` came up with an endpoint and telemetry off; the
   attributes were assembled there too, so every review-orchestrator sub-agent
   reported with no identity at all.

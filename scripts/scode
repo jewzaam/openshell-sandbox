@@ -23,6 +23,8 @@ Usage: scode [OPTIONS] [JIRA_URL | PR_URL... | SANDBOX_DIR | --name NAME | SOURC
 Open a directory in VS Code backed by an OpenShell sandbox running Claude.
 
 Options:
+  --harness NAME   Agent to launch: claude or codex. Optional; remembered in
+                   manifest.json and reused on later connects.
   --profile NAME   Credential profile: work, personal, home, or codex. Required on
                    every invocation, including reopening an existing sandbox.
                    Passed to sandbox.sh.
@@ -57,10 +59,17 @@ EOF
 fi
 
 SCODE_PROFILE=""
+SCODE_HARNESS=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --harness)
+            [[ $# -ge 2 ]] || { echo "Error: --harness requires claude or codex" >&2; exit 1; }
+            valid_harness "$2" || { echo "Error: unknown harness '$2' (valid: claude, codex)" >&2; exit 1; }
+            SCODE_HARNESS="$2"
+            shift 2
+            ;;
         --profile)
             [[ $# -ge 2 ]] || { echo "Error: --profile requires NAME" >&2; exit 1; }
             SCODE_PROFILE="$2"
@@ -99,6 +108,7 @@ if ! valid_profile "$SCODE_PROFILE"; then
 fi
 
 PROFILE_FLAG=" --profile ${SCODE_PROFILE}"
+HARNESS_FLAG="${SCODE_HARNESS:+ --harness ${SCODE_HARNESS}}"
 
 write_tasks_and_open() {
     local dir="$1" cmd="$2"
@@ -110,7 +120,7 @@ write_tasks_and_open() {
     # profile is what the sandbox was built with, and sandbox.sh --ensure
     # errors on a mismatch rather than letting scode overwrite it here.
     if [[ ! -f "${dir}/manifest.json" ]]; then
-        init_manifest "$dir" "$sandbox_name" "$SCODE_PROFILE"
+        init_manifest "$dir" "$sandbox_name" "$SCODE_PROFILE" "$SCODE_HARNESS"
     fi
 
     mkdir -p "${dir}/.vscode"
@@ -169,7 +179,7 @@ if [[ "$1" =~ ^https://[^/]+/browse/([A-Za-z]+-[0-9]+)$ ]]; then
     } > "${sandbox_dir}/jira-context.md"
     echo "    wrote ${sandbox_dir}/jira-context.md" >&2
 
-    write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}"
+    write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}${HARNESS_FLAG}"
     exit 0
 fi
 
@@ -195,7 +205,7 @@ if [[ "$_all_prs" == true ]]; then
         # Name sandbox after first PR
         if [[ -z "$ENSURE_CMD" ]]; then
             sandbox_name="${repo_name}-pr-${pr_num}"
-            ENSURE_CMD="${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}"
+            ENSURE_CMD="${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}${HARNESS_FLAG}"
         fi
 
         ENSURE_CMD+=" --repo ${repo_url} --ref ${ref}"
@@ -211,7 +221,7 @@ target_path="$(realpath "$1" 2>/dev/null || echo "$1")"
 if [[ -f "${target_path}/manifest.json" ]]; then
     sandbox_name="$(jq -r '.name' "${target_path}/manifest.json")"
 
-    ENSURE_CMD="${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}"
+    ENSURE_CMD="${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}${HARNESS_FLAG}"
     while IFS=$'\t' read -r repo_name repo_url repo_ref; do
         ENSURE_CMD+=" --repo ${repo_url}"
         if [[ -n "$repo_ref" && "$repo_ref" != "null" ]]; then
@@ -229,7 +239,7 @@ if [[ "$1" == "--name" ]]; then
     sandbox_name="$2"
     sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
 
-    write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}"
+    write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}${HARNESS_FLAG}"
     exit 0
 fi
 

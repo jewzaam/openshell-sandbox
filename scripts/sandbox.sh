@@ -63,6 +63,7 @@ DRYRUN=false
 DEBUG=false
 SANDBOX_NAME=""
 CONNECT_NAME=""
+HARNESS=""
 DELETE_NAME=""
 LIST_MODE=false
 FETCH_SERVICE_MODE=false
@@ -184,6 +185,12 @@ OPTIONS:
     --all             With --refresh/--recreate: apply to every sandbox in ~/sandboxes/
                       instead of one NAME. --recreate --all never connects.
     --connect [NAME]  Reconnect to an existing sandbox
+    --harness NAME    Agent to launch: claude or codex. Recorded in
+                      manifest.json and reused by later --connect/--recreate.
+                      Valid with --create, --connect and --recreate. Omitted,
+                      the wrapper prompts with the remembered value; each
+                      harness has its own dtach socket, so both can be live in
+                      one sandbox.
     --delete [NAME]   Delete a sandbox and local state
 
     NAME is optional for commands marked [NAME] when CWD is under ~/sandboxes/<name>/.
@@ -204,6 +211,8 @@ EXAMPLES:
     $(basename "$0") --upload myapp --repo myapp
     $(basename "$0") --upload myapp --force
     $(basename "$0") --connect myapp
+    $(basename "$0") --connect myapp --harness codex
+    $(basename "$0") --recreate myapp --profile work --harness codex
     $(basename "$0") --delete myapp
     $(basename "$0") --refresh --all
     $(basename "$0") --recreate --all
@@ -246,9 +255,27 @@ ensure_gws_creds() {
 # ---------------------------------------------------------------------------
 
 connect_sandbox() {
-    local os_name="$1" workdir="$2"
+    local os_name="$1" workdir="$2" harness="${3:-}" sandbox_dir="${4:-}"
+    # bin/ ships on every connect, unconditionally. This function execs the
+    # wrapper by absolute path, so a sandbox whose copy is older than this
+    # script fails here with a bare "No such file or directory", or ignores an
+    # argument it does not know and silently starts the wrong agent. Two small
+    # files; do not make it conditional.
+    run openshell sandbox upload "$os_name" "${GW_FLAG[@]}" \
+        "${REPO_ROOT}/bin" /sandbox
+    # Two channels, because they mean different things. An explicit --harness is
+    # a decision already made, so it goes as argv and the wrapper skips its
+    # prompt. The manifest's remembered value is only a suggestion, so it goes
+    # as $HARNESS_DEFAULT and the wrapper prompts with it preselected.
+    local forced="" default=""
+    if [[ -n "$harness" ]]; then
+        forced="$harness"
+    else
+        default="$(manifest_harness "$sandbox_dir")"
+        valid_harness "$default" || default=""
+    fi
     run exec openshell sandbox exec --name "${os_name}" "${GW_FLAG[@]}" \
-        --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${workdir} && /sandbox/bin/claude-wrapper.sh"
+        --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${workdir} && HARNESS_DEFAULT=${default} /sandbox/bin/harness-wrapper.sh ${forced}"
 }
 
 sandbox_phase() {
@@ -470,7 +497,7 @@ write_manifest() {
     now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
     # Skeleton + profile (profile update handles recreate on another profile)
-    init_manifest "$sandbox_dir" "$sandbox_name" "$SANDBOX_PROFILE"
+    init_manifest "$sandbox_dir" "$sandbox_name" "$SANDBOX_PROFILE" "$HARNESS"
 
     jq \
         --arg repo "$repo_name" \
@@ -708,6 +735,102 @@ download_claude_state() {
     rm -rf "$dl_tmp"
 }
 
+# Codex conversation history, preserved across --recreate the way
+# download_claude_state() preserves Claude's.
+#
+# ONE download of the whole directory rather than a call per file: the state
+# databases are schema-versioned (`state_5.sqlite`, and a machine can carry
+# several), so there is no static name to ask for, and each one has `-wal` and
+# `-shm` siblings that must travel with it. A `state_5.sqlite` moved without
+# its `-wal` is nearly empty — measured in a live sandbox: 4KB of database
+# against 2.1MB of write-ahead log. Filtering happens on the host, where a
+# glob works.
+#
+# `codex resume` needs both halves: the `threads` table in the state DB to list
+# sessions, and the rollout jsonl each row points at. `rollout_path` is stored
+# absolute (`/sandbox/.codex/sessions/...`) and that path is identical in the
+# rebuilt container, so nothing has to be rewritten.
+#
+# auth.json is deliberately NOT preserved — see gotcha 19. On work the host
+# ships it through upload_config(), and preserving a copy here would let a
+# stale key win over a rotated one; on the codex profile signing in inside the
+# sandbox remains the documented behaviour.
+CODEX_STATE_KEEP=(sessions history.jsonl session_index.jsonl config.toml)
+
+# Copy the parts of a downloaded ~/.codex worth keeping from $1 into $2.
+# Returns non-zero when there was nothing to keep. Split out from
+# download_codex_state() so it can be driven against a fake tree in a test —
+# the download itself needs a live sandbox, the filtering does not.
+#
+# `-wal` travels with its database; `-shm` deliberately does NOT. SQLite treats
+# the shared-memory file as a rebuildable index derived from the WAL and says
+# not to move it between machines — a stale one alongside a newer `-wal` is
+# worse than none, because SQLite regenerates it correctly when absent.
+codex_state_filter() {
+    local src="$1" dst="$2" kept=1 item
+    mkdir -p "$dst"
+    for item in "${CODEX_STATE_KEEP[@]}"; do
+        if [[ -e "${src}/${item}" ]]; then
+            rm -rf "${dst:?}/${item}"
+            cp -r "${src}/${item}" "${dst}/${item}"
+            kept=0
+        fi
+    done
+    for item in "${src}"/*.sqlite "${src}"/*.sqlite-wal; do
+        [[ -f "$item" ]] || continue
+        cp "$item" "${dst}/"
+        kept=0
+    done
+    return $kept
+}
+
+download_codex_state() {
+    local sandbox_name="$1" sandbox_dir="$2"
+    local codex_dir="${sandbox_dir}/codex"
+    local dl_tmp
+    dl_tmp="$(mktemp -d)"
+
+    transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+        "/sandbox/.codex" "${dl_tmp}/" || true
+
+    local src="${dl_tmp}/.codex"
+    [[ -d "$src" ]] || src="${dl_tmp}/codex"
+    if [[ ! -d "$src" ]]; then
+        rm -rf "$dl_tmp"
+        return 0
+    fi
+
+    local kept=false
+    codex_state_filter "$src" "$codex_dir" && kept=true
+
+    rm -rf "$dl_tmp"
+    [[ "$kept" == true && "$DRYRUN" != true ]] \
+        && echo "    preserved Codex session state" >&2
+    return 0
+}
+
+upload_codex_state() {
+    local sandbox_name="$1" sandbox_dir="$2"
+    local codex_dir="${sandbox_dir}/codex"
+    [[ -d "$codex_dir" ]] || return 0
+
+    local stage
+    stage="$(mktemp -d)"
+    mkdir -p "${stage}/.codex"
+    # Whatever download_codex_state() kept, verbatim. It already filtered.
+    if ! cp -r "${codex_dir}/." "${stage}/.codex/" 2>/dev/null \
+       || [[ -z "$(ls -A "${stage}/.codex" 2>/dev/null)" ]]; then
+        rm -rf "$stage"
+        return 0
+    fi
+    echo "Restoring Codex session state..." >&2
+    # Merges, so this cannot delete the auth.json upload_config() just placed
+    # (gotcha 20).
+    run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
+        "${stage}/.codex" /sandbox
+    rm -rf "$stage"
+}
+
 upload_claude_state() {
     local sandbox_name="$1" sandbox_dir="$2"
     local claude_dir="${sandbox_dir}/claude"
@@ -859,12 +982,11 @@ upload_config() {
     # and shipping those into a work sandbox pushes personal content in exactly
     # the direction the profile split exists to stop.
     #
-    # A directory upload is safe here and the CLAUDE.md warning against one was
-    # wrong: `openshell sandbox upload` streams a tar and runs
-    # `tar xf - -C <dest>` (OpenShell crates/openshell-cli/src/ssh.rs), which
-    # overwrites the entries in the archive and touches nothing else. The
-    # pre-delete belongs to upload_repo(), not to this path. So the sandbox's
-    # own state_*.sqlite, sessions/ and rollouts survive a --refresh.
+    # A directory upload is safe: `openshell sandbox upload` streams a tar and
+    # runs `tar xf - -C <dest>` (OpenShell crates/openshell-cli/src/ssh.rs),
+    # which overwrites the entries in the archive and touches nothing else.
+    # The pre-delete belongs to upload_repo(), not to this path. So the
+    # sandbox's own state_*.sqlite, sessions/ and rollouts survive a --refresh.
     #
     # hooks.json + observe-hook.py are read from the host rather than vendored
     # here: they are source-controlled in claude-otel-stack and the user already
@@ -1005,7 +1127,7 @@ upload_static() {
     fi
 
     # copy: manifest — init_manifest() writes the skeleton before create, so
-    # this is present from the first upload. claude-wrapper.sh reads .profile
+    # this is present from the first upload. harness-wrapper.sh reads .profile
     # out of the sandbox copy to decide the model, and it only ever gets what
     # this function ships.
     if [[ -f "${sandbox_dir}/manifest.json" ]]; then
@@ -1154,6 +1276,11 @@ while [[ $# -gt 0 ]]; do
         -f|--force)
             FORCE_MODE=true
             shift
+            ;;
+        --harness)
+            [[ $# -ge 2 ]] || { echo "Error: --harness requires claude or codex" >&2; exit 1; }
+            valid_harness "$2" || { echo "Error: unknown harness '$2' (valid: claude, codex)" >&2; exit 1; }
+            HARNESS="$2"; shift 2
             ;;
         --connect)
             if [[ $# -ge 2 && "$2" != -* ]]; then
@@ -1386,7 +1513,11 @@ elif [[ -n "$CONNECT_NAME" ]]; then
         WORKDIR="/sandbox/source/"
     fi
     start_error_sandbox "$OS_NAME" || exit 1
-    connect_sandbox "$OS_NAME" "$WORKDIR"
+    # An explicit --harness is what changes the memory; the prompt does not.
+    if [[ -n "$HARNESS" ]]; then
+        init_manifest "$SANDBOX_DIR" "$CONNECT_NAME" "" "$HARNESS"
+    fi
+    connect_sandbox "$OS_NAME" "$WORKDIR" "$HARNESS" "$SANDBOX_DIR"
     exit $?
 fi
 
@@ -1518,6 +1649,7 @@ if [[ "$RECREATE_MODE" == true ]]; then
     start_error_sandbox "$OS_NAME" || exit 1
     "$0" --download "$SANDBOX_NAME" --force "${COMMON_ARGS[@]}"
     download_claude_state "$OS_NAME" "$SANDBOX_DIR"
+    download_codex_state "$OS_NAME" "$SANDBOX_DIR"
 
     # 2. Delete remote sandbox only (preserve local dir)
     run openshell sandbox delete "$OS_NAME" "${GW_FLAG[@]}" || true
@@ -1533,7 +1665,7 @@ if [[ "$RECREATE_MODE" == true ]]; then
         echo "Recreated ${SANDBOX_NAME}. Connect with: $(basename "$0") --connect ${SANDBOX_NAME}" >&2
         exit 0
     fi
-    exec "$0" --connect "$SANDBOX_NAME" "${COMMON_ARGS[@]}"
+    exec "$0" --connect "$SANDBOX_NAME" ${HARNESS:+--harness "$HARNESS"} "${COMMON_ARGS[@]}"
 fi
 
 # --- Ensure (create-or-connect) ---
@@ -1781,7 +1913,7 @@ OPENSHELL_NAME_VALUE="$(resolve_openshell_name "$SANDBOX_NAME")"
 ENV_CONTENT+="$(printf 'SANDBOX_OPENSHELL_NAME=%q' "$OPENSHELL_NAME_VALUE")"$'\n'
 
 # The profile, by name, for every profile — not just the credential-less ones.
-# validate-profile.sh and claude-wrapper.sh both read it out of /sandbox/.env,
+# validate-profile.sh and harness-wrapper.sh both read it out of /sandbox/.env,
 # and `home` and `personal` differ only in what they may reach, so a tag that
 # lumps them together tells neither of them anything. Also lands in
 # OTEL_RESOURCE_ATTRIBUTES as sandbox.profile below. Empty only on a
@@ -1890,7 +2022,7 @@ fi
 # Host-side state dir + manifest first: the manifest is how the host learns the
 # profile, and everything below is slow — an OAuth prompt from
 # ensure_gws_creds, then the 120s create. The repo loop fills in .repos later.
-init_manifest "${SANDBOXES_DIR}/${SANDBOX_NAME}" "$SANDBOX_NAME" "$SANDBOX_PROFILE"
+init_manifest "${SANDBOXES_DIR}/${SANDBOX_NAME}" "$SANDBOX_NAME" "$SANDBOX_PROFILE" "$HARNESS"
 
 if ! personal_profile "$SANDBOX_PROFILE"; then
     ensure_gws_creds
@@ -1972,6 +2104,7 @@ upload_config "${SANDBOX_TARGET}" "${SANDBOXES_DIR}/${SANDBOX_NAME}"
 
 # Restore prior claude session state if available
 upload_claude_state "$SANDBOX_TARGET" "${SANDBOXES_DIR}/${SANDBOX_NAME}"
+upload_codex_state "$SANDBOX_TARGET" "${SANDBOXES_DIR}/${SANDBOX_NAME}"
 
 # ---------------------------------------------------------------------------
 # Clone repos on host and upload to sandbox
