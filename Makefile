@@ -11,12 +11,20 @@ SHELLCHECK ?= shellcheck
 SHELL_SOURCES ?= $(wildcard bin/*.sh fetchsvc/*.sh scripts/*.sh scripts/explore/*.sh tests/*.sh) scripts/scode
 TEST_SCRIPTS ?= $(wildcard tests/test-*.sh)
 
-.PHONY: build build-force check clean help test-lint test-unit
+.PHONY: build build-fetcher build-force check clean help test-lint test-unit
 
 check: test-lint test-unit  ## Run the full quality gate
 
-build:  ## Build the sandbox container image
+build: build-fetcher  ## Build the sandbox and fetch-service container images
 	$(CONTAINER_TOOL) build -t $(IMAGE_REF) -f Containerfile .
+
+# Delegates rather than repeating the podman command: fetchsvc.sh owns the
+# image name, and `up` refuses to start when that image is missing. Building it
+# here is near-free — same base as the sandbox image, one COPY layer on top —
+# and the alternative is a build step nothing points at, which is how a missing
+# fetch-service image surfaced as podman's short-name/TTY error instead.
+build-fetcher:  ## Build the fetch-service container image
+	./fetchsvc/fetchsvc.sh build
 
 # `npm install -g @anthropic-ai/claude-code` pins nothing, so its layer caches
 # on the Containerfile text — which never changes when a new Claude Code is

@@ -14,8 +14,9 @@
 #   ./fetchsvc.sh check      exercise it from the host
 #
 # Override with env vars:
-#   FETCHSVC_NETWORK   podman network      (default: sandbox-net)
-#   FETCHSVC_SUBNET    subnet if created   (default: 172.30.0.0/24)
+#   FETCHSVC_NETWORK   podman network      (default: whichever network already
+#                                           owns FETCHSVC_SUBNET, else sandbox-net)
+#   FETCHSVC_SUBNET    subnet to sit on    (default: 172.30.0.0/24)
 #   FETCHSVC_IP        fixed address       (default: 172.30.0.21)
 #   FETCHSVC_PORT      listen port         (default: 8090)
 #
@@ -42,9 +43,30 @@ case "${1:-}" in
         podman build -t "$IMAGE" "$SCRIPT_DIR"
         ;;
     up)
+        # Podman resolves a missing local image as a registry short name, and
+        # under enforcing short-name mode with no TTY to prompt on that surfaces
+        # as "short-name resolution enforced but cannot prompt without a TTY" —
+        # which names neither the image nor the build step.
+        if ! podman image exists "$IMAGE"; then
+            echo "error: image ${IMAGE} not built — run '$0 build'" >&2
+            exit 1
+        fi
         if ! podman network exists "$NETWORK"; then
-            echo "creating podman network ${NETWORK} (${SUBNET})" >&2
-            podman network create --subnet "$SUBNET" "$NETWORK" >/dev/null
+            # The observability stack creates the subnet this service sits on
+            # (collector/Prometheus/Loki at .10-.12, this at .21), and podman
+            # refuses a second network on a subnet already claimed — the error
+            # names the subnet, not the network holding it. Join the owner.
+            owner=$(podman network ls -q \
+                | xargs -r podman network inspect \
+                      --format '{{.Name}}{{range .Subnets}} {{.Subnet}}{{end}}' \
+                | awk -v s="$SUBNET" '{for (i=2; i<=NF; i++) if ($i==s) {print $1; exit}}')
+            if [[ -n "$owner" ]]; then
+                echo "joining existing podman network ${owner} (owns ${SUBNET})" >&2
+                NETWORK="$owner"
+            else
+                echo "creating podman network ${NETWORK} (${SUBNET})" >&2
+                podman network create --subnet "$SUBNET" "$NETWORK" >/dev/null
+            fi
         fi
         if podman container exists "$NAME"; then
             echo "already exists — run '$0 down' first" >&2
@@ -106,7 +128,7 @@ case "${1:-}" in
         echo "(expect 200, 200, 403)"
         ;;
     *)
-        sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 1
         ;;
 esac
