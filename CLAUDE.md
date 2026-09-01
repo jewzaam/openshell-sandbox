@@ -211,9 +211,10 @@ is no default. `research` and `fetch-service` are policies only —
       `claude-wrapper.sh` symlinks `$CODEX_HOME/AGENTS.md` at it on every
       launch — that path is loaded unconditionally regardless of cwd
       (`codex-home/src/instructions/mod.rs`), and relinking each time is what
-      keeps it correct across `--refresh`. Do not add a `.codex/` upload
-      instead: gotcha 12 makes a directory upload a plausible way to delete
-      `auth.json` on every refresh.
+      keeps it correct across `--refresh`. The symlink is still the right
+      mechanism because the target is repo content, not host config.
+      (This entry used to say a `.codex/` upload would delete `auth.json` on
+      every refresh. That was wrong — see gotcha 20.)
     - **No rename of `claude-wrapper.sh`.** It launches Codex on this profile
       and the name does not say so; that was weighed and kept. `connect_sandbox()`
       execs `/sandbox/bin/claude-wrapper.sh` by absolute path, and neither
@@ -225,6 +226,48 @@ is no default. `research` and `fetch-service` are policies only —
       (`bin/claude.env` used to be named here for the same reason. It is gone —
       its contents are container policy and moved to `config/bashrc`, which
       every process inherits; see the telemetry entry below.)
+
+20. **`openshell sandbox upload` merges; it does not clobber.** The pre-delete
+    that gotcha 16 describes belongs to `upload_repo()`, which `rm -rf`s the
+    destination itself. The bare `openshell sandbox upload` calls in
+    `upload_config()` do not: OpenShell streams a tar and runs
+    `tar xf - -C <dest>` (`crates/openshell-cli/src/ssh.rs`), which overwrites
+    the entries in the archive and leaves everything else alone. That is why
+    `.config/git/ignore` and `.config/gws` coexist despite both uploading a
+    `.config` directory, and it is what makes the Codex upload below safe.
+
+21. **Codex config uploads on work only, and is three named files.**
+    `upload_config()` ships `auth.json`, `hooks.json` and `observe-hook.py`
+    into `/sandbox/.codex/`, gated on `! personal_profile`. Never a mirror of
+    `~/.codex/`: `sessions/`, `history.jsonl` and the `*_N.sqlite` files are
+    transcripts of every Codex conversation on the host across every project,
+    and shipping those into a work sandbox pushes personal content in exactly
+    the direction the profile split exists to stop. The sandbox's own
+    `state_*.sqlite` and rollouts are also what `claude-dashboard` reads to
+    discover local Codex sessions in there, so a host copy would be actively
+    wrong — and by gotcha 20 they survive the upload untouched.
+    - **`auth.json` ships on work and not on codex.** It holds
+      `OPENAI_API_KEY`. Work sandboxes already carry work credentials (gws,
+      Vertex, Jira), so one more is not a new class of thing, and signing in by
+      hand in every sandbox is friction. The `codex` profile keeps gotcha 19's
+      no-credential behaviour: it signs in inside.
+    - **`hooks.json` and `observe-hook.py` are read from `$HOME/.codex/`, not
+      vendored here.** They are source-controlled in claude-otel-stack and the
+      user already copies them to `~/.codex/`; reading them keeps one source of
+      truth. A host without them ships no hooks, and the sandbox reports no
+      Codex state to the dashboard.
+    - **No `config.toml`.** The hook exporter reads
+      `OTEL_EXPORTER_OTLP_ENDPOINT` from the environment, which `config/bashrc`
+      exports by sourcing `/sandbox/.env` under `set -a`. Codex's native `[otel]`
+      block is only needed for its own cost/token metrics, and a copied one
+      would point at the host's `localhost:4317` — nothing, in here. Generate it
+      if those metrics are ever wanted; do not copy it.
+    - **`policies/work.yaml` carries `openai-api` alongside
+      `vertex-ai-inference`**, not instead of it: a work sandbox runs both
+      agents. This is the one place the codex-profile swap rule (gotcha 19)
+      does not apply, and `bin/validate-profile.sh`'s `openai_profile()` plus
+      `tests/test-profile-required.sh` assert the membership for work, codex,
+      home and personal in both directions.
 
 ## Settled, do not re-evaluate
 

@@ -119,11 +119,18 @@ if command -v yq >/dev/null 2>&1; then
     # extra CLI in it, and a running session could not tell you which.
     hosts codex | grep -q 'anthropic\.com' \
         && { echo "FAIL: codex policy still reaches Anthropic" >&2; fail=1; }
+    # work carries openai-api *alongside* vertex-ai-inference rather than
+    # instead of it: a work sandbox runs both agents, so Codex must reach
+    # OpenAI there too. personal and home stay off it.
     for want in chatgpt.com api.openai.com auth.openai.com; do
-        hosts codex | grep -qx "$want" \
-            || { echo "FAIL: codex policy is missing ${want}" >&2; fail=1; }
-        hosts home | grep -qx "$want" \
-            && { echo "FAIL: home policy reaches ${want} — OpenAI is codex-only" >&2; fail=1; }
+        for profile in codex work; do
+            hosts "$profile" | grep -qx "$want" \
+                || { echo "FAIL: ${profile} policy is missing ${want}" >&2; fail=1; }
+        done
+        for profile in home personal; do
+            hosts "$profile" | grep -qx "$want" \
+                && { echo "FAIL: ${profile} policy reaches ${want}" >&2; fail=1; }
+        done
     done
     # Same containment rule home gets against personal: openai-api replaces
     # anthropic-api and nothing else is added.

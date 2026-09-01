@@ -853,6 +853,45 @@ upload_config() {
         fi
     fi
 
+    # Codex config, work profile only (gotcha 20). Three named files, never a
+    # mirror of ~/.codex/: sessions/, history.jsonl and the state sqlites are
+    # transcripts of every Codex conversation on the host across all projects,
+    # and shipping those into a work sandbox pushes personal content in exactly
+    # the direction the profile split exists to stop.
+    #
+    # A directory upload is safe here and the CLAUDE.md warning against one was
+    # wrong: `openshell sandbox upload` streams a tar and runs
+    # `tar xf - -C <dest>` (OpenShell crates/openshell-cli/src/ssh.rs), which
+    # overwrites the entries in the archive and touches nothing else. The
+    # pre-delete belongs to upload_repo(), not to this path. So the sandbox's
+    # own state_*.sqlite, sessions/ and rollouts survive a --refresh.
+    #
+    # hooks.json + observe-hook.py are read from the host rather than vendored
+    # here: they are source-controlled in claude-otel-stack and the user already
+    # copies them to ~/.codex/, so reading them keeps one source of truth. A
+    # host without them ships no hooks and the sandbox reports no Codex state.
+    if ! personal_profile "$SANDBOX_PROFILE"; then
+        CODEX_TMP="$(mktemp -d)"
+        mkdir -p "${CODEX_TMP}/.codex"
+        codex_shipped=0
+        # auth.json holds OPENAI_API_KEY. It ships on work for the same reason
+        # the gws credentials above do — signing in by hand in every sandbox is
+        # friction, and work sandboxes already carry work credentials. The codex
+        # profile is deliberately excluded and still signs in inside; see
+        # gotcha 19.
+        for f in auth.json hooks.json observe-hook.py; do
+            if [[ -f "${HOME}/.codex/${f}" ]]; then
+                cp "${HOME}/.codex/${f}" "${CODEX_TMP}/.codex/${f}"
+                codex_shipped=1
+            fi
+        done
+        if (( codex_shipped )); then
+            run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+                "${CODEX_TMP}/.codex" /sandbox
+        fi
+        rm -rf "$CODEX_TMP"
+    fi
+
     # Re-upload bin/
     run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
         "${REPO_ROOT}/bin" /sandbox
