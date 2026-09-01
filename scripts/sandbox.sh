@@ -784,6 +784,34 @@ codex_state_filter() {
     return $kept
 }
 
+# Render the config.toml a work-profile Codex sandbox should get: the host's
+# `model =` line, if it pinned one, plus a freshly-generated `[otel]` table
+# pointed at *this* sandbox's own collector. Never the host's own file — see
+# gotcha 21 for why (host-only MCP/sandbox_permissions entries, and an
+# `[otel]` table pointed at the host's own, unreachable collector).
+#
+# `protocol = "binary"` is the OTLP-over-HTTP-protobuf equivalent of this
+# sandbox's OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf; confirmed against a
+# live `codex logout` that `"binary"` and `"json"` are the only two values
+# accepted here. `endpoint` is required — Codex's own OTLP client does not
+# fall back to OTEL_EXPORTER_OTLP_ENDPOINT from the environment the way the
+# hooks.json/observe-hook.py pipeline does; confirmed against the same
+# `codex logout` that an `[otel.exporter.otlp-http]` table with no `endpoint`
+# key fails config load with `missing field "endpoint"` rather than reading
+# the env var.
+#
+# Split out so tests/test-render-codex-config.sh can drive it without a live
+# sandbox — same reason codex_state_filter() above is split out.
+render_codex_config() {
+    local host_config="$1" otel_url="$2"
+    if [[ -f "$host_config" ]]; then
+        grep -E '^model[[:space:]]*=' "$host_config" | head -1
+    fi
+    printf '[otel.exporter.otlp-http]\n'
+    printf 'endpoint = "%s"\n' "$otel_url"
+    printf 'protocol = "binary"\n'
+}
+
 download_codex_state() {
     local sandbox_name="$1" sandbox_dir="$2"
     local codex_dir="${sandbox_dir}/codex"
@@ -976,11 +1004,12 @@ upload_config() {
         fi
     fi
 
-    # Codex config, work profile only (gotcha 20). Three named files, never a
-    # mirror of ~/.codex/: sessions/, history.jsonl and the state sqlites are
-    # transcripts of every Codex conversation on the host across all projects,
-    # and shipping those into a work sandbox pushes personal content in exactly
-    # the direction the profile split exists to stop.
+    # Codex config, work profile only (gotcha 20). Three named files plus a
+    # generated config.toml, never a mirror of ~/.codex/: sessions/,
+    # history.jsonl and the state sqlites are transcripts of every Codex
+    # conversation on the host across all projects, and shipping those into a
+    # work sandbox pushes personal content in exactly the direction the
+    # profile split exists to stop.
     #
     # A directory upload is safe: `openshell sandbox upload` streams a tar and
     # runs `tar xf - -C <dest>` (OpenShell crates/openshell-cli/src/ssh.rs),
@@ -1007,6 +1036,13 @@ upload_config() {
                 codex_shipped=1
             fi
         done
+
+        # config.toml: rendered, never the host's file. See gotcha 21 and
+        # render_codex_config() above.
+        render_codex_config "${HOME}/.codex/config.toml" "$OTEL_URL" \
+            > "${CODEX_TMP}/.codex/config.toml"
+        codex_shipped=1
+
         if (( codex_shipped )); then
             run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
                 "${CODEX_TMP}/.codex" /sandbox

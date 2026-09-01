@@ -183,7 +183,7 @@ is no default. `research` and `fetch-service` are policies only —
     CLI in it, and nothing in a running session says which agent it is talking
     to. `validate-profile.sh` and `tests/test-profile-required.sh` both assert
     the swap in both directions.
-    Four things it deliberately does **not** do, all of which look like
+    Three things it deliberately does **not** do, all of which look like
     oversights:
     - **No credential upload and no preservation.** `/sandbox/.codex/auth.json`
       is written by signing in inside the sandbox and is gone on `--recreate`.
@@ -204,10 +204,6 @@ is no default. `research` and `fetch-service` are policies only —
       `tui/src/slash_command.rs` has `Logout` and no login variant — so the
       onboarding screen is the only way in, which is why it must not be
       bypassed.
-    - **No codex telemetry.** `config/bashrc` configures Claude Code's exporter;
-      Codex reads `[otel]` out of `~/.codex/config.toml`, which nothing
-      writes. A codex sandbox pushes nothing and can still read back what
-      other sandboxes pushed.
     - **No second copy of the system prompt.** `upload_static()` writes
       `/sandbox/source/CLAUDE.md`, which Codex does not read.
       `harness-wrapper.sh` symlinks `$CODEX_HOME/AGENTS.md` at it on every
@@ -227,16 +223,17 @@ is no default. `research` and `fetch-service` are policies only —
     `.config/git/ignore` and `.config/gws` coexist despite both uploading a
     `.config` directory, and it is what makes the Codex upload below safe.
 
-21. **Codex config uploads on work only, and is three named files.**
-    `upload_config()` ships `auth.json`, `hooks.json` and `observe-hook.py`
-    into `/sandbox/.codex/`, gated on `! personal_profile`. Never a mirror of
-    `~/.codex/`: `sessions/`, `history.jsonl` and the `*_N.sqlite` files are
-    transcripts of every Codex conversation on the host across every project,
-    and shipping those into a work sandbox pushes personal content in exactly
-    the direction the profile split exists to stop. The sandbox's own
-    `state_*.sqlite` and rollouts are also what `claude-dashboard` reads to
-    discover local Codex sessions in there, so a host copy would be actively
-    wrong — and by gotcha 20 they survive the upload untouched.
+21. **Codex config uploads on work only: three named files plus a generated
+    `config.toml`.** `upload_config()` ships `auth.json`, `hooks.json` and
+    `observe-hook.py` into `/sandbox/.codex/`, gated on `! personal_profile`.
+    Never a mirror of `~/.codex/`: `sessions/`, `history.jsonl` and the
+    `*_N.sqlite` files are transcripts of every Codex conversation on the host
+    across every project, and shipping those into a work sandbox pushes
+    personal content in exactly the direction the profile split exists to
+    stop. The sandbox's own `state_*.sqlite` and rollouts are also what
+    `claude-dashboard` reads to discover local Codex sessions in there, so a
+    host copy would be actively wrong — and by gotcha 20 they survive the
+    upload untouched.
     - **`auth.json` ships on work and not on codex.** It holds
       `OPENAI_API_KEY`. Work sandboxes already carry work credentials (gws,
       Vertex, Jira), so one more is not a new class of thing, and signing in by
@@ -247,12 +244,32 @@ is no default. `research` and `fetch-service` are policies only —
       user already copies them to `~/.codex/`; reading them keeps one source of
       truth. A host without them ships no hooks, and the sandbox reports no
       Codex state to the dashboard.
-    - **No `config.toml`.** The hook exporter reads
-      `OTEL_EXPORTER_OTLP_ENDPOINT` from the environment, which `config/bashrc`
-      exports by sourcing `/sandbox/.env` under `set -a`. Codex's native `[otel]`
-      block is only needed for its own cost/token metrics, and a copied one
-      would point at the host's `localhost:4317` — nothing, in here. Generate it
-      if those metrics are ever wanted; do not copy it.
+    - **`config.toml` is generated, never the host's file.** The host's own
+      file can carry MCP server commands and `sandbox_permissions` entries
+      built around host paths, meaningless in here, and its `[otel]` table (if
+      any) points at the host's own collector — typically `localhost`,
+      unreachable from in here. So `upload_config()` writes a fresh one
+      instead: the host's `model =` line, if it has one (Codex has no
+      per-profile default the way `harness-wrapper.sh` hardcodes one for
+      Claude on personal/home, so leaving this off drops the host's choice
+      silently), plus a freshly-generated `[otel.exporter.otlp-http]` table
+      pointed at `$OTEL_URL` (the same sandbox-correct address used for
+      `OTEL_EXPORTER_OTLP_ENDPOINT`, gotcha 13) with `protocol = "binary"`
+      (OTLP-over-HTTP-protobuf; `codex logout` rejects anything but `"binary"`
+      or `"json"` here). Unlike the `hooks.json` pipeline above, Codex's own
+      OTLP client does not read `OTEL_EXPORTER_OTLP_ENDPOINT` from the
+      environment — confirmed empirically: an `[otel.exporter.otlp-http]`
+      table with no `endpoint` key fails config load with `missing field
+      "endpoint"` rather than falling back to the env var. This enables
+      Codex's own native cost/token-usage telemetry; the hooks.json /
+      observe-hook.py pipeline above is unrelated and unaffected.
+      `CODEX_STATE_KEEP` (gotcha 23) still preserves the sandbox's own
+      `config.toml` across `--recreate` and that preserved copy still wins
+      (upload order: `upload_config()` then `upload_codex_state()`, and
+      gotcha 20's merge means the later write wins) — so a model changed
+      from inside the sandbox survives a recreate the same way it always did,
+      but so does a stale `$OTEL_URL` from before the collector moved. Only a
+      sandbox with no prior `.codex/` state gets the freshly-computed one.
     - **`policies/work.yaml` carries `openai-api` alongside
       `vertex-ai-inference`**, not instead of it: a work sandbox runs both
       agents. This is the one place the codex-profile swap rule (gotcha 19)
