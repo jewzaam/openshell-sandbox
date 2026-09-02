@@ -27,6 +27,11 @@ HELPERS="${TMP}/helpers.sh"
 sed -n '/^CODEX_STATE_KEEP=/p;/^codex_state_filter()/,/^}/p' "$SANDBOX_SH" > "$HELPERS"
 grep -q 'codex_state_filter' "$HELPERS" \
     || { echo "FAIL: could not lift codex_state_filter out of sandbox.sh" >&2; exit 1; }
+# Directory downloads contain the source directory's contents directly in the
+# destination. Keep this assertion next to the filter test because a nested
+# destination assumption makes the real recreate path preserve nothing.
+grep -q '"/sandbox/.codex" "\${dl_tmp}/codex"' "$SANDBOX_SH" \
+    || { echo "FAIL: Codex download does not use an explicit content destination" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "$HELPERS"
 
