@@ -814,6 +814,7 @@ render_codex_config() {
     printf 'protocol = "binary"\n'
     printf '[otel.metrics_exporter.otlp-http]\n'
     printf 'endpoint = "%s"\n' "$otel_url"
+    printf 'protocol = "binary"\n'
 }
 
 download_codex_state() {
