@@ -223,9 +223,9 @@ is no default. `research` and `fetch-service` are policies only —
     `.config/git/ignore` and `.config/gws` coexist despite both uploading a
     `.config` directory, and it is what makes the Codex upload below safe.
 
-21. **Codex config uploads on work only: three named files plus a generated
-    `config.toml`.** `upload_config()` ships `auth.json`, `hooks.json` and
-    `observe-hook.py` into `/sandbox/.codex/`, gated on `! personal_profile`.
+21. **Codex telemetry config uploads on every profile: three named files plus a generated
+    `config.toml`.** `upload_config()` ships `hooks.json` and `observe-hook.py`
+    on every profile, and `auth.json` only when `! personal_profile`.
     Never a mirror of `~/.codex/`: `sessions/`, `history.jsonl` and the
     `*_N.sqlite` files are transcripts of every Codex conversation on the host
     across every project, and shipping those into a work sandbox pushes
@@ -239,11 +239,12 @@ is no default. `research` and `fetch-service` are policies only —
       Vertex, Jira), so one more is not a new class of thing, and signing in by
       hand in every sandbox is friction. The `codex` profile keeps gotcha 19's
       no-credential behaviour: it signs in inside.
-    - **`hooks.json` and `observe-hook.py` are read from `$HOME/.codex/`, not
-      vendored here.** They are source-controlled in claude-otel-stack and the
-      user already copies them to `~/.codex/`; reading them keeps one source of
-      truth. A host without them ships no hooks, and the sandbox reports no
-      Codex state to the dashboard.
+    - **`hooks.json` and `observe-hook.py` prefer the adjacent
+      `claude-otel-stack/codex/` checkout.** `CODEX_OTEL_SOURCE_DIR` can point
+      elsewhere; the `$HOME/.codex/` fallback is accepted only when the hook
+      contains the current timestamp/resource-identity fields. This prevents a
+      stale host copy from silently producing token data without session-state
+      data. Hooks are uploaded on `codex` too; only `auth.json` is work-only.
     - **`config.toml` is generated, never the host's file.** The host's own
       file can carry MCP server commands and `sandbox_permissions` entries
       built around host paths, meaningless in here, and its `[otel]` table (if
