@@ -696,6 +696,20 @@ upload_sandbox() {
     # that call upload_static() themselves.
 }
 
+remote_path_exists() {
+    local sandbox_name="$1" path="$2"
+    # Dry runs have no sandbox to inspect; let the transfer commands show what
+    # would happen. On a real run, distinguish an absent optional state path
+    # from a failed transfer. Recreate must not proceed from stale host state.
+    [[ "$DRYRUN" == true ]] && return 0
+    local result
+    if ! result=$(openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+        -- bash -c "if test -e '$path'; then echo EXISTS; else echo ABSENT; fi" 2>/dev/null); then
+        return 2
+    fi
+    [[ "$result" == *EXISTS* ]]
+}
+
 download_claude_state() {
     local sandbox_name="$1" sandbox_dir="$2"
     local claude_dir="${sandbox_dir}/claude"
@@ -708,23 +722,38 @@ download_claude_state() {
     # it explains, and the ✓ cannot be printed until all three are done.
     local notes=""
     mkdir -p "${dl_tmp}/projects"
-    transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
-        "/sandbox/.claude/projects" "${dl_tmp}/projects" || true
+    if remote_path_exists "$sandbox_name" /sandbox/.claude/projects; then
+        transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+            "/sandbox/.claude/projects" "${dl_tmp}/projects"
+    elif [[ $? -gt 1 ]]; then
+        rm -rf "$dl_tmp"
+        return 1
+    fi
     if [[ "$(ls -A "${dl_tmp}/projects" 2>/dev/null)" ]]; then
         mkdir -p "${claude_dir}"
         rsync -a "${dl_tmp}/projects/" "${claude_dir}/projects/"
     fi
     # Preserve OAuth credentials from sandbox
-    transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
-        "/sandbox/.claude/.credentials.json" "${dl_tmp}/" || true
+    if remote_path_exists "$sandbox_name" /sandbox/.claude/.credentials.json; then
+        transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+            "/sandbox/.claude/.credentials.json" "${dl_tmp}/"
+    elif [[ $? -gt 1 ]]; then
+        rm -rf "$dl_tmp"
+        return 1
+    fi
     if [[ -f "${dl_tmp}/.credentials.json" ]]; then
         mkdir -p "${claude_dir}"
         cp "${dl_tmp}/.credentials.json" "${claude_dir}/.credentials.json"
         notes+="    preserved OAuth credentials"$'\n'
     fi
     # Preserve .claude.json (auth state)
-    transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
-        "/sandbox/.claude.json" "${dl_tmp}/" || true
+    if remote_path_exists "$sandbox_name" /sandbox/.claude.json; then
+        transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
+            "/sandbox/.claude.json" "${dl_tmp}/"
+    elif [[ $? -gt 1 ]]; then
+        rm -rf "$dl_tmp"
+        return 1
+    fi
     if [[ -f "${dl_tmp}/.claude.json" ]]; then
         mkdir -p "${claude_dir}"
         cp "${dl_tmp}/.claude.json" "${claude_dir}/.claude.json"
@@ -850,8 +879,17 @@ download_codex_state() {
     local dl_tmp
     dl_tmp="$(mktemp -d)"
 
+    if remote_path_exists "$sandbox_name" /sandbox/.codex; then
+        :
+    elif [[ $? -eq 1 ]]; then
+        rm -rf "$dl_tmp"
+        return 0
+    else
+        rm -rf "$dl_tmp"
+        return 1
+    fi
     transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
-        "/sandbox/.codex" "${dl_tmp}/" || true
+        "/sandbox/.codex" "${dl_tmp}/"
 
     local src="${dl_tmp}/.codex"
     [[ -d "$src" ]] || src="${dl_tmp}/codex"
