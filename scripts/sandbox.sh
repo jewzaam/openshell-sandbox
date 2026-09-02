@@ -86,6 +86,12 @@ SOURCE_DIR=""
 REPOS=()
 REFS=()
 
+# History window for host clones. Empty means full history — the shipped
+# default, so a fresh checkout of this repo behaves as it always did. Set
+# SANDBOX_CLONE_SINCE in config/site.env to prune by default on this host;
+# --since overrides per invocation and --since '' forces a full clone.
+CLONE_SINCE="${SANDBOX_CLONE_SINCE:-}"
+
 # ---------------------------------------------------------------------------
 # Env var groups — add new groups as needed
 # ---------------------------------------------------------------------------
@@ -169,6 +175,10 @@ OPTIONS:
     --ensure [NAME]   Create sandbox if missing, reconnect if exists (use with --repo/--ref)
     --repo URL        Git repo to clone on host and upload (repeatable)
     --ref REF         Ref for preceding --repo: branch, pr/<num>, tag/<name>, or SHA
+    --since DATE      Clone only history newer than DATE, for every repo in this
+                      run. Any \`date -d\` value: '-30 days', '-3 months',
+                      '2026-08-01'. '' means full history. Default:
+                      \$SANDBOX_CLONE_SINCE from config/site.env, else full.
     --source-dir DIR  Derive origin URL from local repo checkout
     --add-repo [NAME] Add repo(s) to existing sandbox (use --repo for URL)
     --download [NAME] Download repos from sandbox to ~/sandboxes/<name>/
@@ -206,6 +216,8 @@ EXAMPLES:
     $(basename "$0") --ensure myapp-pr-42 --profile work --repo git@github.com:org/myapp.git --ref pr/42
     $(basename "$0") --add-repo myapp --repo git@github.com:org/lib.git --ref v2.0
     $(basename "$0") --add-repo myapp --repo git@github.com:org/ui.git --source-dir ~/source/ui
+    $(basename "$0") --add-repo myapp --repo git@github.com:org/big.git --since '-30 days'
+    $(basename "$0") --add-repo myapp --repo git@github.com:org/big.git --since ''
     $(basename "$0") --download myapp
     $(basename "$0") --download myapp --force
     $(basename "$0") --upload myapp --repo myapp
@@ -422,7 +434,34 @@ clone_repo_host() {
     # Strip trailing slash — gh CLI fails to resolve repo name with it
     local clean_url="${url%/}"
     guard_private_repo "$clean_url"
-    run git clone "$clean_url" "$target"
+
+    # $CLONE_SINCE is resolved by `date -d`, not handed to git raw. Both accept
+    # relative dates, but git's approxidate answers "30d" with the current time
+    # instead of an error, which clones a repo with zero history and reports
+    # success. `date -d` rejects it. Resolving here also pins one instant for a
+    # multi-repo run.
+    local shallow=()
+    if [[ -n "$CLONE_SINCE" ]]; then
+        local since_iso
+        if ! since_iso=$(date -u -d "$CLONE_SINCE" --iso-8601=seconds 2>&1); then
+            echo "Error: --since '${CLONE_SINCE}' is not a date ${since_iso#date: }" >&2
+            echo "       Try '-30 days', '-3 months', or '2026-08-01'." >&2
+            return 1
+        fi
+        # --shallow-since implies --single-branch, which would leave the
+        # sandbox without the remote-tracking branches it cannot fetch.
+        shallow=(--no-single-branch "--shallow-since=${since_iso}")
+    fi
+
+    # A window with no commits in it is fatal to git ("no commits selected for
+    # shallow requests"), and a repo idle longer than the window is the normal
+    # way to hit that. git removes the target on failure, so the retry is a
+    # plain clone.
+    if ! run git clone "${shallow[@]}" "$clean_url" "$target"; then
+        [[ ${#shallow[@]} -gt 0 ]] || return 1
+        echo "Warning: no commits in ${repo_name} since ${CLONE_SINCE} — cloning full history" >&2
+        run git clone "$clean_url" "$target"
+    fi
 
     if [[ -n "$ref" ]]; then
         if [[ "$ref" =~ ^pr/([0-9]+)$ ]]; then
@@ -1351,6 +1390,13 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { echo "Error: --repo requires URL" >&2; exit 1; }
             REPOS+=("$2")
             REFS+=("")
+            shift 2
+            ;;
+        --since)
+            # Applies to every repo in the invocation, not the preceding --repo
+            # like --ref does: one window per sandbox is the case worth having.
+            [[ $# -ge 2 ]] || { echo "Error: --since requires a date ('' for full history)" >&2; exit 1; }
+            CLONE_SINCE="$2"
             shift 2
             ;;
         --ref)

@@ -24,6 +24,12 @@ uploaded from the host.
 - **No GitHub network access.** Repos are pre-cloned on the host with all
   remotes fetched. You have local branches and remote-tracking branches
   but cannot fetch, push, or call the GitHub API.
+- **A repo may be a shallow clone.** `.git/shallow` exists if so; `git log -1`
+  on the boundary commit shows the cutoff date. History older than that is not
+  here and cannot be fetched. `git merge-base` is what fails first, which takes
+  `git diff main...HEAD` and `git blame` with it. Report the boundary rather
+  than working around it — the fix is on the host
+  (`sandbox.sh --since` with a wider window, or `--since ''`).
 - **No SSH.** Port 22 is not in the network policy.
 - **No git auth.** `gh` CLI and `git push/fetch` will fail. Work with
   what's already cloned.
