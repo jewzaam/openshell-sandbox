@@ -817,6 +817,33 @@ render_codex_config() {
     printf 'protocol = "binary"\n'
 }
 
+# Return the canonical Codex telemetry files, or fail rather than silently
+# shipping an old observer.  The stack owns these files; when both repos are
+# checked out beside one another this keeps a sandbox refresh on the same
+# schema as the live Loki rules.  CODEX_OTEL_SOURCE_DIR is an escape hatch for
+# installations whose repos live elsewhere.
+codex_otel_source_dir() {
+    local candidate="${CODEX_OTEL_SOURCE_DIR:-${REPO_ROOT}/../claude-otel-stack/codex}"
+    if [[ -f "${candidate}/hooks.json" && -f "${candidate}/observe-hook.py" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    if [[ -f "${HOME}/.codex/hooks.json" && -f "${HOME}/.codex/observe-hook.py" ]]; then
+        if ! grep -q 'observed_timestamp' "${HOME}/.codex/observe-hook.py" \
+           || ! grep -q 'OTEL_RESOURCE_ATTRIBUTES' "${HOME}/.codex/observe-hook.py"; then
+            echo "Error: ~/.codex/observe-hook.py is stale; refresh it from claude-otel-stack/codex" >&2
+            return 1
+        fi
+        printf '%s\n' "${HOME}/.codex"
+        return 0
+    fi
+    # A host without Codex hook files is still allowed to create a sandbox;
+    # native Codex metrics can operate without lifecycle hooks. Return a
+    # distinct status so callers can warn without confusing this with a stale
+    # installation.
+    return 2
+}
+
 download_codex_state() {
     local sandbox_name="$1" sandbox_dir="$2"
     local codex_dir="${sandbox_dir}/codex"
@@ -1009,8 +1036,8 @@ upload_config() {
         fi
     fi
 
-    # Codex config, work profile only (gotcha 20). Three named files plus a
-    # generated config.toml, never a mirror of ~/.codex/: sessions/,
+    # Codex telemetry config, every profile. Three named files plus a generated
+    # config.toml, never a mirror of ~/.codex/: sessions/,
     # history.jsonl and the state sqlites are transcripts of every Codex
     # conversation on the host across all projects, and shipping those into a
     # work sandbox pushes personal content in exactly the direction the
@@ -1022,38 +1049,47 @@ upload_config() {
     # The pre-delete belongs to upload_repo(), not to this path. So the
     # sandbox's own state_*.sqlite, sessions/ and rollouts survive a --refresh.
     #
-    # hooks.json + observe-hook.py are read from the host rather than vendored
-    # here: they are source-controlled in claude-otel-stack and the user already
-    # copies them to ~/.codex/, so reading them keeps one source of truth. A
-    # host without them ships no hooks and the sandbox reports no Codex state.
-    if ! personal_profile "$SANDBOX_PROFILE"; then
-        CODEX_TMP="$(mktemp -d)"
-        mkdir -p "${CODEX_TMP}/.codex"
-        codex_shipped=0
-        # auth.json holds OPENAI_API_KEY. It ships on work for the same reason
-        # the gws credentials above do — signing in by hand in every sandbox is
-        # friction, and work sandboxes already carry work credentials. The codex
-        # profile is deliberately excluded and still signs in inside; see
-        # gotcha 19.
-        for f in auth.json hooks.json observe-hook.py; do
-            if [[ -f "${HOME}/.codex/${f}" ]]; then
-                cp "${HOME}/.codex/${f}" "${CODEX_TMP}/.codex/${f}"
-                codex_shipped=1
-            fi
-        done
-
-        # config.toml: rendered, never the host's file. See gotcha 21 and
-        # render_codex_config() above.
-        render_codex_config "${HOME}/.codex/config.toml" "$OTEL_URL" \
-            > "${CODEX_TMP}/.codex/config.toml"
+    # hooks.json + observe-hook.py are source-controlled in
+    # claude-otel-stack. Prefer that checkout so a stale ~/.codex copy cannot
+    # leave the Loki ruler without observed_timestamp/resource identity. The
+    # codex profile is intentionally credential-less, but its telemetry hooks
+    # must still be present; only auth.json remains work-only (gotcha 19).
+    CODEX_TMP="$(mktemp -d)"
+    mkdir -p "${CODEX_TMP}/.codex"
+    codex_shipped=0
+    if CODEX_OTEL_SOURCE="$(codex_otel_source_dir)"; then
+        cp "${CODEX_OTEL_SOURCE}/hooks.json" "${CODEX_TMP}/.codex/hooks.json"
+        cp "${CODEX_OTEL_SOURCE}/observe-hook.py" "${CODEX_TMP}/.codex/observe-hook.py"
         codex_shipped=1
-
-        if (( codex_shipped )); then
-            run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
-                "${CODEX_TMP}/.codex" /sandbox
+    else
+        source_status=$?
+        if (( source_status == 1 )); then
+            rm -rf "$CODEX_TMP"
+            return 1
         fi
-        rm -rf "$CODEX_TMP"
+        echo "Warning: no Codex lifecycle hook files found; session-state telemetry will be unavailable" >&2
     fi
+
+    # auth.json holds OPENAI_API_KEY. It ships on work for the same reason
+    # the gws credentials above do — signing in by hand in every sandbox is
+    # friction. The codex profile is deliberately excluded and still signs in
+    # inside; see gotcha 19.
+    if ! personal_profile "$SANDBOX_PROFILE" && [[ -f "${HOME}/.codex/auth.json" ]]; then
+        cp "${HOME}/.codex/auth.json" "${CODEX_TMP}/.codex/auth.json"
+        codex_shipped=1
+    fi
+
+    # config.toml: rendered, never the host's file. See gotcha 21 and
+    # render_codex_config() above.
+    render_codex_config "${HOME}/.codex/config.toml" "$OTEL_URL" \
+        > "${CODEX_TMP}/.codex/config.toml"
+    codex_shipped=1
+
+    if (( codex_shipped )); then
+        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+            "${CODEX_TMP}/.codex" /sandbox
+    fi
+    rm -rf "$CODEX_TMP"
 
     # Re-upload bin/
     run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
