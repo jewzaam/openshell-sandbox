@@ -56,6 +56,10 @@ echo "$OUT" | grep -qx "endpoint = \"${OTEL_URL}\"" \
     || { echo "FAIL: endpoint not set to the sandbox's own OTEL_URL" >&2; fail=1; }
 echo "$OUT" | grep -qx 'protocol = "binary"' \
     || { echo "FAIL: protocol not set to binary (otlp-http/protobuf)" >&2; fail=1; }
+echo "$OUT" | grep -q '^\[otel.metrics_exporter.otlp-http\]$' \
+    || { echo "FAIL: metrics exporter table missing" >&2; fail=1; }
+[[ "$(echo "$OUT" | grep -cF "endpoint = \"${OTEL_URL}\"")" -eq 2 ]] \
+    || { echo "FAIL: both exporters do not use the sandbox's own OTEL_URL" >&2; fail=1; }
 
 # Never a mirror: host-only MCP server commands and sandbox_permissions must
 # not appear in the rendered output.

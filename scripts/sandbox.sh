@@ -799,6 +799,8 @@ codex_state_filter() {
 # `codex logout` that an `[otel.exporter.otlp-http]` table with no `endpoint`
 # key fails config load with `missing field "endpoint"` rather than reading
 # the env var.
+# The metrics exporter uses the same OTLP HTTP endpoint so native Codex metrics
+# reach the collector alongside native Codex logs.
 #
 # Split out so tests/test-render-codex-config.sh can drive it without a live
 # sandbox — same reason codex_state_filter() above is split out.
@@ -810,6 +812,8 @@ render_codex_config() {
     printf '[otel.exporter.otlp-http]\n'
     printf 'endpoint = "%s"\n' "$otel_url"
     printf 'protocol = "binary"\n'
+    printf '[otel.metrics_exporter.otlp-http]\n'
+    printf 'endpoint = "%s"\n' "$otel_url"
 }
 
 download_codex_state() {
