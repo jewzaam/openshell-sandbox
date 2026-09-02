@@ -49,6 +49,9 @@ sandbox.sh --add-repo myapp --source-dir ~/source/lib
 # Add repo with explicit URL
 sandbox.sh --add-repo myapp --repo git@github.com:org/lib.git --ref v2.0
 
+# Add a repo with 30 days of history instead of all of it (uploads carry .git)
+sandbox.sh --add-repo myapp --repo git@github.com:org/big.git --since -30days
+
 # Download changes from sandbox
 sandbox.sh --download myapp
 
@@ -72,6 +75,7 @@ sandbox.sh --delete myapp
 | `--repo URL` | Git repo to clone on host and upload (repeatable) |
 | `--ref REF` | Ref for preceding `--repo`: branch, `pr/<num>`, `tag/<name>`, or SHA |
 | `--source-dir DIR` | Copy remotes from local repo and fetch (sandbox has no git auth) |
+| `--since DATE` | Clone only history newer than DATE, every repo in this run. Any `date -d` value (`-30days`, `-3months`, `2026-08-01`); `''` for full. Default: `SANDBOX_CLONE_SINCE` from `config/site.env` |
 | `--add-repo [NAME]` | Add repo(s) to existing sandbox |
 | `--download [NAME]` | Download repos from sandbox to `~/sandboxes/<name>/` |
 | `-f, --force` | With `--upload`/`--download`: transfer every repo and regenerate context. Plain runs transfer only what changed |
