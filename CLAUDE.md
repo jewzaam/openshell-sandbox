@@ -185,15 +185,13 @@ is no default. `research` and `fetch-service` are policies only —
     the swap in both directions.
     Three things it deliberately does **not** do, all of which look like
     oversights:
-    - **No credential upload and no preservation.** `/sandbox/.codex/auth.json`
-      is written by signing in inside the sandbox and is gone on `--recreate`.
-      Claude's OAuth survives only because `download_claude_state()` explicitly
-      carries it, and `download_codex_state()` (gotcha 23) deliberately does
-      not do the same for `auth.json`: on `work` the host ships it, so a
-      preserved copy would let a stale key beat a rotated one. Signed out on a fresh
-      sandbox is the expected state, and `validate-profile.sh` reports it as
-      such. The browser flow binds `127.0.0.1:1455`, so device code is not a
-      preference — it is the only flow that can complete in here.
+    - **No credential preservation.** Codex conversation state is preserved by
+      `download_codex_state()` and restored during `--recreate`, but
+      `/sandbox/.codex/auth.json` is deliberately not. On `work` the host
+      ships its current auth file, so preserving the sandbox copy would let a
+      stale key beat a rotated one. The codex profile therefore signs in on a
+      fresh sandbox. The browser flow binds `127.0.0.1:1455`, so device code is
+      not a preference — it is the only flow that can complete in here.
     - **No login detection in the wrapper.** Codex already does it: `run_main`
       (`tui/src/lib.rs`) calls `should_show_onboarding()`, which returns true
       on `LoginStatus::NotAuthenticated`, and the auth step it then shows
@@ -232,8 +230,11 @@ is no default. `research` and `fetch-service` are policies only —
     personal content in exactly the direction the profile split exists to
     stop. The sandbox's own `state_*.sqlite` and rollouts are also what
     `claude-dashboard` reads to discover local Codex sessions in there, so a
-    host copy would be actively wrong — and by gotcha 20 they survive the
-    upload untouched.
+    host copy would be actively wrong. `download_codex_state()` carries the
+    sandbox's own session databases, WAL files, rollouts, history and config
+    into the host-side sandbox directory for `--recreate`; by gotcha 20 they
+    are merged back after generated config upload. `auth.json` remains
+    excluded.
     - **`auth.json` ships on work and not on codex.** It holds
       `OPENAI_API_KEY`. Work sandboxes already carry work credentials (gws,
       Vertex, Jira), so one more is not a new class of thing, and signing in by
@@ -264,7 +265,7 @@ is no default. `research` and `fetch-service` are policies only —
       "endpoint"` rather than falling back to the env var. This enables
       Codex's own native cost/token-usage telemetry; the hooks.json /
       observe-hook.py pipeline above is unrelated and unaffected.
-      `CODEX_STATE_KEEP` (gotcha 23) still preserves the sandbox's own
+      `CODEX_STATE_KEEP` still preserves the sandbox's own
       `config.toml` across `--recreate` and that preserved copy still wins
       (upload order: `upload_config()` then `upload_codex_state()`, and
       gotcha 20's merge means the later write wins) — so a model changed

@@ -401,6 +401,10 @@ transfer_quiet() {
         | { grep --line-buffered -Ev \
                 '^(Uploading|Downloading) .*sandbox:|(Upload|Download) complete$' >&2 \
             || true; } } 3>&1
+    local transfer_status="${PIPESTATUS[0]}"
+    if [[ "$transfer_status" -ne 0 ]]; then
+        return "$transfer_status"
+    fi
     [[ -z "$label" || "$DRYRUN" == true ]] || echo "${MARK_OK} ${label}" >&2
 }
 
@@ -888,11 +892,18 @@ download_codex_state() {
         rm -rf "$dl_tmp"
         return 1
     fi
+    # OpenShell downloads a directory's contents into the destination; it does
+    # not add the source directory basename. Use a named staging directory so
+    # the expected layout is explicit and cannot collide with the temp root.
+    mkdir -p "${dl_tmp}/codex"
     transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
-        "/sandbox/.codex" "${dl_tmp}/"
+        "/sandbox/.codex" "${dl_tmp}/codex"
 
-    local src="${dl_tmp}/.codex"
-    [[ -d "$src" ]] || src="${dl_tmp}/codex"
+    local src="${dl_tmp}/codex"
+    # Accept both layouts for compatibility with older OpenShell clients that
+    # placed the source basename below the destination.
+    [[ -d "${src}/.codex" ]] && src="${src}/.codex"
+    [[ -d "${dl_tmp}/.codex" ]] && src="${dl_tmp}/.codex"
     if [[ ! -d "$src" ]]; then
         rm -rf "$dl_tmp"
         return 0
