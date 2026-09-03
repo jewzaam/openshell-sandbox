@@ -42,6 +42,10 @@ model = "gpt-5.6-luna"
 [sandbox_permissions]
 disk-full-read-access = true
 
+[otel]
+environment = "staging"
+log_user_prompt = false
+
 [mcp_servers.my_server]
 command = "/home/me/bin/my-mcp-server"
 EOF
@@ -52,13 +56,23 @@ echo "$OUT" | grep -qx 'model = "gpt-5.6-luna"' \
     || { echo "FAIL: model line missing or altered" >&2; fail=1; }
 echo "$OUT" | grep -q '^\[otel.exporter.otlp-http\]$' \
     || { echo "FAIL: otel exporter table missing" >&2; fail=1; }
-echo "$OUT" | grep -qx "endpoint = \"${OTEL_URL}\"" \
-    || { echo "FAIL: endpoint not set to the sandbox's own OTEL_URL" >&2; fail=1; }
+echo "$OUT" | grep -qx 'environment = "staging"' \
+    || { echo "FAIL: OTEL environment was not preserved" >&2; fail=1; }
+echo "$OUT" | grep -qx 'log_user_prompt = false' \
+    || { echo "FAIL: log_user_prompt was not preserved" >&2; fail=1; }
+echo "$OUT" | grep -q '^\[projects\."/sandbox/source"\]$' \
+    || { echo "FAIL: sandbox project entry missing" >&2; fail=1; }
+echo "$OUT" | grep -qx 'trust_level = "trusted"' \
+    || { echo "FAIL: sandbox project is not trusted" >&2; fail=1; }
+echo "$OUT" | grep -qx "endpoint = \"${OTEL_URL}/v1/logs\"" \
+    || { echo "FAIL: log endpoint not set to the sandbox's own OTEL_URL" >&2; fail=1; }
+echo "$OUT" | grep -qx "endpoint = \"${OTEL_URL}/v1/metrics\"" \
+    || { echo "FAIL: metrics endpoint not set to the sandbox's own OTEL_URL" >&2; fail=1; }
 echo "$OUT" | grep -qx 'protocol = "binary"' \
     || { echo "FAIL: protocol not set to binary (otlp-http/protobuf)" >&2; fail=1; }
 echo "$OUT" | grep -q '^\[otel.metrics_exporter.otlp-http\]$' \
     || { echo "FAIL: metrics exporter table missing" >&2; fail=1; }
-[[ "$(echo "$OUT" | grep -cF "endpoint = \"${OTEL_URL}\"")" -eq 2 ]] \
+[[ "$(echo "$OUT" | grep -cF "endpoint = \"${OTEL_URL}/v1/")" -eq 2 ]] \
     || { echo "FAIL: both exporters do not use the sandbox's own OTEL_URL" >&2; fail=1; }
 [[ "$(echo "$OUT" | grep -cF 'protocol = "binary"')" -eq 2 ]] \
     || { echo "FAIL: both exporters do not set protocol to binary" >&2; fail=1; }
@@ -74,7 +88,7 @@ echo "$OUT" | grep -q "sandbox_permissions" \
 OUT_NO_HOST="$(render_codex_config "${TMP}/does-not-exist.toml" "$OTEL_URL")"
 echo "$OUT_NO_HOST" | grep -q '^model' \
     && { echo "FAIL: model line appeared with no host config.toml" >&2; fail=1; }
-echo "$OUT_NO_HOST" | grep -qx "endpoint = \"${OTEL_URL}\"" \
+echo "$OUT_NO_HOST" | grep -qx "endpoint = \"${OTEL_URL}/v1/logs\"" \
     || { echo "FAIL: otel endpoint missing with no host config.toml" >&2; fail=1; }
 
 # --- host config.toml has no model line: same, no model line rendered ---
