@@ -889,26 +889,19 @@ render_codex_config() {
     printf 'protocol = "binary"\n'
 }
 
-# Return the canonical Codex telemetry files, or fail rather than silently
-# shipping an old observer.  The stack owns these files; when both repos are
-# checked out beside one another this keeps a sandbox refresh on the same
-# schema as the live Loki rules.  CODEX_OTEL_SOURCE_DIR is an escape hatch for
-# installations whose repos live elsewhere.
+# Return the local Codex telemetry files, or fail rather than silently shipping
+# an old observer. CODEX_OTEL_SOURCE_DIR is an escape hatch for installations
+# that keep them elsewhere.
 codex_otel_source_dir() {
-    local candidate="${CODEX_OTEL_SOURCE_DIR:-${REPO_ROOT}/../claude-otel-stack/codex}"
-    if [[ -f "${candidate}/hooks.json" && -f "${candidate}/observe-hook.py" ]]; then
-        printf '%s\n' "$candidate"
-        return 0
+    local candidate="${CODEX_OTEL_SOURCE_DIR:-${HOME}/.codex}"
+    [[ -f "${candidate}/hooks.json" && -f "${candidate}/observe-hook.py" ]] || return 2
+    if ! grep -q 'observed_timestamp' "${candidate}/observe-hook.py" \
+       || ! grep -q 'OTEL_RESOURCE_ATTRIBUTES' "${candidate}/observe-hook.py"; then
+        echo "Error: ${candidate}/observe-hook.py is stale; refresh it before creating a sandbox" >&2
+        return 1
     fi
-    if [[ -f "${HOME}/.codex/hooks.json" && -f "${HOME}/.codex/observe-hook.py" ]]; then
-        if ! grep -q 'observed_timestamp' "${HOME}/.codex/observe-hook.py" \
-           || ! grep -q 'OTEL_RESOURCE_ATTRIBUTES' "${HOME}/.codex/observe-hook.py"; then
-            echo "Error: ~/.codex/observe-hook.py is stale; refresh it from claude-otel-stack/codex" >&2
-            return 1
-        fi
-        printf '%s\n' "${HOME}/.codex"
-        return 0
-    fi
+    printf '%s\n' "$candidate"
+    return 0
     # A host without Codex hook files is still allowed to create a sandbox;
     # native Codex metrics can operate without lifecycle hooks. Return a
     # distinct status so callers can warn without confusing this with a stale
@@ -1137,11 +1130,10 @@ upload_config() {
     # The pre-delete belongs to upload_repo(), not to this path. So the
     # sandbox's own state_*.sqlite, sessions/ and rollouts survive a --refresh.
     #
-    # hooks.json + observe-hook.py are source-controlled in
-    # claude-otel-stack. Prefer that checkout so a stale ~/.codex copy cannot
-    # leave the Loki ruler without observed_timestamp/resource identity. The
-    # codex profile is intentionally credential-less, but its telemetry hooks
-    # must still be present; only auth.json remains work-only (gotcha 19).
+    # hooks.json + observe-hook.py come from ~/.codex so in-progress changes in
+    # another checkout cannot unexpectedly change a sandbox. The codex profile
+    # is intentionally credential-less, but its telemetry hooks must still be
+    # present; only auth.json remains work-only (gotcha 19).
     CODEX_TMP="$(mktemp -d)"
     mkdir -p "${CODEX_TMP}/.codex"
     codex_shipped=0
