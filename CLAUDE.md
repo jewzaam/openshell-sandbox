@@ -240,12 +240,12 @@ is no default. `research` and `fetch-service` are policies only —
       Vertex, Jira), so one more is not a new class of thing, and signing in by
       hand in every sandbox is friction. The `codex` profile keeps gotcha 19's
       no-credential behaviour: it signs in inside.
-    - **`hooks.json` and `observe-hook.py` prefer the adjacent
-      `claude-otel-stack/codex/` checkout.** `CODEX_OTEL_SOURCE_DIR` can point
-      elsewhere; the `$HOME/.codex/` fallback is accepted only when the hook
-      contains the current timestamp/resource-identity fields. This prevents a
-      stale host copy from silently producing token data without session-state
-      data. Hooks are uploaded on `codex` too; only `auth.json` is work-only.
+    - **`hooks.json` and `observe-hook.py` come from `$HOME/.codex/`.**
+      `CODEX_OTEL_SOURCE_DIR` can point elsewhere; the selected hook is accepted
+      only when it contains the current timestamp/resource-identity fields. This
+      prevents a stale host copy from silently producing token data without
+      session-state data. Hooks are uploaded on `codex` too; only `auth.json` is
+      work-only.
     - **`config.toml` is generated, never the host's file.** The host's own
       file can carry MCP server commands and `sandbox_permissions` entries
       built around host paths, meaningless in here, and its `[otel]` table (if
