@@ -878,14 +878,40 @@ codex_state_filter() {
 # sandbox — same reason codex_state_filter() above is split out.
 render_codex_config() {
     local host_config="$1" otel_url="$2"
+    local otel_environment="dev" log_user_prompt="true"
+    local in_otel=0 line environment_re log_prompt_re
+    environment_re='^[[:space:]]*environment[[:space:]]*=[[:space:]]*"([^"]*)"'
+    log_prompt_re='^[[:space:]]*log_user_prompt[[:space:]]*=[[:space:]]*(true|false)[[:space:]]*$'
     if [[ -f "$host_config" ]]; then
         grep -E '^model[[:space:]]*=' "$host_config" | head -1
+        # Preserve the safe, host-independent OTEL settings. The rest of the
+        # host config is intentionally not copied: it may contain host-only
+        # endpoints, MCP commands, permissions, and hooks.
+        while IFS= read -r line; do
+            case "$line" in
+                '[otel]') in_otel=1; continue ;;
+                \[*\]) in_otel=0; continue ;;
+            esac
+            if (( in_otel )) && [[ "$line" =~ $environment_re ]]; then
+                otel_environment="${BASH_REMATCH[1]}"
+            elif (( in_otel )) && [[ "$line" =~ $log_prompt_re ]]; then
+                log_user_prompt="${BASH_REMATCH[1]}"
+            fi
+        done < "$host_config"
     fi
+    printf '[otel]\n'
+    printf 'environment = "%s"\n' "$otel_environment"
+    printf 'log_user_prompt = %s\n' "$log_user_prompt"
+    # Codex's native telemetry associates metrics with the active trusted
+    # project. In a sandbox the host project path is unavailable, so seed the
+    # sandbox workspace as its trusted project.
+    printf '[projects."/sandbox/source"]\n'
+    printf 'trust_level = "trusted"\n'
     printf '[otel.exporter.otlp-http]\n'
-    printf 'endpoint = "%s"\n' "$otel_url"
+    printf 'endpoint = "%s/v1/logs"\n' "$otel_url"
     printf 'protocol = "binary"\n'
     printf '[otel.metrics_exporter.otlp-http]\n'
-    printf 'endpoint = "%s"\n' "$otel_url"
+    printf 'endpoint = "%s/v1/metrics"\n' "$otel_url"
     printf 'protocol = "binary"\n'
 }
 
