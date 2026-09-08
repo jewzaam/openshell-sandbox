@@ -476,6 +476,24 @@ clone_repo_host() {
     fi
 }
 
+# Stage a repo for upload, minus what must not cross the boundary. Split out of
+# upload_repo() purely so tests/test-upload-venv.sh can drive it against a fake
+# tree; the upload itself needs a live sandbox, the filtering does not.
+#
+# `.venv` is the whole list, and it is not about transfer size. A virtualenv
+# built by the host's Python 3.14 arrives under an interpreter that is 3.13 in
+# here, so its site-packages cannot be imported at all — `python -m pip` in the
+# uploaded venv fails with "No module named pip", and the venv has to be
+# deleted and rebuilt before anything in the repo can be run.
+#
+# Symlinks stay symlinks (-a, not -rL): uploading the directory did that before
+# this function existed, and this is a filter, not a change of semantics.
+stage_repo_for_upload() {
+    local src="$1" dest="$2"
+    mkdir -p "$dest"
+    rsync -a --exclude=.venv "$src" "${dest}/"
+}
+
 upload_repo() {
     local sandbox_name="$1" sandbox_dir="$2" repo_name="$3"
     # Pre-delete to avoid tar type conflicts (symlink vs dir) on re-upload
@@ -520,12 +538,22 @@ upload_repo() {
         return 0
     fi
 
+    # `openshell sandbox upload` takes a path and a destination and nothing
+    # else — no exclude, no filter — and --no-git-ignore switches off the only
+    # filtering it would otherwise have applied, so everything in the tree went
+    # across. Stage a filtered copy first, the way upload_config() already does
+    # for ~/.claude.
+    local stage
+    stage="$(mktemp -d)"
+    stage_repo_for_upload "${sandbox_dir}/${repo_name}" "$stage"
+
     run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
         -- rm -rf "/sandbox/source/${repo_name}" 2>/dev/null || true
     transfer_quiet "Upload complete — ${repo_name}${why:+ ${why}}" \
         run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
             --no-git-ignore \
-            "${sandbox_dir}/${repo_name}" /sandbox/source/
+            "${stage}/${repo_name}" /sandbox/source/
+    rm -rf "$stage"
 
     # Only a real upload earns a stamp; a dryrun that stamped would make the
     # next real run skip a repo it never sent.
