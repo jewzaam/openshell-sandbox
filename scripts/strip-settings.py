@@ -35,24 +35,29 @@ PERSONAL_STRIP_RE = re.compile(
     re.I,
 )
 
-# A hook carrying a truthy `_keep` survives stripping. The hook declares its own
-# retention instead of this file naming it, so a new hook that must reach a
-# sandbox is a change where the hook is defined and no change here.
+# A hook whose command carries a `# KEEP:` comment survives stripping. The hook
+# declares its own retention instead of this file naming it, so a new hook that
+# must reach a sandbox is a change where the hook is defined and no change here.
 #
-# Claude Code ignores unrecognised keys inside a hook object: verified with
-# `claude doctor`, whose output is byte-identical with and without `_keep`,
-# while a genuinely invalid settings file yields per-path "Invalid settings"
-# diagnostics. The leading underscore follows the same convention as the
-# `_source` annotation already in the host's settings.json and keeps the key
-# clear of any real setting.
+# It is a shell comment, and it has to be. The obvious place for this was a
+# `_keep` key on the hook object, and that silently does not work: Claude Code
+# rewrites settings.json (adding `skipDangerousModePermissionPrompt`, persisting
+# a plugin toggle) and drops unrecognised keys nested inside hook objects and
+# rule entries. Unknown keys at the TOP level survive, which is why `_source`
+# does and a nested marker does not. Measured, not assumed: seeded 19 marked
+# hooks, ran `claude plugin disable`, 0 markers left. `claude doctor` does not
+# show this -- it only reads, so it proves tolerance, never persistence.
 #
-# The value should say *why*, not just `true` — it is the only explanation a
-# reader of a stripped sandbox settings.json will find.
+# The command string does survive that rewrite, and hook commands are run
+# through a shell, so the comment never reaches the program: a probe hook with a
+# trailing `# KEEP:` reported argc=0. A dummy argument would survive equally
+# well but would land in argv of a real hook like Codex's observe-hook.py.
 #
-# This is the only rule. Nothing here names a hook, matches a command, or knows
-# what any of them do — including the OTEL no-ops, which now carry their own
-# marker. Adding a name or pattern back is what this replaced.
-KEEP_MARKER = "_keep"
+# Matching is deliberately lenient -- `# KEEP` with no reason still retains the
+# hook. A stricter rule would silently strip a hook someone meant to keep, and
+# silence is the failure being designed out. Tests in the config repos are what
+# require the reason.
+KEEP_MARKER_RE = re.compile(r"#\s*KEEP\b")
 
 
 def strip_permissions(settings):
@@ -72,7 +77,7 @@ def strip_env(settings, profile):
 
 def keep_hook(hook):
     """Whether one hook object survives stripping."""
-    return isinstance(hook, dict) and bool(hook.get(KEEP_MARKER))
+    return isinstance(hook, dict) and bool(KEEP_MARKER_RE.search(hook.get("command", "")))
 
 
 def strip_hooks(settings):

@@ -9,8 +9,8 @@
 # Also pins the strip rules that were already there: host paths rewritten to
 # /sandbox, permissions.allow dropped, work-only env gone on personal/home.
 #
-# And the hook rule: a hook survives stripping only by carrying a truthy
-# `_keep`, whose value says why. Nothing is kept by name or by command, so the
+# And the hook rule: a hook survives stripping only if its command carries a
+# `# KEEP:` shell comment saying why. Nothing is kept by name, so the
 # OTEL no-ops and the commit skill's attribution hook are both here as ordinary
 # marked hooks, and an unmarked no-op is checked to confirm it is dropped.
 #
@@ -42,7 +42,7 @@ seed() {
   "permissions": {"allow": ["Bash(rm:*)"], "deny": ["Read(/etc/**)"]},
   "hooks": {
     "SessionStart": [
-      {"hooks": [{"type": "command", "command": "python3 -c \"\"", "_keep": "OTEL telemetry trigger"}]},
+      {"hooks": [{"type": "command", "command": "python3 -c \"\"  # KEEP: OTEL telemetry trigger"}]},
       {"hooks": [{"type": "command", "command": "/home/me/bin/notify.sh"}]}
     ],
     "Notification": [
@@ -53,7 +53,7 @@ seed() {
     ],
     "PostToolUse": [
       {"hooks": [
-        {"type": "command", "command": "python3 /home/me/.claude/skills/commit/hooks/record-attribution.py", "_keep": "records the authoring model"},
+        {"type": "command", "command": "python3 /home/me/.claude/skills/commit/hooks/record-attribution.py  # KEEP: records the authoring model"},
         {"type": "command", "command": "/home/me/bin/hitchhiker.sh"}
       ]},
       {"hooks": [{"type": "command", "command": "/home/me/bin/other.sh"}]}
@@ -106,19 +106,23 @@ strip work
     || { echo "FAIL: host home not rewritten to /sandbox" >&2; fail=1; }
 [[ "$(get '.hooks.SessionStart | length')" == "1" ]] \
     || { echo "FAIL: SessionStart should keep only the marked hook" >&2; fail=1; }
-[[ "$(get '.hooks.SessionStart[0].hooks[0].command')" == 'python3 -c ""' ]] \
+[[ "$(get '.hooks.SessionStart[0].hooks[0].command')" == 'python3 -c ""  # KEEP: OTEL telemetry trigger' ]] \
     || { echo "FAIL: kept the wrong SessionStart hook" >&2; fail=1; }
 [[ "$(get '.hooks.PreToolUse // "gone"')" == "gone" ]] \
     || { echo "FAIL: a hook event with nothing marked should be removed" >&2; fail=1; }
+# The marker must be a shell comment. A dummy argument would survive the same
+# rewrite but would land in a real hook's argv.
+[[ "$(get '.hooks.SessionStart[0].hooks[0].command')" == *"# KEEP:"* ]] \
+    || { echo "FAIL: marker is not a shell comment" >&2; fail=1; }
 # Retention is the marker and nothing else. An OTEL no-op that did not ask to
 # survive is dropped like anything else -- if this passes while the fixture is
 # unmarked, command matching has crept back in.
 [[ "$(get '.hooks.Notification // "gone"')" == "gone" ]] \
-    || { echo "FAIL: an unmarked 'python3 -c \"\"' survived; command matching is back" >&2; fail=1; }
+    || { echo "FAIL: an unmarked 'python3 -c \"\"' survived; name matching is back" >&2; fail=1; }
 [[ "$(get '.hooks.PostToolUse | length')" == "1" ]] \
-    || { echo "FAIL: PostToolUse should keep only the rule holding a _keep hook" >&2; fail=1; }
-[[ "$(get '.hooks.PostToolUse[0].hooks[0].command')" == "python3 /sandbox/.claude/skills/commit/hooks/record-attribution.py" ]] \
-    || { echo "FAIL: a _keep hook was stripped, or its path not rewritten" >&2; fail=1; }
+    || { echo "FAIL: PostToolUse should keep only the rule holding a marked hook" >&2; fail=1; }
+[[ "$(get '.hooks.PostToolUse[0].hooks[0].command')" == "python3 /sandbox/.claude/skills/commit/hooks/record-attribution.py  # KEEP: records the authoring model" ]] \
+    || { echo "FAIL: a marked hook was stripped, or its path not rewritten" >&2; fail=1; }
 # Filtering is per hook, not per rule entry: an unmarked hook sharing an entry
 # with a marked one must not ride in on it.
 [[ "$(get '.hooks.PostToolUse[0].hooks | length')" == "1" ]] \

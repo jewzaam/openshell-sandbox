@@ -66,21 +66,31 @@ is no default. `research` and `fetch-service` are policies only —
    the repo directories named in the manifest, so a session cannot widen its own
    policy or rewrite its repo list by editing its copy.
 7. **`strip_hooks()` drops every hook that does not ask to survive.** A hook
-   opts in with a truthy `_keep` on the hook object, whose value is the reason
-   it must survive — the only explanation a reader of a stripped sandbox
-   settings.json will get. The hook declares this where it is defined, so a new
-   hook that has to reach a sandbox means no change to this repo. Do not add
-   per-hook names or patterns here; that is what the marker replaced.
+   opts in by ending its command with a `# KEEP: <reason>` shell comment. The
+   hook declares this where it is defined, so a new hook that has to reach a
+   sandbox means no change to this repo. Do not add per-hook names or patterns
+   here; that is what the marker replaced.
+   - **It has to be a comment on the command, not a JSON key.** A `_keep` key on
+     the hook object was tried and silently does not work: Claude Code rewrites
+     settings.json — persisting a plugin toggle, adding
+     `skipDangerousModePermissionPrompt` — and drops unrecognised keys nested
+     inside hook objects and inside rule entries. Unknown keys at the TOP level
+     survive, which is why `_source` is still there and a nested marker is not.
+     Measured: 19 marked hooks, `claude plugin disable`, 0 markers left.
+     `claude doctor` will not show you this — it only reads, so it proves
+     tolerance and never persistence.
+   - **A comment and not a dummy argument.** Hook commands run through a shell,
+     so the comment never reaches the program: a probe hook ending in `# KEEP:`
+     reported `argc=0`. An argument would survive the rewrite just as well and
+     then land in argv of a real hook, such as Codex's `observe-hook.py`.
+   - **Matching is lenient on purpose.** `# KEEP` with no reason still retains
+     the hook. A stricter rule would silently strip a hook someone meant to
+     keep, and silence is the failure being designed out. The tests in
+     `my-claude-stuff` and `my-codex-stuff` are what require the reason.
    - **Filtering is per hook, not per rule entry.** An entry is kept with only
      its surviving hooks. Keeping a whole entry because one hook in it
      qualified is how an unmarked hook used to reach a sandbox by sharing an
      entry with a marked one.
-   - **Claude Code ignores unrecognised keys inside a hook object**, so the
-     marker is inert to the agent. Verified with `claude doctor`: output is
-     byte-identical with and without it, while a genuinely invalid settings
-     file produces per-path `Invalid settings` diagnostics. The leading
-     underscore matches the `_source` annotation already in the host's
-     settings.json and keeps the key clear of any real setting.
    - **Nothing is kept by name or by command.** The dummy OTEL hooks
      (`python3 -c ""`, in `my-claude-stuff`'s `hooks-noop.json`) are marked
      like anything else. They exist because Claude Code emits no OTEL events
@@ -93,7 +103,7 @@ is no default. `research` and `fetch-service` are policies only —
      `my-claude-stuff/scripts` already rides in, and the host-home rewrite
      fixes the path; anything else needs its own upload.
    `tests/test-strip-settings.sh` covers all of it, including the entry-sharing
-   leak.
+   leak and the comment-not-argument rule.
 8. **`useradd -d /sandbox` in the Containerfile.** The default `/home/sandbox`
    breaks gitconfig and env sourcing across `sandbox exec` calls.
 9. **`host.containers.internal` is unpoliced on every port.** OpenShell cannot
@@ -111,8 +121,18 @@ is no default. `research` and `fetch-service` are policies only —
     credentials.
 11. **No repos are baked into the image.** `knowledgebase` and `standards` are
     cloned on the host and uploaded like any other repo.
-12. **`.venv` is excluded in both directions** — host Python 3.14 vs sandbox
-    3.13.
+12. **`.venv` is excluded in both directions, but by two different
+    mechanisms** — host Python 3.14 vs sandbox 3.13, so an uploaded venv is not
+    merely wasteful, it is unusable: `python -m pip` in it fails with `No module
+    named pip` and it has to be deleted and rebuilt before anything runs.
+    Download excludes at the source, in the `tar` inside the sandbox. Upload
+    cannot: `openshell sandbox upload` takes a path and a destination and
+    nothing else, and `upload_repo()` passes `--no-git-ignore`, so nothing
+    filters the tree. `stage_repo_for_upload()` rsyncs a filtered copy to a temp
+    dir first and uploads that — the same staging `upload_config()` does for
+    `~/.claude`. It keeps symlinks as symlinks (`-a`, not `-rL`), which is what
+    uploading the directory did before it existed.
+    `tests/test-upload-venv.sh` fails if the exclusion goes away.
 13. **`upload_repo()` pre-deletes the sandbox copy.** Without it, re-uploading a
     repo where a path flipped between symlink and directory fails with tar
     `Cannot open: File exists`.
