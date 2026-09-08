@@ -65,9 +65,35 @@ is no default. `research` and `fetch-service` are policies only —
 6. **Host-owned files upload, never download.** `download_sandbox()` pulls only
    the repo directories named in the manifest, so a session cannot widen its own
    policy or rewrite its repo list by editing its copy.
-7. **The dummy OTEL hooks (`python3 -c ""`) must survive settings.json
-   stripping.** Claude Code emits no OTEL events for a hook type with no
-   registered hook; those entries exist solely to trigger telemetry.
+7. **`strip_hooks()` drops every hook that does not ask to survive.** A hook
+   opts in with a truthy `_keep` on the hook object, whose value is the reason
+   it must survive — the only explanation a reader of a stripped sandbox
+   settings.json will get. The hook declares this where it is defined, so a new
+   hook that has to reach a sandbox means no change to this repo. Do not add
+   per-hook names or patterns here; that is what the marker replaced.
+   - **Filtering is per hook, not per rule entry.** An entry is kept with only
+     its surviving hooks. Keeping a whole entry because one hook in it
+     qualified is how an unmarked hook used to reach a sandbox by sharing an
+     entry with a marked one.
+   - **Claude Code ignores unrecognised keys inside a hook object**, so the
+     marker is inert to the agent. Verified with `claude doctor`: output is
+     byte-identical with and without it, while a genuinely invalid settings
+     file produces per-path `Invalid settings` diagnostics. The leading
+     underscore matches the `_source` annotation already in the host's
+     settings.json and keeps the key clear of any real setting.
+   - **Nothing is kept by name or by command.** The dummy OTEL hooks
+     (`python3 -c ""`, in `my-claude-stuff`'s `hooks-noop.json`) are marked
+     like anything else. They exist because Claude Code emits no OTEL events
+     for a hook type with no registered hook, so those entries are what trigger
+     telemetry at all — an unmarked one is dropped, and sandbox telemetry stops
+     with it. `hooks.json` in `my-codex-stuff` is marked to match, though
+     nothing strips it: `upload_config()` copies it verbatim.
+   - **A hook's script still has to be in the sandbox.** The marker keeps the
+     registration, not the file. Anything under `~/.claude/skills` or
+     `my-claude-stuff/scripts` already rides in, and the host-home rewrite
+     fixes the path; anything else needs its own upload.
+   `tests/test-strip-settings.sh` covers all of it, including the entry-sharing
+   leak.
 8. **`useradd -d /sandbox` in the Containerfile.** The default `/home/sandbox`
    breaks gitconfig and env sourcing across `sandbox exec` calls.
 9. **`host.containers.internal` is unpoliced on every port.** OpenShell cannot
