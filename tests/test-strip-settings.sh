@@ -7,9 +7,12 @@
 # line, so they are stripped for every profile.
 #
 # Also pins the strip rules that were already there: host paths rewritten to
-# /sandbox, permissions.allow dropped, work-only env gone on personal/home, and
-# only the dummy OTEL hooks kept (Claude Code emits no telemetry for a hook type
-# with no registered hook, which is the only reason those entries exist).
+# /sandbox, permissions.allow dropped, work-only env gone on personal/home.
+#
+# And the hook rule: a hook survives stripping only by carrying a truthy
+# `_keep`, whose value says why. Nothing is kept by name or by command, so the
+# OTEL no-ops and the commit skill's attribution hook are both here as ordinary
+# marked hooks, and an unmarked no-op is checked to confirm it is dropped.
 #
 # Run: tests/test-strip-settings.sh
 
@@ -39,11 +42,21 @@ seed() {
   "permissions": {"allow": ["Bash(rm:*)"], "deny": ["Read(/etc/**)"]},
   "hooks": {
     "SessionStart": [
-      {"hooks": [{"type": "command", "command": "python3 -c \"\""}]},
+      {"hooks": [{"type": "command", "command": "python3 -c \"\"", "_keep": "OTEL telemetry trigger"}]},
       {"hooks": [{"type": "command", "command": "/home/me/bin/notify.sh"}]}
+    ],
+    "Notification": [
+      {"hooks": [{"type": "command", "command": "python3 -c \"\""}]}
     ],
     "PreToolUse": [
       {"hooks": [{"type": "command", "command": "/home/me/bin/guard.sh"}]}
+    ],
+    "PostToolUse": [
+      {"hooks": [
+        {"type": "command", "command": "python3 /home/me/.claude/skills/commit/hooks/record-attribution.py", "_keep": "records the authoring model"},
+        {"type": "command", "command": "/home/me/bin/hitchhiker.sh"}
+      ]},
+      {"hooks": [{"type": "command", "command": "/home/me/bin/other.sh"}]}
     ]
   },
   "statusLine": {"command": "/home/me/bin/statusline.sh"}
@@ -92,11 +105,24 @@ strip work
 [[ "$(get '.statusLine.command')" == "/sandbox/bin/statusline.sh" ]] \
     || { echo "FAIL: host home not rewritten to /sandbox" >&2; fail=1; }
 [[ "$(get '.hooks.SessionStart | length')" == "1" ]] \
-    || { echo "FAIL: SessionStart should keep only the OTEL dummy hook" >&2; fail=1; }
+    || { echo "FAIL: SessionStart should keep only the marked hook" >&2; fail=1; }
 [[ "$(get '.hooks.SessionStart[0].hooks[0].command')" == 'python3 -c ""' ]] \
     || { echo "FAIL: kept the wrong SessionStart hook" >&2; fail=1; }
 [[ "$(get '.hooks.PreToolUse // "gone"')" == "gone" ]] \
-    || { echo "FAIL: a hook event with no OTEL dummy should be removed" >&2; fail=1; }
+    || { echo "FAIL: a hook event with nothing marked should be removed" >&2; fail=1; }
+# Retention is the marker and nothing else. An OTEL no-op that did not ask to
+# survive is dropped like anything else -- if this passes while the fixture is
+# unmarked, command matching has crept back in.
+[[ "$(get '.hooks.Notification // "gone"')" == "gone" ]] \
+    || { echo "FAIL: an unmarked 'python3 -c \"\"' survived; command matching is back" >&2; fail=1; }
+[[ "$(get '.hooks.PostToolUse | length')" == "1" ]] \
+    || { echo "FAIL: PostToolUse should keep only the rule holding a _keep hook" >&2; fail=1; }
+[[ "$(get '.hooks.PostToolUse[0].hooks[0].command')" == "python3 /sandbox/.claude/skills/commit/hooks/record-attribution.py" ]] \
+    || { echo "FAIL: a _keep hook was stripped, or its path not rewritten" >&2; fail=1; }
+# Filtering is per hook, not per rule entry: an unmarked hook sharing an entry
+# with a marked one must not ride in on it.
+[[ "$(get '.hooks.PostToolUse[0].hooks | length')" == "1" ]] \
+    || { echo "FAIL: an unmarked hook survived by sharing a rule entry" >&2; fail=1; }
 
 # --- a settings.json with no env at all must not crash ---
 echo '{"permissions": {"allow": ["Bash(ls)"]}}' > "$S"

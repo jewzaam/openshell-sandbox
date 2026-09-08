@@ -35,9 +35,24 @@ PERSONAL_STRIP_RE = re.compile(
     re.I,
 )
 
-# The dummy OTEL hooks must survive: Claude Code emits no telemetry for a hook
-# type with no registered hook, so these entries exist solely to trigger it.
-OTEL_DUMMY_COMMANDS = ('python3 -c ""', 'python -c ""')
+# A hook carrying a truthy `_keep` survives stripping. The hook declares its own
+# retention instead of this file naming it, so a new hook that must reach a
+# sandbox is a change where the hook is defined and no change here.
+#
+# Claude Code ignores unrecognised keys inside a hook object: verified with
+# `claude doctor`, whose output is byte-identical with and without `_keep`,
+# while a genuinely invalid settings file yields per-path "Invalid settings"
+# diagnostics. The leading underscore follows the same convention as the
+# `_source` annotation already in the host's settings.json and keeps the key
+# clear of any real setting.
+#
+# The value should say *why*, not just `true` — it is the only explanation a
+# reader of a stripped sandbox settings.json will find.
+#
+# This is the only rule. Nothing here names a hook, matches a command, or knows
+# what any of them do — including the OTEL no-ops, which now carry their own
+# marker. Adding a name or pattern back is what this replaced.
+KEEP_MARKER = "_keep"
 
 
 def strip_permissions(settings):
@@ -55,6 +70,11 @@ def strip_env(settings, profile):
         settings["env"] = {k: v for k, v in env.items() if not PERSONAL_STRIP_RE.match(k)}
 
 
+def keep_hook(hook):
+    """Whether one hook object survives stripping."""
+    return isinstance(hook, dict) and bool(hook.get(KEEP_MARKER))
+
+
 def strip_hooks(settings):
     hooks = settings.get("hooks")
     if not isinstance(hooks, dict):
@@ -64,15 +84,17 @@ def strip_hooks(settings):
         rules = hooks[event]
         if not isinstance(rules, list):
             continue
-        kept = [
-            r
-            for r in rules
-            if isinstance(r, dict)
-            and any(
-                isinstance(h, dict) and h.get("command", "").strip() in OTEL_DUMMY_COMMANDS
-                for h in r.get("hooks", [])
-            )
-        ]
+        # Filtered per hook, not per rule entry. Keeping the whole entry
+        # because one hook in it qualified is how an unmarked hook used to
+        # reach a sandbox by sharing an entry with a marked one — silent, and
+        # it made "give it its own entry" a rule every hook author had to know.
+        kept = []
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            inner = [h for h in rule.get("hooks", []) if keep_hook(h)]
+            if inner:
+                kept.append(dict(rule, hooks=inner))
         if kept:
             hooks[event] = kept
         else:
