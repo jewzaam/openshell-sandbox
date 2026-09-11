@@ -297,9 +297,11 @@ is no default. `research` and `fetch-service` are policies only —
       built around host paths, meaningless in here, and its `[otel]` table (if
       any) points at the host's own collector — typically `localhost`,
       unreachable from in here. So `upload_config()` writes a fresh one
-      instead: the host's `model =` line, if it has one (Codex has no
-      per-profile default the way `harness-wrapper.sh` hardcodes one for
-      Claude on personal/home, so leaving this off drops the host's choice
+      instead: the host's top-level `model =`, `model_reasoning_effort =`,
+      `status_line =` and `status_line_use_colors =` lines plus its `[tui]`
+      and `[features]` tables, if it has them (Codex has no per-profile
+      default the way `harness-wrapper.sh` hardcodes one for Claude on
+      personal/home, so leaving these off drops the host's choices
       silently), plus a freshly-generated `[otel.exporter.otlp-http]` table
       pointed at `$OTEL_URL` (the same sandbox-correct address used for
       `OTEL_EXPORTER_OTLP_ENDPOINT`, gotcha 13) with `protocol = "binary"`
@@ -310,7 +312,17 @@ is no default. `research` and `fetch-service` are policies only —
       table with no `endpoint` key fails config load with `missing field
       "endpoint"` rather than falling back to the env var. This enables
       Codex's own native cost/token-usage telemetry; the hooks.json /
-      observe-hook.py pipeline above is unrelated and unaffected.
+      observe-hook.py pipeline above is unrelated and unaffected. One awk
+      pass carries both allowlists: before the first table header the
+      top-level keys are filtered by name, so a `model =` under a
+      `[profiles.x]` table is not hoisted to the top level; from the first
+      header on, a table is copied whole or dropped whole, which is what makes
+      a `[tui]` statusline config survive intact. The header match is on the
+      bare name, so a quoted `["tui"]` would read as a dropped table, and the
+      top-level filter is per line, so a multi-line array up there would
+      arrive truncated — Codex writes neither form. The host's `[otel]` table
+      is the exception to copy-whole-or-drop-whole: dropped as a table, with
+      `environment` and `log_user_prompt` lifted out into the generated one.
       `CODEX_STATE_KEEP` still preserves the sandbox's own
       `config.toml` across `--recreate` and that preserved copy still wins
       (upload order: `upload_config()` then `upload_codex_state()`, and
