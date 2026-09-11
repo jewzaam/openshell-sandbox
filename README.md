@@ -71,7 +71,7 @@ sandbox.sh --delete myapp
 | Option | Description |
 |--------|-------------|
 | `--create NAME` | Create sandbox with this name (requires `--profile`) |
-| `--ensure [NAME]` | Create if missing, reconnect if exists |
+| `--ensure [NAME]` | Create if missing, reconnect if exists; use `--no-connect` to only create |
 | `--repo URL` | Git repo to clone on host and upload (repeatable) |
 | `--ref REF` | Ref for preceding `--repo`: branch, `pr/<num>`, `tag/<name>`, or SHA |
 | `--source-dir DIR` | Copy remotes from local repo and fetch (sandbox has no git auth) |
