@@ -10,7 +10,8 @@ SDLC skill access. Podman-based, rootless.
 - Three profiles: **work** (Vertex AI + Jira), **personal** (Anthropic direct,
   telemetry push-only), **home** (personal plus Prometheus/Loki reads)
 - `--harness claude|codex` picks the agent; Codex runs on **work**, which
-  carries OpenAI alongside Vertex
+  carries OpenAI alongside Vertex, and is what a work sandbox defaults to when
+  nothing else is running or remembered
 - `--profile` is required on `scode` and on `sandbox.sh --create/--recreate`
 - Clones repos on host (SSH works), uploads to sandbox for private repo support
 - Uploads `~/.claude/` config with symlinks resolved (skills, plugins, settings)

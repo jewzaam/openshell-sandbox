@@ -410,16 +410,18 @@ is no default. `research` and `fetch-service` are policies only —
       made. The manifest's value goes as `$HARNESS_DEFAULT` and only
       preselects. Collapsing them into one would either stall an explicit
       choice for the timeout or make the remembered value unoverridable.
-    - **The default is never profile-based.** In precedence: exactly one live
-      dtach socket (reattaching to the running session is the reason to ask at
-      all), then `$HARNESS_DEFAULT`, then `HARNESS_FALLBACK` (claude). Two live
-      sockets is not a signal — both agents are up and neither is the better
-      guess. The profile decides which credentials and which network policy a
-      sandbox got, not which agent the human wants this time: `work` carries
-      both Anthropic and OpenAI egress and runs either, which is what made a
-      profile-keyed default unstatable. `tests/test-connect-harness.sh` drives
-      the precedence against real AF_UNIX sockets and asserts `default_harness`
-      does not read `$SANDBOX_PROFILE`.
+    - **The profile is the last word in the default, not the first.** In
+      precedence: exactly one live dtach socket (reattaching to the running
+      session is the reason to ask at all), then `$HARNESS_DEFAULT`, then
+      `work` → codex, then `HARNESS_FALLBACK` (claude). Two live sockets is not
+      a signal — both agents are up and neither is the better guess. The
+      profile sits below the remembered harness because it decides which
+      credentials and which network policy a sandbox got, not which agent the
+      human wants this time: `work` carries both Anthropic and OpenAI egress
+      and runs either, so a work sandbox that last ran claude still offers
+      claude. Above it only `HARNESS_FALLBACK`, which is now the non-work case.
+      `tests/test-connect-harness.sh` drives the whole precedence against real
+      AF_UNIX sockets.
     - **`default_harness` emits `"<harness> <reason>"` from one set of
       branches**, and the prompt shows the reason (`[codex - remembered]`).
       Recomputing the reason in a second function drifts from the chooser and

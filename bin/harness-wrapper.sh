@@ -39,7 +39,7 @@ HARNESS_DEFAULT="${HARNESS_DEFAULT:-}"
 valid_harness() { [[ "$1" == claude || "$1" == codex ]]; }
 valid_harness "$HARNESS_DEFAULT" || HARNESS_DEFAULT=""
 
-# Used when the manifest has no harness recorded yet.
+# Used when the manifest has no harness recorded yet and the profile is not work.
 HARNESS_FALLBACK=claude
 
 # What to offer when nothing was named on the command line. In precedence:
@@ -49,11 +49,13 @@ HARNESS_FALLBACK=claude
 #    what this sandbox is doing right now. Two live sockets is not a signal —
 #    both agents are up and neither is the better guess — so it falls through.
 # 2. Whatever was launched here last.
-# 3. HARNESS_FALLBACK.
+# 3. The work profile, which means codex.
+# 4. HARNESS_FALLBACK.
 #
-# Deliberately NOT profile-based. The profile says which credentials and which
-# network policy a sandbox got, not which agent the human wants this time: the
-# work profile carries both Anthropic and OpenAI egress and runs either.
+# The profile decides only when nothing else has spoken. It says which
+# credentials and which network policy a sandbox got, and work carries both
+# Anthropic and OpenAI egress and runs either — so it cannot outrank the
+# remembered harness: a work sandbox that last ran claude still offers claude.
 #
 # Emits "<harness> <reason>" from ONE set of branches. Recomputing the reason
 # separately drifts from the chooser — it reports a value the chooser rejected.
@@ -66,6 +68,8 @@ default_harness() {
         echo "${live[0]} session running"
     elif [[ -n "$HARNESS_DEFAULT" ]]; then
         echo "$HARNESS_DEFAULT remembered"
+    elif [[ "${SANDBOX_PROFILE:-}" == work ]]; then
+        echo "codex work profile"
     else
         echo "$HARNESS_FALLBACK default"
     fi
