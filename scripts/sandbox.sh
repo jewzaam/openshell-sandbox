@@ -205,6 +205,8 @@ OPTIONS:
 
     NAME is optional for commands marked [NAME] when CWD is under ~/sandboxes/<name>/.
     --no-clone        Skip repo cloning (create sandbox with env + config only)
+    --no-connect      With --ensure, leave an existing sandbox untouched; with
+                      --create, stop after provisioning
     --list            List sandboxes
     --fetch-service   Start the outbound fetch service, follow its log, stop it on exit
     --dryrun          Print commands instead of running them
@@ -1911,8 +1913,13 @@ if [[ "$ENSURE_MODE" == true ]]; then
             fi
         fi
         start_error_sandbox "$OS_NAME" || exit 1
-        echo "Sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
-        connect_sandbox "$OS_NAME" "$WORKDIR"
+        if [[ "$NO_CONNECT" == true ]]; then
+            echo "Sandbox '${SANDBOX_NAME}' exists; not connecting (--no-connect used)." >&2
+            exit 0
+        else
+            echo "Sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
+            connect_sandbox "$OS_NAME" "$WORKDIR"
+        fi
     else
         ENSURE_ARGS=(--create "$SANDBOX_NAME")
         for i in "${!REPOS[@]}"; do
@@ -1926,6 +1933,7 @@ if [[ "$ENSURE_MODE" == true ]]; then
         [[ -n "$SANDBOX_PROFILE" ]] && ENSURE_ARGS+=(--profile "$SANDBOX_PROFILE")
         [[ -n "$SOURCE_DIR" ]] && ENSURE_ARGS+=(--source-dir "$SOURCE_DIR")
         [[ "$DRYRUN" == true ]] && ENSURE_ARGS+=(--dryrun)
+        [[ "$NO_CONNECT" == true ]] && ENSURE_ARGS+=(--no-connect)
         exec "$0" "${ENSURE_ARGS[@]}"
     fi
 fi
