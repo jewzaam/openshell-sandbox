@@ -186,7 +186,7 @@ OPTIONS:
     -f, --force       With --upload/--download: transfer every repo and
                       regenerate context, not only what changed
     --policy NAME     Policy name or path (e.g. research). Standalone: hot-swap on running sandbox
-    --profile NAME    Credential profile: work, personal, home, or codex. Controls env vars, uploads,
+    --profile NAME    Credential profile: work, personal, home. Controls env vars, uploads,
                       and the policy of the same name. REQUIRED with --create and --recreate.
                       Only valid with --create, --recreate, or --ensure — applied at build, not after
     --gateway NAME    OpenShell gateway (default: \$OPENSHELL_GATEWAY)
@@ -855,8 +855,7 @@ download_claude_state() {
 #
 # auth.json is deliberately NOT preserved — see gotcha 19. On work the host
 # ships it through upload_config(), and preserving a copy here would let a
-# stale key win over a rotated one; on the codex profile signing in inside the
-# sandbox remains the documented behaviour.
+# stale key win over a rotated one.
 CODEX_STATE_KEEP=(sessions history.jsonl session_index.jsonl config.toml)
 
 # Copy the parts of a downloaded ~/.codex worth keeping from $1 into $2.
@@ -902,6 +901,16 @@ codex_state_filter() {
 # MCP/sandbox_permissions entries, and an `[otel]` table pointed at the host's
 # own, unreachable collector).
 #
+# `[features] default_mode_request_user_input = true` is written here rather
+# than copied, so a host that never enabled it still gets sandboxes that behave
+# the same. Without it request_user_input is Plan-mode-only, and Plan mode
+# cannot run anything — so a skill can ask a structured question or do the work
+# it asked about, never both. The key is Stage::UnderDevelopment upstream and
+# may be renamed or dropped: Codex logs `unknown feature key in config` and
+# carries on, so the failure is a warning plus questions reverting to
+# Plan-only, not a broken config load. config/sandbox-claude.d/work.md tells
+# the session the tool is available; keep the two in step.
+#
 # `protocol = "binary"` is the OTLP-over-HTTP-protobuf equivalent of this
 # sandbox's OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf; confirmed against a
 # live `codex logout` that `"binary"` and `"json"` are the only two values
@@ -932,13 +941,34 @@ render_codex_config() {
         # reads as a dropped table. Codex writes headers bare. The top-level
         # filter is per line, so a multi-line array up there arrives
         # truncated; inside a kept table everything copies verbatim.
+        #
+        # default_mode_request_user_input is ours, not the host's, and there can
+        # only be one [features] header in the file — a second is a duplicate
+        # table and fails config load outright. So the flag is injected into the
+        # host's table when one comes across, any host copy of the key is
+        # dropped on the way through, and the END rule opens a table only when
+        # the host had none.
         awk '
             /^[[:space:]]*\[/ {
                 in_table = 1
                 keep = ($0 ~ /^[[:space:]]*\[(tui|features)[.\]]/)
+                in_features = ($0 ~ /^[[:space:]]*\[features\][[:space:]]*$/)
+                if (in_features) {
+                    print
+                    print "default_mode_request_user_input = true"
+                    have_features = 1
+                    next
+                }
             }
+            in_features && /^[[:space:]]*default_mode_request_user_input[[:space:]]*=/ { next }
             in_table { if (keep) print; next }
             /^(model|model_context_window|model_auto_compact_token_limit|model_auto_compact_token_limit_scope|model_reasoning_effort|status_line|status_line_use_colors)[[:space:]]*=/
+            END {
+                if (!have_features) {
+                    print "[features]"
+                    print "default_mode_request_user_input = true"
+                }
+            }
         ' "$host_config"
         # Preserve the safe, host-independent OTEL settings. The rest of the
         # host config is intentionally not copied: it may contain host-only
@@ -954,6 +984,9 @@ render_codex_config() {
                 log_user_prompt="${BASH_REMATCH[1]}"
             fi
         done < "$host_config"
+    else
+        printf '[features]\n'
+        printf 'default_mode_request_user_input = true\n'
     fi
     printf '[otel]\n'
     printf 'environment = "%s"\n' "$otel_environment"
@@ -1199,59 +1232,59 @@ upload_config() {
         fi
     fi
 
-    # Codex telemetry config, every profile. Three named files plus a generated
-    # config.toml, never a mirror of ~/.codex/: sessions/,
-    # history.jsonl and the state sqlites are transcripts of every Codex
-    # conversation on the host across all projects, and shipping those into a
-    # work sandbox pushes personal content in exactly the direction the
-    # profile split exists to stop.
+    # Codex config, work profile only. `personal` and `home` reach no OpenAI
+    # host at all (gotcha 19), so Codex could neither sign in nor talk to a
+    # provider there, and hooks, credentials and a rendered config would all be
+    # dead weight. Three named files plus a generated config.toml, never a
+    # mirror of ~/.codex/: sessions/, history.jsonl and the state sqlites are
+    # transcripts of every Codex conversation on the host across all projects,
+    # and shipping those into a work sandbox pushes personal content in exactly
+    # the direction the profile split exists to stop.
     #
     # A directory upload is safe: `openshell sandbox upload` streams a tar and
     # runs `tar xf - -C <dest>` (OpenShell crates/openshell-cli/src/ssh.rs),
     # which overwrites the entries in the archive and touches nothing else.
     # The pre-delete belongs to upload_repo(), not to this path. So the
     # sandbox's own state_*.sqlite, sessions/ and rollouts survive a --refresh.
-    #
-    # hooks.json + observe-hook.py come from ~/.codex so in-progress changes in
-    # another checkout cannot unexpectedly change a sandbox. The codex profile
-    # is intentionally credential-less, but its telemetry hooks must still be
-    # present; only auth.json remains work-only (gotcha 19).
-    CODEX_TMP="$(mktemp -d)"
-    mkdir -p "${CODEX_TMP}/.codex"
-    codex_shipped=0
-    if CODEX_OTEL_SOURCE="$(codex_otel_source_dir)"; then
-        cp "${CODEX_OTEL_SOURCE}/hooks.json" "${CODEX_TMP}/.codex/hooks.json"
-        cp "${CODEX_OTEL_SOURCE}/observe-hook.py" "${CODEX_TMP}/.codex/observe-hook.py"
-        codex_shipped=1
-    else
-        source_status=$?
-        if (( source_status == 1 )); then
-            rm -rf "$CODEX_TMP"
-            return 1
+    if ! personal_profile "$SANDBOX_PROFILE"; then
+        # hooks.json + observe-hook.py come from ~/.codex so in-progress
+        # changes in another checkout cannot unexpectedly change a sandbox.
+        CODEX_TMP="$(mktemp -d)"
+        mkdir -p "${CODEX_TMP}/.codex"
+        codex_shipped=0
+        if CODEX_OTEL_SOURCE="$(codex_otel_source_dir)"; then
+            cp "${CODEX_OTEL_SOURCE}/hooks.json" "${CODEX_TMP}/.codex/hooks.json"
+            cp "${CODEX_OTEL_SOURCE}/observe-hook.py" "${CODEX_TMP}/.codex/observe-hook.py"
+            codex_shipped=1
+        else
+            source_status=$?
+            if (( source_status == 1 )); then
+                rm -rf "$CODEX_TMP"
+                return 1
+            fi
+            echo "Warning: no Codex lifecycle hook files found; session-state telemetry will be unavailable" >&2
         fi
-        echo "Warning: no Codex lifecycle hook files found; session-state telemetry will be unavailable" >&2
-    fi
 
-    # auth.json holds OPENAI_API_KEY. It ships on work for the same reason
-    # the gws credentials above do — signing in by hand in every sandbox is
-    # friction. The codex profile is deliberately excluded and still signs in
-    # inside; see gotcha 19.
-    if ! personal_profile "$SANDBOX_PROFILE" && [[ -f "${HOME}/.codex/auth.json" ]]; then
-        cp "${HOME}/.codex/auth.json" "${CODEX_TMP}/.codex/auth.json"
+        # auth.json holds OPENAI_API_KEY. It ships for the same reason the gws
+        # credentials above do — signing in by hand in every sandbox is
+        # friction, and work sandboxes already carry work credentials.
+        if [[ -f "${HOME}/.codex/auth.json" ]]; then
+            cp "${HOME}/.codex/auth.json" "${CODEX_TMP}/.codex/auth.json"
+            codex_shipped=1
+        fi
+
+        # config.toml: rendered, never the host's file. See gotcha 21 and
+        # render_codex_config() above.
+        render_codex_config "${HOME}/.codex/config.toml" "$OTEL_URL" \
+            > "${CODEX_TMP}/.codex/config.toml"
         codex_shipped=1
-    fi
 
-    # config.toml: rendered, never the host's file. See gotcha 21 and
-    # render_codex_config() above.
-    render_codex_config "${HOME}/.codex/config.toml" "$OTEL_URL" \
-        > "${CODEX_TMP}/.codex/config.toml"
-    codex_shipped=1
-
-    if (( codex_shipped )); then
-        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
-            "${CODEX_TMP}/.codex" /sandbox
+        if (( codex_shipped )); then
+            run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+                "${CODEX_TMP}/.codex" /sandbox
+        fi
+        rm -rf "$CODEX_TMP"
     fi
-    rm -rf "$CODEX_TMP"
 
     # Re-upload bin/
     run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
@@ -1686,12 +1719,12 @@ fi
 # leave the host, and inheriting that from a config file means the command
 # that uploads a work token looks identical to the one that does not.
 if [[ ( "$CREATE_MODE" == true || "$RECREATE_MODE" == true ) && -z "$SANDBOX_PROFILE" ]]; then
-    echo "Error: --profile is required with --create and --recreate (work, personal, home, codex)." >&2
+    echo "Error: --profile is required with --create and --recreate (work, personal, home)." >&2
     exit 1
 fi
 
 if [[ -n "$SANDBOX_PROFILE" ]] && ! valid_profile "$SANDBOX_PROFILE"; then
-    echo "Error: unknown profile '${SANDBOX_PROFILE}' (valid: work, personal, home, codex)." >&2
+    echo "Error: unknown profile '${SANDBOX_PROFILE}' (valid: work, personal, home)." >&2
     exit 1
 fi
 
@@ -2052,7 +2085,7 @@ if [[ -n "$POLICY_FILE" && "$REFRESH_MODE" == true ]]; then
     exit 1
 fi
 
-# Profile name and policy name are the same word — work, personal, home, codex. The
+# Profile name and policy name are the same word — work, personal, home. The
 # `:-work` covers a sandbox whose manifest predates .profile: --create demands
 # a profile, and every other path that reaches here renders a temp policy it
 # never installs, so the fallback picks a file and changes nothing.

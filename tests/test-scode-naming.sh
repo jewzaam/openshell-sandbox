@@ -99,15 +99,17 @@ check "some/feature"         "my-great-project-some-feature ref=main"
 # --- profile predicates: the whole set, and which half is credential-less ---
 source "${REPO_ROOT}/scripts/lib.sh"
 
-for p in work personal home codex; do
+for p in work personal home; do
     valid_profile "$p" || { echo "FAIL: ${p} should be a valid profile" >&2; fail=1; }
 done
 # `code` was the old name for `work`; nothing may quietly accept it again.
-for p in code research "" bogus; do
+# `codex` was a profile and is now only a --harness value, so it must not be
+# accepted here either.
+for p in code codex research "" bogus; do
     ! valid_profile "$p" || { echo "FAIL: '${p}' should not be a valid profile" >&2; fail=1; }
 done
 
-for p in personal home codex; do
+for p in personal home; do
     personal_profile "$p" || { echo "FAIL: ${p} should carry no work credentials" >&2; fail=1; }
 done
 ! personal_profile work || { echo "FAIL: work must not be treated as personal" >&2; fail=1; }
