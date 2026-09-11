@@ -149,3 +149,19 @@ network_policies:
         access: read-only
     binaries:
       - { path: "/**" }
+
+  golang:
+    name: golang-readonly
+    endpoints:
+      - host: proxy.golang.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: sum.golang.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: "/**" }

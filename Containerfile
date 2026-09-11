@@ -46,6 +46,17 @@ RUN npm install -g @anthropic-ai/claude-code @googleworkspace/cli @openai/codex
 # uv (Python package manager)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
+# Go toolchain, so `go test` runs where the work happens — same reason
+# shellcheck is up there. Lifted out of the official image the way uv is
+# above: one layer, no apt dependency tree. ~250MB unpacked, second only to
+# the Codex CLI here.
+#
+# ponytail: no C compiler in this image, so cgo is off and a package that
+# imports "C" cannot build. Add build-essential if that ever blocks a real
+# test run; it is ~200MB for a case that has not come up.
+COPY --from=docker.io/library/golang:1.25 /usr/local/go /usr/local/go
+ENV PATH=/usr/local/go/bin:$PATH
+
 # Python tools
 # yq (kislyuk) wraps the jq installed above and takes jq filter syntax — not
 # the Go mikefarah/yq, whose expression language differs.

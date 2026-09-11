@@ -546,6 +546,8 @@ Hard-won, and referenced by number from `sandbox.sh` and
 22. A policy endpoint needs both `protocol: rest` and `enforcement: enforce` for CONNECT to work. Omitting them (e.g. for intended L4-only passthrough) forwards an absolute-URI `GET` to that host:port but returns 403 on `CONNECT` to the same host:port. Match every working endpoint in `policies/` — both fields are always present together.
 23. The proxy resets any request whose path contains `%2f` or `%2F`, so **no scoped npm package can be installed from inside a sandbox**. Measured against `registry.npmjs.org` with the `npm-readonly` block in force: `/express` → 200, `/@openai/codex` → 200, `/@openai%2fcodex` → connection reset (curl exit 56, `%{http_code}` 000). npm always encodes the scope separator, so `npm install @scope/pkg` fails with `ECONNRESET ... socket hang up` and reads as a flaky network. Every scoped tool has to be baked into the Containerfile. The image build runs on the host and is not subject to this.
 
+24. **Go resolves modules through the public proxy only.** The `golang-readonly` block reaches `proxy.golang.org` and `sum.golang.org`, nothing else, so a `go.mod` that needs a private module or a run with `GOPROXY=direct` fails on the VCS fetch — GitHub is not in any policy. Vendor the dependency on the host, or add the host it fetches from. The toolchain itself is baked (`COPY --from=golang`), with no C compiler beside it: cgo is off, and a package importing `"C"` cannot build in here.
+
 ## Other gotchas
 
 - **`yq` in the image is the kislyuk build (pip), not mikefarah/yq (Go).**
