@@ -1232,11 +1232,12 @@ upload_config() {
         fi
     fi
 
-    # Codex config, work profile only. `personal` and `home` reach no OpenAI
+    # Codex config, plugins, and skills, work profile only. `personal` and `home` reach no OpenAI
     # host at all (gotcha 19), so Codex could neither sign in nor talk to a
     # provider there, and hooks, credentials and a rendered config would all be
-    # dead weight. Three named files plus a generated config.toml, never a
-    # mirror of ~/.codex/: sessions/, history.jsonl and the state sqlites are
+    # dead weight. Runtime state stays filtered below; config, plugins, and
+    # skills come from the host. Never a mirror of ~/.codex/: sessions/,
+    # history.jsonl and the state sqlites are
     # transcripts of every Codex conversation on the host across all projects,
     # and shipping those into a work sandbox pushes personal content in exactly
     # the direction the profile split exists to stop.
@@ -1278,6 +1279,16 @@ upload_config() {
         render_codex_config "${HOME}/.codex/config.toml" "$OTEL_URL" \
             > "${CODEX_TMP}/.codex/config.toml"
         codex_shipped=1
+
+        # Resolve symlinks so links into a host checkout remain usable in the
+        # sandbox instead of pointing back at an unavailable host path.
+        for codex_dir in plugins skills; do
+            if [[ -d "${HOME}/.codex/${codex_dir}" ]]; then
+                rsync -rL "${HOME}/.codex/${codex_dir}/" \
+                    "${CODEX_TMP}/.codex/${codex_dir}/"
+                codex_shipped=1
+            fi
+        done
 
         if (( codex_shipped )); then
             run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
