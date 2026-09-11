@@ -120,10 +120,10 @@ grep -q -- '--dangerously-bypass-hook-trust' "$W" \
 # --- default harness precedence ---
 #
 # The rule the wrapper must implement, in order: one live dtach socket wins,
-# then whatever ran here last, then the fallback. Nothing profile-based — the
-# work profile carries both agents, so the profile cannot say which one the
-# human wants. Exercised for real: the helpers are lifted out of the wrapper
-# and driven against actual AF_UNIX sockets in a scratch dir.
+# then whatever ran here last, then the work profile (codex), then the
+# fallback. The profile sits last because work carries both agents — it is a
+# tiebreak, not a verdict. Exercised for real: the helpers are lifted out of
+# the wrapper and driven against actual AF_UNIX sockets in a scratch dir.
 HELPERS="${TMP}/helpers.sh"
 sed -n '/^default_harness()/,/^}/p' "$W" > "$HELPERS"
 grep -q 'default_harness' "$HELPERS" \
@@ -156,6 +156,8 @@ check "the remembered harness wins over the fallback" "codex remembered" \
 mksock claude
 check "a live socket beats the remembered harness" "claude session running" \
     "$(HARNESS_DEFAULT=codex picks)"
+check "a live socket beats the work profile" "claude session running" \
+    "$(SANDBOX_PROFILE=work HARNESS_DEFAULT='' picks)"
 
 mksock codex
 check "two live sockets are not a signal, so the remembered harness decides" \
@@ -163,12 +165,16 @@ check "two live sockets are not a signal, so the remembered harness decides" \
 
 rm -f "${SOCKDIR}/.dtach-claude" "${SOCKDIR}/.dtach-codex"
 
-# The profile must not reach the default. A stray $SANDBOX_PROFILE has to
-# change nothing.
-check "the profile does not decide" "claude default" \
-    "$(SANDBOX_PROFILE=codex HARNESS_DEFAULT='' picks)"
-grep -q 'SANDBOX_PROFILE' <(sed -n '/^default_harness()/,/^}/p' "$W") \
-    && { echo "FAIL: default_harness still reads the profile" >&2; fail=1; }
+# The work profile decides only when nothing else has: a live socket and the
+# remembered harness both outrank it, and no other profile changes anything.
+check "work with nothing remembered picks codex" "codex work profile" \
+    "$(SANDBOX_PROFILE=work HARNESS_DEFAULT='' picks)"
+check "the remembered harness beats the work profile" "claude remembered" \
+    "$(SANDBOX_PROFILE=work HARNESS_DEFAULT=claude picks)"
+check "a non-work profile still falls back" "claude default" \
+    "$(SANDBOX_PROFILE=personal HARNESS_DEFAULT='' picks)"
+check "an unset profile still falls back" "claude default" \
+    "$(HARNESS_DEFAULT='' picks)"
 
 if [[ $fail -eq 0 ]]; then
     echo "all connect-harness checks passed"

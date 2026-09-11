@@ -133,7 +133,7 @@ callers get the policy by inheritance, not by resolving to a wrapper.
 `connect_sandbox()` execs the wrapper by absolute path (`sandbox.sh:251`). It
 re-sources `/sandbox/.env` because a shell that started before a
 `sandbox.sh --refresh` holds a stale snapshot, and because it needs
-`$SANDBOX_PROFILE` for its own model branching. Then it runs
+`$SANDBOX_PROFILE` for its own model and default-harness branching. Then it runs
 `validate-profile.sh`.
 
 It sources no telemetry config. There is nothing left to source: the policy is
