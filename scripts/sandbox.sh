@@ -887,10 +887,12 @@ codex_state_filter() {
 }
 
 # Render the config.toml a work-profile Codex sandbox should get: the host's
-# `model =` line, if it pinned one, plus a freshly-generated `[otel]` table
-# pointed at *this* sandbox's own collector. Never the host's own file — see
-# gotcha 21 for why (host-only MCP/sandbox_permissions entries, and an
-# `[otel]` table pointed at the host's own, unreachable collector).
+# own top-level choices (`model`, `model_reasoning_effort`, `status_line*`)
+# and its `[tui]` and `[features]` tables, if it set any, plus a
+# freshly-generated `[otel]` table pointed at *this* sandbox's own collector.
+# Never the host's own file — see gotcha 21 for why (host-only
+# MCP/sandbox_permissions entries, and an `[otel]` table pointed at the host's
+# own, unreachable collector).
 #
 # `protocol = "binary"` is the OTLP-over-HTTP-protobuf equivalent of this
 # sandbox's OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf; confirmed against a
@@ -913,7 +915,23 @@ render_codex_config() {
     environment_re='^[[:space:]]*environment[[:space:]]*=[[:space:]]*"([^"]*)"'
     log_prompt_re='^[[:space:]]*log_user_prompt[[:space:]]*=[[:space:]]*(true|false)[[:space:]]*$'
     if [[ -f "$host_config" ]]; then
-        grep -E '^model[[:space:]]*=' "$host_config" | head -1
+        # Two allowlists, one pass. Before the first table header the host's
+        # top-level keys are filtered by name; from the first header on, a
+        # table is copied whole or dropped whole. Order is the host's, so the
+        # output is valid TOML: loose keys first, kept tables after.
+        #
+        # ponytail: a bare-name match on the header, so a quoted `["tui"]`
+        # reads as a dropped table. Codex writes headers bare. The top-level
+        # filter is per line, so a multi-line array up there arrives
+        # truncated; inside a kept table everything copies verbatim.
+        awk '
+            /^[[:space:]]*\[/ {
+                in_table = 1
+                keep = ($0 ~ /^[[:space:]]*\[(tui|features)[.\]]/)
+            }
+            in_table { if (keep) print; next }
+            /^(model|model_reasoning_effort|status_line|status_line_use_colors)[[:space:]]*=/
+        ' "$host_config"
         # Preserve the safe, host-independent OTEL settings. The rest of the
         # host config is intentionally not copied: it may contain host-only
         # endpoints, MCP commands, permissions, and hooks.
