@@ -501,15 +501,15 @@ generate_repo_context() {
 # and every scode invocation demand one by name, because the profile decides
 # which credentials leave the host, and a wrong guess there is silent.
 valid_profile() {
-    [[ "$1" == work || "$1" == personal || "$1" == home || "$1" == codex ]]
+    [[ "$1" == work || "$1" == personal || "$1" == home ]]
 }
 
-# Profiles that carry no work credentials. `home` is `personal` plus
-# Prometheus and Loki reads, and `codex` is `home` with OpenAI in place of
-# Anthropic — all three differences live entirely in the policy, so every
-# credential, env var, and system-prompt decision treats the three alike.
+# Profiles that carry no work credentials. `home` is `personal` plus the
+# Prometheus and Loki reads, and that difference lives entirely in the policy,
+# so every credential, env var, and system-prompt decision treats the two
+# alike. Which agent runs is `--harness`, not a profile — see valid_harness().
 personal_profile() {
-    [[ "$1" == personal || "$1" == home || "$1" == codex ]]
+    [[ "$1" == personal || "$1" == home ]]
 }
 
 # ---------------------------------------------------------------------------

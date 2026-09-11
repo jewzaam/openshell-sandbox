@@ -71,9 +71,9 @@ sandbox.sh literals + assembled OTEL identity ────┴──▶ /sandbox/
 | `config/site.env` | `OTEL_EXPORTER_OTLP_ENDPOINT` (from `OTEL_URL`), the Prometheus and Loki URLs | `sandbox.sh:1710-1715` |
 | Computed on the host | `SANDBOX_*`, `CLAUDE_DASHBOARD_HOST`, OTLP protocol, `OTEL_RESOURCE_ATTRIBUTES` | `sandbox.sh:1704-1785` |
 
-`ACTIVE_VARS` is profile-dependent (`sandbox.sh:1651-1656`): `personal`, `home`
-and `codex` get `ANTHROPIC_VARS + CLAUDE_VARS`; `work` gets `ALL_VARS`, which
-adds Vertex and Jira. Capture is conditional on the host actually exporting the
+`ACTIVE_VARS` is profile-dependent (`sandbox.sh:1651-1656`): `personal` and
+`home` get `ANTHROPIC_VARS + CLAUDE_VARS`; `work` gets `ALL_VARS`, which adds
+Vertex and Jira. Capture is conditional on the host actually exporting the
 variable.
 
 **Nothing telemetry-related is captured** (`sandbox.sh:121`). There is no
@@ -133,7 +133,7 @@ callers get the policy by inheritance, not by resolving to a wrapper.
 `connect_sandbox()` execs the wrapper by absolute path (`sandbox.sh:251`). It
 re-sources `/sandbox/.env` because a shell that started before a
 `sandbox.sh --refresh` holds a stale snapshot, and because it needs
-`$SANDBOX_PROFILE` for its own model and codex branching. Then it runs
+`$SANDBOX_PROFILE` for its own model branching. Then it runs
 `validate-profile.sh`.
 
 It sources no telemetry config. There is nothing left to source: the policy is

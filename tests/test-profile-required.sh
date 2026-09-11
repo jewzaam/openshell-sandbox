@@ -5,10 +5,10 @@
 # command line. The profile decides which credentials leave the host, so a
 # forgotten --profile must stop the command, not pick work and carry on.
 #
-# Also pins the four names (work, personal, home, codex) to the four policy
-# files, the codex/home Anthropic-for-OpenAI swap in both directions, and the
-# split system prompt: the Jira section lives in the work-only fragment, so a
-# personal, home or codex sandbox cannot inherit it by accident.
+# Also pins the three names (work, personal, home) to the three policy files,
+# work's OpenAI access in both directions, and the split system prompt: the
+# Jira section lives in the work-only fragment, so a personal or home sandbox
+# cannot inherit it by accident.
 #
 # Runs against a scratch HOME with --dryrun, so no openshell calls.
 #
@@ -93,7 +93,7 @@ refuses "scode reopening a sandbox with no --profile" "--profile is required" \
     bash "$SC" "$EXIST"
 
 # --- one profile name, one policy file ---
-for p in work personal home codex; do
+for p in work personal home; do
     [[ -f "${REPO_ROOT}/policies/${p}.yaml" ]] \
         || { echo "FAIL: no policies/${p}.yaml for profile ${p}" >&2; fail=1; }
 done
@@ -114,32 +114,18 @@ if command -v yq >/dev/null 2>&1; then
     [[ -z "$extra" ]] \
         || { echo "FAIL: home policy has blocks personal does not: ${extra}" >&2; fail=1; }
 
-    # --- codex is home with the agent swapped, and the swap goes both ways ---
-    # A codex policy that still reaches Anthropic is a home policy with an
-    # extra CLI in it, and a running session could not tell you which.
-    hosts codex | grep -q 'anthropic\.com' \
-        && { echo "FAIL: codex policy still reaches Anthropic" >&2; fail=1; }
+    # --- work is the only profile that runs Codex, asserted both ways ---
     # work carries openai-api *alongside* vertex-ai-inference rather than
-    # instead of it: a work sandbox runs both agents, so Codex must reach
-    # OpenAI there too. personal and home stay off it.
+    # instead of it: a work sandbox runs both agents. personal and home stay
+    # off it, so a credential-less sandbox cannot quietly reach OpenAI.
     for want in chatgpt.com api.openai.com auth.openai.com; do
-        for profile in codex work; do
-            hosts "$profile" | grep -qx "$want" \
-                || { echo "FAIL: ${profile} policy is missing ${want}" >&2; fail=1; }
-        done
+        hosts work | grep -qx "$want" \
+            || { echo "FAIL: work policy is missing ${want}" >&2; fail=1; }
         for profile in home personal; do
             hosts "$profile" | grep -qx "$want" \
                 && { echo "FAIL: ${profile} policy reaches ${want}" >&2; fail=1; }
         done
     done
-    # Same containment rule home gets against personal: openai-api replaces
-    # anthropic-api and nothing else is added.
-    extra="$(comm -23 <(blocks codex) <(blocks home) | grep -vx openai-api || true)"
-    [[ -z "$extra" ]] \
-        || { echo "FAIL: codex policy has blocks home does not: ${extra}" >&2; fail=1; }
-    missing="$(comm -13 <(blocks codex) <(blocks home) | grep -vx anthropic-api || true)"
-    [[ -z "$missing" ]] \
-        || { echo "FAIL: codex policy dropped blocks home has: ${missing}" >&2; fail=1; }
 else
     echo "warning: yq not installed, skipping policy content checks" >&2
 fi
@@ -153,10 +139,10 @@ grep -q '^## Jira$' "${FRAG}/work.md" \
 grep -q '^## Jira$' "$BASE" \
     && { echo "FAIL: the Jira section is back in the base prompt every profile gets" >&2; fail=1; }
 
-# Reading telemetry back is work/home/codex only. The base is what personal
-# gets verbatim, and personal is push-only — a prompt that tells it to query
+# Reading telemetry back is work/home only. The base is what personal gets
+# verbatim, and personal is push-only — a prompt that tells it to query
 # Prometheus produces a session arguing with a 403.
-for p in work home codex; do
+for p in work home; do
     grep -q '^## Reading telemetry back$' "${FRAG}/${p}.md" \
         || { echo "FAIL: ${p}.md has no telemetry-read section" >&2; fail=1; }
 done
@@ -165,20 +151,19 @@ done
 grep -q 'prometheus-read\|/api/v1/query' "$BASE" \
     && { echo "FAIL: the base prompt tells every profile how to query telemetry" >&2; fail=1; }
 
-# Three copies of the same prose by choice — an include mechanism for one
-# shared section is not worth it. This is what keeps them one section. The
-# section is last in all three files, so tail-from-the-heading is the whole of
-# it; codex.md's own section goes BEFORE it for that reason.
+# Two copies of the same prose by choice — an include mechanism for one shared
+# section is not worth it. This is what keeps them one section. The section is
+# last in both files, so tail-from-the-heading is the whole of it; work.md's own
+# Codex section goes BEFORE it for that reason.
 sec() { sed -n '/^## Reading telemetry back$/,$p' "$1"; }
-for p in home codex; do
-    diff <(sec "${FRAG}/work.md") <(sec "${FRAG}/${p}.md") >/dev/null \
-        || { echo "FAIL: work.md and ${p}.md telemetry sections have drifted apart" >&2; fail=1; }
-done
+diff <(sec "${FRAG}/work.md") <(sec "${FRAG}/home.md") >/dev/null \
+    || { echo "FAIL: work.md and home.md telemetry sections have drifted apart" >&2; fail=1; }
 
-# The base prompt names Claude Code and its permission flag; a codex sandbox
-# has neither. The fragment is what corrects the record, so it has to say so.
-grep -q '^## This is a Codex sandbox$' "${FRAG}/codex.md" \
-    || { echo "FAIL: codex.md does not tell the session it is not Claude Code" >&2; fail=1; }
+# Codex runs on work, and only because the sandbox writes a feature flag the
+# upstream default leaves off. If the prompt stops saying so, sessions fall
+# back to assuming request_user_input is Plan-only and never call it.
+grep -q 'default_mode_request_user_input' "${FRAG}/work.md" \
+    || { echo "FAIL: work.md does not tell Codex request_user_input works in Default mode" >&2; fail=1; }
 
 [[ $fail -eq 0 ]] && echo "all profile-required checks passed"
 exit $fail

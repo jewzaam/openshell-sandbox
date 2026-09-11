@@ -46,18 +46,16 @@ net_check() {
 
 PROFILE="${SANDBOX_PROFILE:-work}"
 
-# personal, home and codex carry no work credentials; home is personal plus the
-# Prometheus and Loki reads checked below, and codex is home with OpenAI in
-# place of Anthropic. Every other expectation is shared, so the three are one
-# case here.
-personal_profile() { [[ "$PROFILE" == personal || "$PROFILE" == home || "$PROFILE" == codex ]]; }
+# personal and home carry no work credentials; home is personal plus the
+# Prometheus and Loki reads checked below. Every other expectation is shared,
+# so the two are one case here.
+personal_profile() { [[ "$PROFILE" == personal || "$PROFILE" == home ]]; }
 
-# The one profile whose agent is not Claude. Separate from the above because it
-# answers a different question: which API this sandbox is supposed to reach.
-codex_profile() { [[ "$PROFILE" == codex ]]; }
-# Profiles that may reach OpenAI. The codex profile swaps Anthropic out for it;
-# work carries both, because a work sandbox runs both agents.
-openai_profile() { [[ "$PROFILE" == codex || "$PROFILE" == work ]]; }
+# Profiles that may reach OpenAI. Only work, which is the only profile that
+# runs Codex. Kept as a named predicate because it answers a different question
+# from personal_profile(): which API this sandbox is supposed to reach, not
+# which credentials it carries.
+openai_profile() { [[ "$PROFILE" == work ]]; }
 
 if personal_profile; then
     C_PROFILE="$LIGHT_PURPLE"
@@ -66,31 +64,7 @@ else
 fi
 
 # --- Auth ---
-if codex_profile; then
-    # Codex writes $CODEX_HOME/auth.json for both sign-in methods — ChatGPT
-    # OAuth and `--with-api-key` alike — so the file is the whole test. Nothing
-    # uploads it from the host and nothing preserves it across --recreate, so
-    # "unset" here is the expected state of a fresh sandbox and the prompt to
-    # run `codex login --device-auth`.
-    if isset OPENAI_API_KEY; then
-        check "codex auth (API key)" "set" "set"
-    elif [[ -f /sandbox/.codex/auth.json ]]; then
-        check "codex auth (auth.json)" "set" "set"
-    else
-        check "codex auth (run codex login)" "set" "unset"
-    fi
-
-    isset ANTHROPIC_API_KEY && check "ANTHROPIC_API_KEY" "unset" "set" || check "ANTHROPIC_API_KEY" "unset" "unset"
-
-    leaked=$(env | grep -iE "^(GOOGLE|CLOUDSDK|CLOUD_ML|VERTEX|ANTHROPIC_VERTEX)_" | cut -d= -f1) || true
-    if [[ -n "$leaked" ]]; then
-        for var in $leaked; do
-            check "$var" "unset" "set"
-        done
-    else
-        check "Google/Vertex vars" "unset" "unset"
-    fi
-elif personal_profile; then
+if personal_profile; then
     has_oauth=$([[ -f /sandbox/.claude/.credentials.json ]] && echo "yes" || echo "no")
     if isset ANTHROPIC_API_KEY; then
         check "personal auth (API key)" "set" "set"
@@ -112,6 +86,28 @@ else
     isset CLAUDE_CODE_USE_VERTEX && check "CLAUDE_CODE_USE_VERTEX" "set" "set" || check "CLAUDE_CODE_USE_VERTEX" "set" "unset"
     isset ANTHROPIC_VERTEX_PROJECT_ID && check "ANTHROPIC_VERTEX_PROJECT_ID" "set" "set" || check "ANTHROPIC_VERTEX_PROJECT_ID" "set" "unset"
     isset ANTHROPIC_API_KEY && check "ANTHROPIC_API_KEY" "unset" "set" || check "ANTHROPIC_API_KEY" "unset" "unset"
+
+    # Codex runs on work via --harness codex. It writes $CODEX_HOME/auth.json
+    # for both sign-in methods — ChatGPT OAuth and `--with-api-key` alike — so
+    # the file is the whole test. upload_config() ships the host's copy, so
+    # unlike the other credentials here this one can also be absent simply
+    # because the host has never signed in.
+    if isset OPENAI_API_KEY; then
+        check "codex auth (API key)" "set" "set"
+    elif [[ -f /sandbox/.codex/auth.json ]]; then
+        check "codex auth (auth.json)" "set" "set"
+    else
+        check "codex auth (run codex login)" "set" "unset"
+    fi
+
+    # The flag that makes request_user_input usable outside Plan mode. Without
+    # it a skill can ask a question only in a mode that cannot run anything.
+    if grep -q '^default_mode_request_user_input[[:space:]]*=[[:space:]]*true' \
+           /sandbox/.codex/config.toml 2>/dev/null; then
+        check "codex request_user_input (Default mode)" "enabled" "enabled"
+    else
+        check "codex request_user_input (Default mode)" "enabled" "disabled"
+    fi
 fi
 
 # --- Jira ---
@@ -145,13 +141,11 @@ isset SANDBOX_PROFILE && check "SANDBOX_PROFILE (OTEL tag)" "set" "set" || check
 
 # --- Network ---
 if command -v curl &>/dev/null; then
-    # The swap is asserted in both directions. A codex sandbox that can still
-    # reach Anthropic is a home sandbox with an extra CLI in it, and nothing in
-    # a running session would say which agent it was talking to.
+    # work reaches Anthropic through Vertex, never api.anthropic.com directly,
+    # so the direct host is blocked there and reachable only where Claude signs
+    # in with its own credentials.
     actual=$(net_check https://api.anthropic.com)
-    if codex_profile; then
-        check "api.anthropic.com" "blocked" "$actual"
-    elif personal_profile; then
+    if personal_profile; then
         check "api.anthropic.com" "reachable" "$actual"
     else
         check "api.anthropic.com" "blocked" "$actual"

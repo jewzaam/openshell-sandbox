@@ -2,7 +2,7 @@
 
 OpenShell sandbox configuration for running Claude Code in auto mode inside
 rootless Podman containers. Shell scripts, YAML policies, and a Containerfile —
-not a Python project. Profiles: `work`, `personal`, `home`, and `codex`; there
+not a Python project. Profiles: `work`, `personal`, and `home`; there
 is no default. `research` and `fetch-service` are policies only —
 `--policy research` and `sandbox.sh --fetch-service`, never `--profile`.
 
@@ -32,7 +32,7 @@ is no default. `research` and `fetch-service` are policies only —
 
 1. **The sandbox is the security boundary.**
    `--dangerously-skip-permissions` is intentional, as is Codex's
-   `--dangerously-bypass-approvals-and-sandbox` on the `codex` profile.
+   `--dangerously-bypass-approvals-and-sandbox` under `--harness codex`.
    Network policy (L4/L7), Landlock filesystem, and process isolation replace
    the agent's own permission system. Do not "fix" either flag.
 2. **Never hand `policies/*.yaml` to `openshell` directly.** They are templates.
@@ -116,7 +116,7 @@ is no default. `research` and `fetch-service` are policies only —
     `validate-profile.sh` asserts the asymmetry. `home` is the variant that
     may read them back — otherwise identical to personal, and every
     credential, env, and prompt decision treats the two as one
-    (`personal_profile()` in `lib.sh`, which also covers `codex`). Reaching
+    (`personal_profile()` in `lib.sh`). Reaching
     for `== "personal"` instead silently gives home a work sandbox's
     credentials.
 11. **No repos are baked into the image.** `knowledgebase` and `standards` are
@@ -199,11 +199,11 @@ is no default. `research` and `fetch-service` are policies only —
     to query Prometheus produces a session arguing with a 403). The base
     mentions OTEL egress and says outright that silence here means no
     read access, so a session does not infer capability from the gap.
-    `work.md`, `home.md` and `codex.md` therefore carry an identical
-    `## Reading telemetry back` section — three copies of fifteen lines of
+    `work.md` and `home.md` therefore carry an identical
+    `## Reading telemetry back` section — two copies of fifteen lines of
     prose, cheaper than a second include mechanism in `upload_config()`. It is
-    last in all three files, because the test compares them by tailing from
-    the heading; `codex.md`'s own section goes before it for that reason.
+    last in both files, because the test compares them by tailing from the
+    heading; `work.md`'s own Codex section goes before it for that reason.
     `tests/test-profile-required.sh` fails if either section returns to the
     base, and diffs the fragments so they cannot drift apart.
 
@@ -219,25 +219,24 @@ is no default. `research` and `fetch-service` are policies only —
     `tests/test-scode-naming.sh` needs `GIT_CONFIG_GLOBAL=/dev/null` for the
     same reason every other committing test does.
 
-19. **The `codex` profile swaps the agent, and the swap has to go both ways.**
-    `policies/codex.yaml` is `home.yaml` with `anthropic-api` replaced by
-    `openai-api` (`chatgpt.com`, `api.openai.com`, `auth.openai.com` — the
-    provider on a ChatGPT sign-in, the provider on an API key, and the OAuth
-    issuer; each missing host breaks a different operation as an unexplained
-    403). Leaving Anthropic reachable "so Claude still works there" is the
-    tempting change and the wrong one: that is a `home` sandbox with an extra
-    CLI in it, and nothing in a running session says which agent it is talking
-    to. `validate-profile.sh` and `tests/test-profile-required.sh` both assert
-    the swap in both directions.
-    Three things it deliberately does **not** do, all of which look like
-    oversights:
-    - **No credential preservation.** Codex conversation state is preserved by
-      `download_codex_state()` and restored during `--recreate`, but
-      `/sandbox/.codex/auth.json` is deliberately not. On `work` the host
-      ships its current auth file, so preserving the sandbox copy would let a
-      stale key beat a rotated one. The codex profile therefore signs in on a
-      fresh sandbox. The browser flow binds `127.0.0.1:1455`, so device code is
-      not a preference — it is the only flow that can complete in here.
+19. **Codex runs on `work`, and there is no `codex` profile.** There was one —
+    `home.yaml` with `anthropic-api` swapped for `openai-api` — and it was
+    removed because it split "which agent" across two mechanisms. `--harness`
+    (gotcha 22) is now the only one. A profile decides which credentials leave
+    the host; the harness decides which agent spends them. Do not reintroduce a
+    profile per agent: `work` already carries `openai-api` alongside
+    `vertex-ai-inference` precisely so one sandbox runs both.
+    Three things the Codex path deliberately does **not** do, all of which look
+    like oversights:
+    - **`auth.json` is uploaded but never preserved.** `upload_config()` ships
+      the host's copy; `download_codex_state()` (gotcha 23) deliberately does
+      not carry it back, because a preserved copy would let a stale key beat a
+      rotated one. Claude's OAuth survives only because
+      `download_claude_state()` explicitly carries it. On a host that has never
+      signed in, the sandbox is signed out and `validate-profile.sh` reports it
+      as such; the browser flow binds `127.0.0.1:1455`, so `codex login
+      --device-auth` is not a preference but the only flow that completes in
+      here.
     - **No login detection in the wrapper.** Codex already does it: `run_main`
       (`tui/src/lib.rs`) calls `should_show_onboarding()`, which returns true
       on `LoginStatus::NotAuthenticated`, and the auth step it then shows
@@ -253,10 +252,9 @@ is no default. `research` and `fetch-service` are policies only —
       `harness-wrapper.sh` symlinks `$CODEX_HOME/AGENTS.md` at it on every
       launch — that path is loaded unconditionally regardless of cwd
       (`codex-home/src/instructions/mod.rs`), and relinking each time is what
-      keeps it correct across `--refresh`. The symlink is still the right
-      mechanism because the target is repo content, not host config.
-      A `.codex/` directory upload is safe (gotcha 20); the mechanism here is
-      the symlink because the target is repo content, not host config.
+      keeps it correct across `--refresh`. A `.codex/` directory upload is safe
+      (gotcha 20); the mechanism here is the symlink because the target is repo
+      content, not host config.
 
 20. **`openshell sandbox upload` merges; it does not clobber.** The pre-delete
     that gotcha 16 describes belongs to `upload_repo()`, which `rm -rf`s the
@@ -267,9 +265,11 @@ is no default. `research` and `fetch-service` are policies only —
     `.config/git/ignore` and `.config/gws` coexist despite both uploading a
     `.config` directory, and it is what makes the Codex upload below safe.
 
-21. **Codex telemetry config uploads on every profile: three named files plus a generated
-    `config.toml`.** `upload_config()` ships `hooks.json` and `observe-hook.py`
-    on every profile, and `auth.json` only when `! personal_profile`.
+21. **Codex config uploads on `work` only: three named files plus a generated
+    `config.toml`.** `upload_config()` ships `hooks.json`, `observe-hook.py`
+    and `auth.json` together, all under one `! personal_profile` gate —
+    `personal` and `home` reach no OpenAI host at all (gotcha 19), so Codex
+    cannot run there and the files would be dead weight.
     Never a mirror of `~/.codex/`: `sessions/`, `history.jsonl` and the
     `*_N.sqlite` files are transcripts of every Codex conversation on the host
     across every project, and shipping those into a work sandbox pushes
@@ -281,17 +281,22 @@ is no default. `research` and `fetch-service` are policies only —
     into the host-side sandbox directory for `--recreate`; by gotcha 20 they
     are merged back after generated config upload. `auth.json` remains
     excluded.
-    - **`auth.json` ships on work and not on codex.** It holds
+    - **`auth.json` ships on work only.** It holds
       `OPENAI_API_KEY`. Work sandboxes already carry work credentials (gws,
       Vertex, Jira), so one more is not a new class of thing, and signing in by
-      hand in every sandbox is friction. The `codex` profile keeps gotcha 19's
-      no-credential behaviour: it signs in inside.
-    - **`hooks.json` and `observe-hook.py` come from `$HOME/.codex/`.**
-      `CODEX_OTEL_SOURCE_DIR` can point elsewhere; the selected hook is accepted
-      only when it contains the current timestamp/resource-identity fields. This
-      prevents a stale host copy from silently producing token data without
-      session-state data. Hooks are uploaded on `codex` too; only `auth.json` is
-      work-only.
+      hand in every sandbox is friction. The credential-less profiles get
+      nothing here and could not run Codex signed out anyway.
+    - **`hooks.json` and `observe-hook.py` come from `$HOME/.codex/`, not
+      vendored here.** They are source-controlled in claude-otel-stack and the
+      user already copies them there, so reading them keeps one source of truth
+      and in-progress changes in another checkout cannot unexpectedly alter a
+      sandbox. `CODEX_OTEL_SOURCE_DIR` can point elsewhere; the selected hook
+      is accepted only when it contains the current timestamp/resource-identity
+      fields, which stops a stale host copy from silently producing token data
+      with no session-state data. A host without them ships no hooks, and the
+      sandbox reports no Codex state to the dashboard. They sit under the same
+      `! personal_profile` gate as `auth.json`: hooks for an agent that cannot
+      reach its provider report nothing.
     - **`config.toml` is generated, never the host's file.** The host's own
       file can carry MCP server commands and `sandbox_permissions` entries
       built around host paths, meaningless in here, and its `[otel]` table (if
@@ -338,12 +343,36 @@ is no default. `research` and `fetch-service` are policies only —
       from inside the sandbox survives a recreate the same way it always did,
       but so does a stale `$OTEL_URL` from before the collector moved. Only a
       sandbox with no prior `.codex/` state gets the freshly-computed one.
+    - **`[features] default_mode_request_user_input = true` is set here, and
+      the prompt says so.** Upstream, `request_user_input` is granted only in
+      Plan mode — and Plan mode cannot run anything, so a skill can ask a
+      structured question or do the work it asked about, never both. The flag
+      is what makes the tool usable at all, and it is written rather than
+      copied from the host so a machine that never enabled it still produces
+      sandboxes that behave identically. It is `Stage::UnderDevelopment`
+      upstream: settable only because Codex's `Features::apply_toml` resolves
+      any key without consulting `Stage`, and removable without notice. The
+      failure mode if it goes is mild — Codex logs `unknown feature key in
+      config` and continues, with questions reverting to Plan-only — which is
+      exactly why nothing will announce it. `config/sandbox-claude.d/work.md`
+      tells the session the tool is available, because a Codex session will
+      otherwise assume Plan-only and never call it; a session cannot infer the
+      grant from the flag. The two must move together, and
+      `tests/test-profile-required.sh` fails if the prompt stops saying it
+      while `tests/test-render-codex-config.sh` asserts the rendered table.
+      That test also pins `model =` above every `[table]` header: a bare key
+      after one belongs to that table, so the wrong order silently drops the
+      model *and* poisons `[features]`. The flag is injected into the host's
+      own `[features]` table when the copy-whole pass brought one across, and
+      only opens a header of its own when it did not: two `[features]` headers
+      in one file is a duplicate table, which fails config load outright rather
+      than degrading. Any host `default_mode_request_user_input` is dropped on
+      the way through for the same reason — one key, defined once, ours.
     - **`policies/work.yaml` carries `openai-api` alongside
       `vertex-ai-inference`**, not instead of it: a work sandbox runs both
-      agents. This is the one place the codex-profile swap rule (gotcha 19)
-      does not apply, and `bin/validate-profile.sh`'s `openai_profile()` plus
-      `tests/test-profile-required.sh` assert the membership for work, codex,
-      home and personal in both directions.
+      agents. `bin/validate-profile.sh`'s `openai_profile()` plus
+      `tests/test-profile-required.sh` assert the membership for work, home
+      and personal in both directions.
 
 22. **`--harness claude|codex` picks the agent, one dtach socket each.**
     Valid with `--create`, `--connect` and `--recreate`, and on `scode`.
@@ -409,9 +438,10 @@ is no default. `research` and `fetch-service` are policies only —
       hook to catch and only costs a prompt on the observe-hook that reports
       state to claude-dashboard. There is **no `--yolo`** in codex 0.152.0 —
       the long flags are the flags, and the test asserts it has not crept in.
-    - **The `AGENTS.md` symlink is keyed on the harness, not the profile.** Any
-      profile can run Codex, so gating it on `SANDBOX_PROFILE == codex` leaves
-      a work sandbox's Codex without the system prompt.
+    - **The `AGENTS.md` symlink is keyed on the harness, not the profile.**
+      There is no profile that means "Codex" (gotcha 19), so any profile test
+      here is the wrong question and leaves a work sandbox's Codex without the
+      system prompt.
 
 23. **Codex conversation history survives `--recreate`.**
     `download_codex_state()` / `upload_codex_state()` mirror the Claude pair.

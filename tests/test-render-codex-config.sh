@@ -124,6 +124,24 @@ echo "$OUT" | grep -q '^\[otel.metrics_exporter.otlp-http\]$' \
 [[ "$(echo "$OUT" | grep -cF 'protocol = "binary"')" -eq 2 ]] \
     || { echo "FAIL: both exporters do not set protocol to binary" >&2; fail=1; }
 
+# --- the feature flag that makes request_user_input usable ---
+# Without it the tool is Plan-mode-only, and Plan mode cannot run anything, so
+# a skill can ask a question or do the work but never both. Set here rather
+# than copied from the host so a machine that never enabled it still gets
+# sandboxes that behave the same.
+echo "$OUT" | grep -q '^\[features\]$' \
+    || { echo "FAIL: [features] table missing" >&2; fail=1; }
+echo "$OUT" | grep -qx 'default_mode_request_user_input = true' \
+    || { echo "FAIL: default_mode_request_user_input not enabled" >&2; fail=1; }
+
+# A bare key after a table header belongs to that table, so `model` has to come
+# before every `[...]` line or Codex loads a config with no model pinned and a
+# junk key inside [features].
+model_line=$(echo "$OUT" | grep -n '^model' | head -1 | cut -d: -f1)
+first_table=$(echo "$OUT" | grep -n '^\[' | head -1 | cut -d: -f1)
+[[ -n "$model_line" && -n "$first_table" && "$model_line" -lt "$first_table" ]] \
+    || { echo "FAIL: model line is not above the first table header" >&2; fail=1; }
+
 # Never a mirror: host-only MCP server commands and sandbox_permissions must
 # not appear in the rendered output.
 echo "$OUT" | grep -q "my-mcp-server" \
@@ -137,6 +155,8 @@ echo "$OUT_NO_HOST" | grep -q '^model' \
     && { echo "FAIL: model line appeared with no host config.toml" >&2; fail=1; }
 echo "$OUT_NO_HOST" | grep -qx "endpoint = \"${OTEL_URL}/v1/logs\"" \
     || { echo "FAIL: otel endpoint missing with no host config.toml" >&2; fail=1; }
+echo "$OUT_NO_HOST" | grep -qx 'default_mode_request_user_input = true' \
+    || { echo "FAIL: feature flag missing with no host config.toml" >&2; fail=1; }
 
 # --- host config.toml has no model line: same, no model line rendered ---
 NO_MODEL_CONFIG="${TMP}/no-model-config.toml"
