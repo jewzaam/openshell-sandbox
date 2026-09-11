@@ -297,12 +297,20 @@ is no default. `research` and `fetch-service` are policies only —
       built around host paths, meaningless in here, and its `[otel]` table (if
       any) points at the host's own collector — typically `localhost`,
       unreachable from in here. So `upload_config()` writes a fresh one
-      instead: the host's top-level `model =`, `model_reasoning_effort =`,
+      instead: the host's top-level `model =`, `model_context_window =`,
+      `model_auto_compact_token_limit =`,
+      `model_auto_compact_token_limit_scope =`, `model_reasoning_effort =`,
       `status_line =` and `status_line_use_colors =` lines plus its `[tui]`
       and `[features]` tables, if it has them (Codex has no per-profile
       default the way `harness-wrapper.sh` hardcodes one for Claude on
       personal/home, so leaving these off drops the host's choices
-      silently), plus a freshly-generated `[otel.exporter.otlp-http]` table
+      silently). The three window keys are on that list because Codex reads
+      them from config only — a host that opted its model up to the catalog's
+      `max_context_window` drops back to the catalog default in here if the
+      lines do not travel, and the auto-compact threshold goes with it: the
+      catalog pins `auto_compact_token_limit = null` on every shipped model
+      and derives the threshold from whatever window is in effect. Plus a
+      freshly-generated `[otel.exporter.otlp-http]` table
       pointed at `$OTEL_URL` (the same sandbox-correct address used for
       `OTEL_EXPORTER_OTLP_ENDPOINT`, gotcha 13) with `protocol = "binary"`
       (OTLP-over-HTTP-protobuf; `codex logout` rejects anything but `"binary"`
