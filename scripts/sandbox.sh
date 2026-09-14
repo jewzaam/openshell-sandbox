@@ -923,6 +923,64 @@ codex_state_filter() {
 # The metrics exporter uses the same OTLP HTTP endpoint so native Codex metrics
 # reach the collector alongside native Codex logs.
 #
+codex_marketplace_data() {
+    local mode="$1" config_path="$2" destination="${3:-}"
+    python3 - "$mode" "$config_path" "$destination" <<'PY'
+import json
+import pathlib
+import shutil
+import sys
+import tomllib
+
+mode, config_name, destination_name = sys.argv[1:]
+config_path = pathlib.Path(config_name)
+if not config_path.is_file():
+    raise SystemExit
+
+with config_path.open("rb") as stream:
+    config = tomllib.load(stream)
+
+destination_root = pathlib.Path(destination_name) if destination_name else None
+for name, marketplace in config.get("marketplaces", {}).items():
+    source_type = marketplace.get("source_type", "local")
+    source = marketplace.get("source", "")
+    cached = pathlib.Path.home() / ".codex" / ".tmp" / "marketplaces" / name
+    if source_type == "git":
+        copy_source = cached
+    else:
+        copy_source = pathlib.Path(source).expanduser()
+
+    if mode == "stage":
+        if not copy_source.is_dir():
+            print(f"Warning: Codex marketplace not found at {copy_source}; {name} will be unavailable", file=sys.stderr)
+            continue
+        shutil.copytree(
+            copy_source,
+            destination_root / name,
+            dirs_exist_ok=True,
+            symlinks=False,
+            ignore=shutil.ignore_patterns(".git"),
+        )
+        continue
+
+    if source_type == "local" or cached.is_dir():
+        source_type = "local"
+        source = f"/sandbox/.codex/.tmp/marketplaces/{name}"
+    print(f"[marketplaces.{json.dumps(name)}]")
+    print(f"source_type = {json.dumps(source_type)}")
+    print(f"source = {json.dumps(source)}")
+
+for name, plugin in config.get("plugins", {}).items():
+    if not isinstance(plugin, dict):
+        continue
+    print(f"[plugins.{json.dumps(name)}]")
+    for key, value in plugin.items():
+        if isinstance(value, (bool, int, float, str)):
+            rendered = json.dumps(value) if isinstance(value, str) else str(value).lower()
+            print(f"{key} = {rendered}")
+PY
+}
+
 # Split out so tests/test-render-codex-config.sh can drive it without a live
 # sandbox — same reason codex_state_filter() above is split out.
 render_codex_config() {
@@ -1002,6 +1060,7 @@ render_codex_config() {
     printf '[otel.metrics_exporter.otlp-http]\n'
     printf 'endpoint = "%s/v1/metrics"\n' "$otel_url"
     printf 'protocol = "binary"\n'
+    codex_marketplace_data render "$host_config"
 }
 
 # Return the local Codex telemetry files, or fail rather than silently shipping
@@ -1022,6 +1081,20 @@ codex_otel_source_dir() {
     # distinct status so callers can warn without confusing this with a stale
     # installation.
     return 2
+}
+
+upload_codex_marketplaces() {
+    local sandbox_target="$1"
+    local tmp
+    tmp="$(mktemp -d)"
+    mkdir -p "${tmp}/.codex"
+    codex_marketplace_data stage "${HOME}/.codex/config.toml" \
+        "${tmp}/.codex/.tmp/marketplaces"
+    render_codex_config "${HOME}/.codex/config.toml" "$OTEL_URL" \
+        > "${tmp}/.codex/config.toml"
+    run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+        "${tmp}/.codex" /sandbox
+    rm -rf "$tmp"
 }
 
 download_codex_state() {
@@ -1253,6 +1326,9 @@ upload_config() {
         CODEX_TMP="$(mktemp -d)"
         mkdir -p "${CODEX_TMP}/.codex"
         codex_shipped=0
+        codex_marketplace_data stage "${HOME}/.codex/config.toml" \
+            "${CODEX_TMP}/.codex/.tmp/marketplaces"
+        codex_shipped=1
         if CODEX_OTEL_SOURCE="$(codex_otel_source_dir)"; then
             cp "${CODEX_OTEL_SOURCE}/hooks.json" "${CODEX_TMP}/.codex/hooks.json"
             cp "${CODEX_OTEL_SOURCE}/observe-hook.py" "${CODEX_TMP}/.codex/observe-hook.py"
@@ -1983,8 +2059,14 @@ if [[ "$ENSURE_MODE" == true ]]; then
             fi
         fi
         start_error_sandbox "$OS_NAME" || exit 1
+        if [[ -z "$SANDBOX_PROFILE" && -f "${SANDBOX_DIR}/manifest.json" ]]; then
+            SANDBOX_PROFILE=$(jq -r '.profile // empty' "${SANDBOX_DIR}/manifest.json" 2>/dev/null || true)
+        fi
+        if ! personal_profile "$SANDBOX_PROFILE"; then
+            upload_codex_marketplaces "$OS_NAME"
+        fi
         if [[ "$NO_CONNECT" == true ]]; then
-            echo "Sandbox '${SANDBOX_NAME}' exists; not connecting (--no-connect used)." >&2
+            echo "Sandbox '${SANDBOX_NAME}' refreshed; not connecting (--no-connect used)." >&2
             exit 0
         else
             echo "Sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
