@@ -27,7 +27,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Lift the renderer out of sandbox.sh — sourcing the script would run it.
 HELPERS="${TMP}/helpers.sh"
-sed -n '/^render_codex_config()/,/^}/p' "$SANDBOX_SH" > "$HELPERS"
+sed -n '/^codex_marketplace_data()/,/^}/p;/^render_codex_config()/,/^}/p' "$SANDBOX_SH" > "$HELPERS"
 grep -q 'render_codex_config' "$HELPERS" \
     || { echo "FAIL: could not lift render_codex_config out of sandbox.sh" >&2; exit 1; }
 # shellcheck disable=SC1090
@@ -67,6 +67,20 @@ notifications = true
 
 [features]
 web_search_request = true
+
+[marketplaces.jewzaam-reviews-marketplace]
+source_type = "local"
+source = "/home/me/source/jewzaam-reviews"
+
+[marketplaces.remote-example]
+source_type = "git"
+source = "https://github.com/DietrichGebert/ponytail.git"
+
+[plugins."jewzaam-reviews@jewzaam-reviews-marketplace"]
+enabled = true
+
+[plugins."remote-plugin@remote-example"]
+enabled = false
 EOF
 
 OUT="$(render_codex_config "$HOST_CONFIG" "$OTEL_URL")"
@@ -119,6 +133,24 @@ echo "$OUT" | grep -qx 'protocol = "binary"' \
     || { echo "FAIL: protocol not set to binary (otlp-http/protobuf)" >&2; fail=1; }
 echo "$OUT" | grep -q '^\[otel.metrics_exporter.otlp-http\]$' \
     || { echo "FAIL: metrics exporter table missing" >&2; fail=1; }
+echo "$OUT" | grep -q '^\[marketplaces\."jewzaam-reviews-marketplace"\]$' \
+    || { echo "FAIL: jewzaam-reviews marketplace table missing" >&2; fail=1; }
+echo "$OUT" | grep -qx 'source_type = "local"' \
+    || { echo "FAIL: marketplace source type missing" >&2; fail=1; }
+echo "$OUT" | grep -qx 'source = "/sandbox/.codex/.tmp/marketplaces/jewzaam-reviews-marketplace"' \
+    || { echo "FAIL: marketplace source was not sandbox-local" >&2; fail=1; }
+echo "$OUT" | grep -q '^\[marketplaces\."remote-example"\]$' \
+    || { echo "FAIL: second marketplace table missing" >&2; fail=1; }
+echo "$OUT" | grep -qx 'source = "https://github.com/DietrichGebert/ponytail.git"' \
+    || { echo "FAIL: non-local marketplace source was altered" >&2; fail=1; }
+echo "$OUT" | grep -q '^\[plugins\."jewzaam-reviews@jewzaam-reviews-marketplace"\]$' \
+    || { echo "FAIL: jewzaam-reviews plugin table missing" >&2; fail=1; }
+echo "$OUT" | grep -qx 'enabled = true' \
+    || { echo "FAIL: jewzaam-reviews plugin was not enabled" >&2; fail=1; }
+echo "$OUT" | grep -q '^\[plugins\."remote-plugin@remote-example"\]$' \
+    || { echo "FAIL: second plugin table missing" >&2; fail=1; }
+echo "$OUT" | grep -qx 'enabled = false' \
+    || { echo "FAIL: second plugin setting was not preserved" >&2; fail=1; }
 [[ "$(echo "$OUT" | grep -cF "endpoint = \"${OTEL_URL}/v1/")" -eq 2 ]] \
     || { echo "FAIL: both exporters do not use the sandbox's own OTEL_URL" >&2; fail=1; }
 [[ "$(echo "$OUT" | grep -cF 'protocol = "binary"')" -eq 2 ]] \
@@ -148,6 +180,8 @@ echo "$OUT" | grep -q "my-mcp-server" \
     && { echo "FAIL: host MCP server entry leaked into rendered config" >&2; fail=1; }
 echo "$OUT" | grep -q "sandbox_permissions" \
     && { echo "FAIL: host sandbox_permissions leaked into rendered config" >&2; fail=1; }
+echo "$OUT" | grep -q '/home/me/source/jewzaam-reviews' \
+    && { echo "FAIL: host marketplace path leaked into rendered config" >&2; fail=1; }
 
 # --- host has no config.toml at all: otel still renders, no model line ---
 OUT_NO_HOST="$(render_codex_config "${TMP}/does-not-exist.toml" "$OTEL_URL")"
