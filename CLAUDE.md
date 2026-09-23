@@ -543,6 +543,16 @@ is no default. `research` and `fetch-service` are policies only —
   credential-less ones: `validate-profile.sh` cannot tell home from personal
   without it, and `sandbox.sh` folds it into `OTEL_RESOURCE_ATTRIBUTES` as
   `sandbox.profile`.
+- **`advisorModel` is derived in `harness-wrapper.sh`; do not move it into
+  `strip-settings.py`.** That file is the attractive wrong place because it
+  already drops `ANTHROPIC_DEFAULT_*`, but the host knows the profile and not
+  the model — the wrapper picks that — so deriving there puts the mapping in
+  two files with nothing checking them (gotcha 4). Nor is inheriting the
+  host's value enough: it can be *weaker*, not just stale, since a host on
+  haiku sets an advisor of sonnet and a sandbox pinned to opus would then
+  review itself with a smaller model. There is no `--advisor` flag (checked
+  against claude 2.1.269), so settings.json is the only way in.
+  `tests/test-advisor-model.sh`.
 - **`/sandbox/.env` is host knowledge; `config/bashrc` is container policy.**
   What only the host can know — credentials, collector address, which machine
   and sandbox this is, and the `OTEL_RESOURCE_ATTRIBUTES` assembled from them —
