@@ -29,6 +29,43 @@ HARNESS_PROMPT_TIMEOUT="${HARNESS_PROMPT_TIMEOUT:-5}"
 
 socket_for() { echo "/sandbox/.dtach-$1"; }
 
+# Advisor model: one class above whatever model the session runs with. Claude
+# Code has no --advisor flag (checked against 2.1.269), so settings.json is the
+# only non-interactive way to set it, and the host's own value is not it: the host
+# pins for its own reasons and a sandbox pinned to opus inheriting an advisor
+# chosen for a host running haiku gets a WEAKER reviewer than its own model.
+# Same reasoning strip-settings.py gives for dropping ANTHROPIC_DEFAULT_*.
+#
+# Takes the whole command line rather than a model name so the caller has no
+# parsing of its own to drift from this. Emits nothing when no --model is
+# there, which is what gates the write below: work profile, `dtach -a`
+# reattach, codex, and a hand-edited command without a model all leave the
+# setting alone instead of guessing.
+advisor_for() {
+    [[ "$1" =~ --model[[:space:]=]+([^[:space:]]+) ]] || return 0
+    case "${BASH_REMATCH[1]}" in
+        *haiku*)        echo sonnet ;;
+        *sonnet*)       echo opus ;;
+        *opus*|*fable*) echo fable ;;   # nothing above fable
+    esac
+}
+
+# Overridable so tests/test-advisor-model.sh can drive the write against a
+# scratch file, the way HARNESS_DEFAULT is overridden in the connect test.
+ADVISOR_SETTINGS="${ADVISOR_SETTINGS:-/sandbox/.claude/settings.json}"
+
+# Writes through a temp file in the same directory and only moves it over on a
+# clean jq exit: a settings.json truncated by a failed in-place edit is how a
+# sandbox comes up with no hooks and no permissions at all.
+apply_advisor() {
+    local advisor tmp
+    advisor="$(advisor_for "$1")"
+    [[ -n "$advisor" && -f "$ADVISOR_SETTINGS" ]] || return 0
+    tmp="${ADVISOR_SETTINGS}.tmp"
+    jq --arg a "$advisor" '.advisorModel = $a' "$ADVISOR_SETTINGS" > "$tmp" \
+        && mv "$tmp" "$ADVISOR_SETTINGS" || rm -f "$tmp"
+}
+
 # The remembered harness, passed in by connect_sandbox() out of the host's
 # manifest.json — the only store. It lives on the host, so it survives
 # --recreate (which deletes the remote sandbox, never ~/sandboxes/<name>) and
@@ -148,5 +185,9 @@ read -erp "> " -i "$cmd" user_cmd
 if [[ -z "$user_cmd" ]]; then
     exec bash
 fi
+
+# After the prompt, not before: the model that counts is the one in the command
+# about to run, including a --model the user just typed over the default.
+apply_advisor "$user_cmd"
 
 exec $user_cmd
