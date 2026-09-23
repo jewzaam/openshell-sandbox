@@ -5,7 +5,12 @@
 # should run with, in place. Called by sandbox.sh on the staged copy, never on
 # the host's own file.
 #
-# Usage: strip-settings.py <settings.json> <host-home> [profile]
+# Also runs on the staged copy of ~/.codex/hooks.json. That file has the same
+# top-level "hooks" shape, so strip_hooks() covers it unchanged; its
+# permissions and env passes find nothing and do nothing. Both harnesses then
+# declare hook retention exactly one way, which is the point.
+#
+# Usage: strip-settings.py <settings.json|hooks.json> <host-home> [profile]
 
 import json
 import re
@@ -110,7 +115,10 @@ def strip_hooks(settings):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: strip-settings.py <settings.json> <host-home> [profile]", file=sys.stderr)
+        print(
+            "Usage: strip-settings.py <settings.json|hooks.json> <host-home> [profile]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     path, host_home = sys.argv[1], sys.argv[2]

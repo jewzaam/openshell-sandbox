@@ -14,6 +14,10 @@
 # OTEL no-ops and the commit skill's attribution hook are both here as ordinary
 # marked hooks, and an unmarked no-op is checked to confirm it is dropped.
 #
+# The last case runs the script over a Codex hooks.json, which sandbox.sh also
+# strips. Same shape, same rule, and my-codex-stuff's PreToolUse guards are
+# unmarked on purpose -- a sandbox runs Codex with approvals bypassed.
+#
 # Run: tests/test-strip-settings.sh
 
 set -euo pipefail
@@ -133,6 +137,37 @@ echo '{"permissions": {"allow": ["Bash(ls)"]}}' > "$S"
 strip personal || { echo "FAIL: strip failed on settings.json with no env" >&2; fail=1; }
 [[ "$(get '.permissions.allow // "gone"')" == "gone" ]] \
     || { echo "FAIL: allow survived in the no-env case" >&2; fail=1; }
+
+# --- Codex hooks.json goes through the same script ---
+# Same top-level "hooks" shape, so strip_hooks() covers it. The OTEL hooks ask
+# to survive; my-codex-stuff's PreToolUse guards deliberately do not, because a
+# sandbox runs Codex with approvals bypassed on purpose.
+cat > "$S" << 'JSON'
+{
+  "description": "Codex hooks",
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "python3 /home/me/.codex/observe-hook.py  # KEEP: OTEL telemetry"}]}
+    ],
+    "PreToolUse": [
+      {"hooks": [{"type": "command", "command": "python3 /home/me/.codex/observe-hook.py  # KEEP: OTEL telemetry"}]},
+      {"hooks": [{"type": "command", "command": "python3 -m harness_guards.block_commands"}]},
+      {"hooks": [{"type": "command", "command": "python3 -m harness_guards.block_paths"}]}
+    ]
+  }
+}
+JSON
+strip work
+[[ "$(get '.hooks.SessionStart | length')" == "1" ]] \
+    || { echo "FAIL: codex SessionStart telemetry hook was stripped" >&2; fail=1; }
+[[ "$(get '.hooks.PreToolUse | length')" == "1" ]] \
+    || { echo "FAIL: codex PreToolUse should keep only the marked telemetry hook" >&2; fail=1; }
+[[ "$(get '.hooks.PreToolUse[0].hooks[0].command')" == "python3 /sandbox/.codex/observe-hook.py  # KEEP: OTEL telemetry" ]] \
+    || { echo "FAIL: kept the wrong codex PreToolUse hook, or path not rewritten" >&2; fail=1; }
+[[ "$(get '[.hooks[][].hooks[].command] | map(select(test("harness_guards"))) | length')" == "0" ]] \
+    || { echo "FAIL: a host guard hook reached the sandbox" >&2; fail=1; }
+[[ "$(get '.description')" == "Codex hooks" ]] \
+    || { echo "FAIL: a top-level key other than hooks was dropped" >&2; fail=1; }
 
 [[ $fail -eq 0 ]] && echo "all strip-settings checks passed"
 exit $fail

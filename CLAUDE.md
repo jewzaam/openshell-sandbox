@@ -96,8 +96,14 @@ is no default. `research` and `fetch-service` are policies only —
      like anything else. They exist because Claude Code emits no OTEL events
      for a hook type with no registered hook, so those entries are what trigger
      telemetry at all — an unmarked one is dropped, and sandbox telemetry stops
-     with it. `hooks.json` in `my-codex-stuff` is marked to match, though
-     nothing strips it: `upload_config()` copies it verbatim.
+     with it. `hooks.json` in `my-codex-stuff` goes through the same script and
+     the same rule: its OTEL entries are marked, and the PreToolUse guards it
+     also registers (`python3 -m harness_guards.block_commands`, and
+     `.block_paths`) are deliberately unmarked, so host command and path
+     restrictions stay on the host. Marking one would ship them into a sandbox
+     that runs Codex with approvals bypassed on purpose (gotcha 1) — and the
+     registration alone would not work anyway: `harness_guards` is a pip
+     dependency on the host, installed nowhere in here.
    - **A hook's script still has to be in the sandbox.** The marker keeps the
      registration, not the file. Anything under `~/.claude/skills` or
      `my-claude-stuff/scripts` already rides in, and the host-home rewrite
@@ -290,9 +296,11 @@ is no default. `research` and `fetch-service` are policies only —
       vendored here.** They are source-controlled in claude-otel-stack and the
       user already copies them there, so reading them keeps one source of truth
       and in-progress changes in another checkout cannot unexpectedly alter a
-      sandbox. `CODEX_OTEL_SOURCE_DIR` can point elsewhere; the selected hook
-      is accepted only when it contains the current timestamp/resource-identity
-      fields, which stops a stale host copy from silently producing token data
+      sandbox. `hooks.json` is stripped on the way through by
+      `strip-settings.py` (gotcha 7); `observe-hook.py` is the file that hook
+      keeps pointing at, so it is copied as-is. `CODEX_OTEL_SOURCE_DIR` can
+      point elsewhere; the selected hook is accepted only when it contains the
+      current timestamp/resource-identity fields, which stops a stale host copy from silently producing token data
       with no session-state data. A host without them ships no hooks, and the
       sandbox reports no Codex state to the dashboard. They sit under the same
       `! personal_profile` gate as `auth.json`: hooks for an agent that cannot
