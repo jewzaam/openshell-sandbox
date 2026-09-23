@@ -1323,6 +1323,10 @@ upload_config() {
     if ! personal_profile "$SANDBOX_PROFILE"; then
         # hooks.json + observe-hook.py come from ~/.codex so in-progress
         # changes in another checkout cannot unexpectedly change a sandbox.
+        # hooks.json is stripped on the way, not copied verbatim: it registers
+        # the host's PreToolUse guards alongside the OTEL hooks, and those
+        # guards have no business in a sandbox that runs Codex with approvals
+        # bypassed on purpose. Same `# KEEP` rule as settings.json.
         CODEX_TMP="$(mktemp -d)"
         mkdir -p "${CODEX_TMP}/.codex"
         codex_shipped=0
@@ -1331,6 +1335,8 @@ upload_config() {
         codex_shipped=1
         if CODEX_OTEL_SOURCE="$(codex_otel_source_dir)"; then
             cp "${CODEX_OTEL_SOURCE}/hooks.json" "${CODEX_TMP}/.codex/hooks.json"
+            python3 "${SCRIPT_DIR}/strip-settings.py" \
+                "${CODEX_TMP}/.codex/hooks.json" "${HOME}" "${SANDBOX_PROFILE}"
             cp "${CODEX_OTEL_SOURCE}/observe-hook.py" "${CODEX_TMP}/.codex/observe-hook.py"
             codex_shipped=1
         else
