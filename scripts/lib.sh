@@ -429,21 +429,26 @@ generate_repo_context() {
 
     # `gh pr view <branch>` resolves a branch name against the BASE repo only,
     # so a PR opened from a fork is invisible to it — "no pull requests found"
-    # even though the PR is open and its head ref has exactly that name. The
-    # number is already on disk: open-prs.json was written a few lines above
-    # and lists every open PR by head ref, forks included. Reading it costs
-    # nothing, where a second gh call would run for every repo on every upload.
+    # even though the PR is open and its head ref has exactly that name.
+    # `gh pr list --head` matches the head ref wherever it lives.
     #
-    # Only when gh gave a definitive answer (2) about a branch, and only when
-    # exactly one open PR claims that head ref — two forks can use the same
-    # branch name, and picking one of them would be a guess.
-    if [[ "${rc:-0}" == 2 && ! "$pr_arg" =~ ^[0-9]+$ && -f "$open_prs" ]]; then
+    # Deliberately NOT read out of open-prs.json, which holds the same numbers:
+    # that file is optional and debounced, and its own fetch fails on its own
+    # (`--json files` over a repo with many open PRs), so the PR would be
+    # unresolvable exactly when the list is broken. Measured on
+    # ansible/handbook: `pr view` answered, the bulk `pr list` did not.
+    #
+    # The cost is one extra call on a path that has already failed, not on
+    # every upload. Only for a branch, and only when exactly one open PR claims
+    # that head ref — two forks can use the same branch name, and picking one
+    # would be a guess.
+    if [[ "${rc:-0}" == 2 && ! "$pr_arg" =~ ^[0-9]+$ ]]; then
         local fork_pr
-        fork_pr=$(jq -r --arg b "$branch" \
-            '[.prs[]? | select(.branch == $b) | .number] | if length == 1 then .[0] else empty end' \
-            "$open_prs" 2>/dev/null || true)
+        fork_pr=$(gh pr list --repo "$gh_repo" --state open --head "$branch" \
+            --json number 2>/dev/null \
+            | jq -r '[.[].number] | if length == 1 then .[0] else empty end' 2>/dev/null || true)
         if [[ -n "$fork_pr" ]]; then
-            echo "    branch is not in ${gh_repo} — open-prs.json names it PR #${fork_pr}" >&2
+            echo "    head ref is not in ${gh_repo} — PR #${fork_pr}" >&2
             rc=""
             pr_json=$(gh_pr_view_json "$fork_pr" "$gh_repo") || rc=$?
         fi
