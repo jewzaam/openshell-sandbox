@@ -36,6 +36,9 @@ export GH_LOG
 #   ok        — pr view returns a PR, pr list returns []
 #   transient — every call fails the way a bad gateway does
 #   nopr      — pr view answers "no pull requests found", pr list returns []
+#   fork      — pr view by BRANCH answers "no pull requests found" (what gh
+#               does for a PR opened from a fork), pr list reports it anyway,
+#               pr view by NUMBER works
 #   flaky     — fails once, succeeds after (proves a retry recovers)
 STUB="${TMP}/stub"
 mkdir -p "$STUB"
@@ -57,6 +60,20 @@ case "${GH_MODE}" in
         ;;
     nopr)
         if [[ "$1 $2" == "pr view" ]]; then
+            echo 'no pull requests found for branch "feat"' >&2
+            exit 1
+        fi
+        ;;
+    fork)
+        if [[ "$1 $2" == "pr list" ]]; then
+            echo '[{"number":7,"headRefName":"feat","baseRefName":"main","title":"fork pr","body":"","author":{"login":"outsider"},"labels":[],"files":[],"mergeStateStatus":"CLEAN"}]'
+            exit 0
+        fi
+        if [[ "$1 $2" == "pr view" ]]; then
+            if [[ "$3" =~ ^[0-9]+$ ]]; then
+                echo "{\"number\":$3,\"title\":\"fork pr\",\"body\":\"b\",\"headRefName\":\"feat\",\"baseRefName\":\"main\",\"labels\":[],\"assignees\":[]}"
+                exit 0
+            fi
             echo 'no pull requests found for branch "feat"' >&2
             exit 1
         fi
@@ -114,6 +131,18 @@ GH_MODE=nopr generate_repo_context "$SBX" myrepo personal >/dev/null 2>&1 || tru
     || { echo "FAIL: stale context survived a definitive 'no pull requests found'" >&2; fail=1; }
 [[ "$(calls 'pr view')" == "1" ]] \
     || { echo "FAIL: retried a definitive answer $(calls 'pr view')x — that cost is paid per non-PR repo" >&2; fail=1; }
+
+# --- a fork PR is found through open-prs.json, not a second branch lookup ---
+# gh resolves a branch name against the base repo only, so a PR from a fork
+# reads as "no pull requests found" — the same definitive answer that deletes
+# context above. open-prs.json lists it by head ref, and that file is fetched
+# in the same pass, so the number costs no extra call.
+seed_context
+GH_MODE=fork generate_repo_context "$SBX" myrepo personal >/dev/null 2>&1 || true
+grep -q '^# PR #7:' "${REPO}/pr-context.md" 2>/dev/null \
+    || { echo "FAIL: fork PR context not generated: $(head -1 "${REPO}/pr-context.md" 2>/dev/null)" >&2; fail=1; }
+[[ "$(calls 'pr list')" == "1" ]] \
+    || { echo "FAIL: the fork fallback made $(calls 'pr list') pr list calls, want 1" >&2; fail=1; }
 
 # --- gh pr checkout is the one call that retries ---
 # It decides what code lands in the sandbox and runs once per repo at create
