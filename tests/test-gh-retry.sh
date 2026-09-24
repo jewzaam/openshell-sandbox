@@ -37,8 +37,10 @@ export GH_LOG
 #   transient — every call fails the way a bad gateway does
 #   nopr      — pr view answers "no pull requests found", pr list returns []
 #   fork      — pr view by BRANCH answers "no pull requests found" (what gh
-#               does for a PR opened from a fork), pr list reports it anyway,
-#               pr view by NUMBER works
+#               does for a PR opened from a fork) and the BULK pr list fails
+#               the way it does on a large repo; only `pr list --head` and
+#               pr view by NUMBER work. That pairing is the real case: the
+#               fork lookup must not need open-prs.json to have succeeded.
 #   flaky     — fails once, succeeds after (proves a retry recovers)
 STUB="${TMP}/stub"
 mkdir -p "$STUB"
@@ -66,8 +68,12 @@ case "${GH_MODE}" in
         ;;
     fork)
         if [[ "$1 $2" == "pr list" ]]; then
-            echo '[{"number":7,"headRefName":"feat","baseRefName":"main","title":"fork pr","body":"","author":{"login":"outsider"},"labels":[],"files":[],"mergeStateStatus":"CLEAN"}]'
-            exit 0
+            if [[ "$*" == *--head* ]]; then
+                echo '[{"number":7,"headRefName":"feat"}]'
+                exit 0
+            fi
+            echo "error connecting to api.github.com: HTTP 502" >&2
+            exit 1
         fi
         if [[ "$1 $2" == "pr view" ]]; then
             if [[ "$3" =~ ^[0-9]+$ ]]; then
@@ -132,17 +138,22 @@ GH_MODE=nopr generate_repo_context "$SBX" myrepo personal >/dev/null 2>&1 || tru
 [[ "$(calls 'pr view')" == "1" ]] \
     || { echo "FAIL: retried a definitive answer $(calls 'pr view')x — that cost is paid per non-PR repo" >&2; fail=1; }
 
-# --- a fork PR is found through open-prs.json, not a second branch lookup ---
+# --- a fork PR resolves even when the bulk PR list is broken ---
 # gh resolves a branch name against the base repo only, so a PR from a fork
 # reads as "no pull requests found" — the same definitive answer that deletes
-# context above. open-prs.json lists it by head ref, and that file is fetched
-# in the same pass, so the number costs no extra call.
+# context above. `pr list --head` finds it. open-prs.json must not be in that
+# path: it is optional, debounced, and fails independently, which is exactly
+# what this mode reproduces.
 seed_context
 GH_MODE=fork generate_repo_context "$SBX" myrepo personal >/dev/null 2>&1 || true
 grep -q '^# PR #7:' "${REPO}/pr-context.md" 2>/dev/null \
     || { echo "FAIL: fork PR context not generated: $(head -1 "${REPO}/pr-context.md" 2>/dev/null)" >&2; fail=1; }
-[[ "$(calls 'pr list')" == "1" ]] \
-    || { echo "FAIL: the fork fallback made $(calls 'pr list') pr list calls, want 1" >&2; fail=1; }
+[[ -n "$(jq -r '.fetch_error // empty' "${REPO}/open-prs.json" 2>/dev/null)" ]] \
+    || { echo "FAIL: open-prs.json was not in its failed state — the test proves nothing" >&2; fail=1; }
+# Two: the bulk list (failed) and the --head lookup. The extra call is paid
+# only on a branch gh has already refused.
+[[ "$(calls 'pr list')" == "2" ]] \
+    || { echo "FAIL: fork path made $(calls 'pr list') pr list calls, want 2" >&2; fail=1; }
 
 # --- gh pr checkout is the one call that retries ---
 # It decides what code lands in the sandbox and runs once per repo at create
