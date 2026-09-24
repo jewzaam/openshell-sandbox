@@ -79,6 +79,7 @@ sandbox.sh --delete myapp
 | `--source-dir DIR` | Copy remotes from local repo and fetch (sandbox has no git auth) |
 | `--since DATE` | Clone only history newer than DATE, every repo in this run. Any `date -d` value (`-30days`, `-3months`, `2026-08-01`); `''` for full. Default: `SANDBOX_CLONE_SINCE` from `config/site.env` |
 | `--add-repo [NAME]` | Add repo(s) to existing sandbox |
+| `--jira KEY` | Fetch Jira issue into `~/sandboxes/<name>/jira-context.md`, from the sandbox directory (repeatable; key or browse URL). The keys given are the file; `--create`/`--refresh` upload it |
 | `--download [NAME]` | Download repos from sandbox to `~/sandboxes/<name>/` |
 | `-f, --force` | With `--upload`/`--download`: transfer every repo and regenerate context. Plain runs transfer only what changed |
 | `--upload [NAME]` | Upload local repo changes back into sandbox |

@@ -47,6 +47,11 @@ def walk(node):
         text = node.get('text', '')
         if text:
             return text
+        if t == 'hardBreak':
+            # A line break inside a paragraph. It carries no text and no
+            # children, so without this it renders as nothing and the lines
+            # either side run together.
+            return '\n'
         parts = [walk(c) for c in node.get('content', [])]
         joined = ''.join(parts)
         if t == 'paragraph':

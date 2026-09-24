@@ -85,6 +85,7 @@ PROFILE_FROM_CLI=false
 SOURCE_DIR=""
 REPOS=()
 REFS=()
+JIRA_KEYS=()
 
 # History window for host clones. Empty means full history — the shipped
 # default, so a fresh checkout of this repo behaves as it always did. Set
@@ -175,6 +176,9 @@ OPTIONS:
     --ensure [NAME]   Create sandbox if missing, reconnect if exists (use with --repo/--ref)
     --repo URL        Git repo to clone on host and upload (repeatable)
     --ref REF         Ref for preceding --repo: branch, pr/<num>, tag/<name>, or SHA
+    --jira KEY        Fetch Jira issue into ~/sandboxes/<name>/jira-context.md
+                      (repeatable; key or browse URL). The keys given are the
+                      file. --create and --refresh upload it from there.
     --since DATE      Clone only history newer than DATE, for every repo in this
                       run. Any \`date -d\` value: '-30 days', '-3 months',
                       '2026-08-01'. '' means full history. Default:
@@ -220,6 +224,7 @@ EXAMPLES:
     $(basename "$0") --add-repo myapp --repo git@github.com:org/ui.git --source-dir ~/source/ui
     $(basename "$0") --add-repo myapp --repo git@github.com:org/big.git --since '-30 days'
     $(basename "$0") --add-repo myapp --repo git@github.com:org/big.git --since ''
+    $(basename "$0") --jira AAP-87003 --jira AAP-87004
     $(basename "$0") --download myapp
     $(basename "$0") --download myapp --force
     $(basename "$0") --upload myapp --repo myapp
@@ -1603,6 +1608,15 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
+        --jira)
+            [[ $# -ge 2 ]] || { echo "Error: --jira requires KEY" >&2; exit 1; }
+            # A browse URL works too — it is what the browser hands you. The
+            # key is its last path segment, minus the share button's
+            # ?atlOrigin=...
+            jira_arg="${2##*/}"
+            JIRA_KEYS+=("${jira_arg%%[?#]*}")
+            shift 2
+            ;;
         --ensure)
             ENSURE_MODE=true
             if [[ $# -ge 2 && "$2" != -* ]]; then
@@ -1924,6 +1938,39 @@ if [[ "$ADD_REPO_MODE" == true ]]; then
     upload_static "$OS_NAME" "$SANDBOX_DIR"
 
     echo "Done." >&2
+    exit 0
+fi
+
+# --- Fetch Jira issues into the sandbox directory ---
+#
+# Writes only. --create and --refresh already upload jira-context.md when the
+# file is there, which is how it reaches the sandbox.
+#
+# The keys given are the whole file — scode's Jira mode and pr-context.md both
+# regenerate, and appending has no way to drop an issue or refresh a stale one.
+#
+# A key that does not resolve is a warning from fetch_jira_context() and
+# nothing in the file; it does not fail the run.
+#
+# ponytail: keys are not recorded anywhere, so a later --refresh re-uploads
+# whatever this last wrote. Put them in manifest.json when that bites.
+if [[ ${#JIRA_KEYS[@]} -gt 0 ]]; then
+    SANDBOX_NAME="$(infer_sandbox_name)" || {
+        echo "Error: --jira requires a sandbox (not in a sandbox directory)" >&2
+        exit 1
+    }
+    SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
+    JIRA_AUTH="$(jira_auth)" || { echo "Error: JIRA_USERNAME/JIRA_TOKEN not set" >&2; exit 1; }
+    mkdir -p "$SANDBOX_DIR"
+    {
+        echo "# Jira Context"
+        echo ""
+        for jira_key in "${JIRA_KEYS[@]}"; do
+            fetch_jira_context "$jira_key" "$JIRA_AUTH"
+        done
+    } > "${SANDBOX_DIR}/jira-context.md"
+    echo "${MARK_OK} Jira context — ${JIRA_KEYS[*]}" >&2
+    echo "    wrote ${SANDBOX_DIR}/jira-context.md" >&2
     exit 0
 fi
 
