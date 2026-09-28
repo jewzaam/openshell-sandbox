@@ -543,7 +543,7 @@ is no default. `research` and `fetch-service` are policies only —
   uploaded `settings.json` for every profile**, by
   `scripts/strip-settings.py`. A host pins models for host reasons; in a
   sandbox available models may differ.  Pinning model is not required.
-- **Personal and home set `--model claude-opus-5[1m]`** in the sandbox
+- **Personal and home set `--model opus[1m]`** in the sandbox
   `harness-wrapper.sh`, off `$SANDBOX_PROFILE` from `/sandbox/.env`. Not off
   manifest.json — that is uploaded by `upload_static()` and used to lose the
   race on a first create, silently starting personal sessions on the default

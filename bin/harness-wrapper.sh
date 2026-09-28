@@ -169,8 +169,10 @@ else
     # create path itself. manifest.json was the old source and lost this race:
     # on a first create it reached the sandbox after the wrapper had already
     # started, so a personal sandbox silently came up on the default model.
+    # An alias, not a full id: the CLI resolves it to its latest opus, so the
+    # pin moves with the CLI version instead of going stale on a release.
     case "${SANDBOX_PROFILE:-}" in
-        personal|home) claude_cmd="$claude_cmd --model claude-opus-5[1m]" ;;
+        personal|home) claude_cmd="$claude_cmd --model opus[1m]" ;;
     esac
     claude_cmd="$claude_cmd --dangerously-skip-permissions"
     if [[ -d /sandbox/.claude/projects ]]; then
