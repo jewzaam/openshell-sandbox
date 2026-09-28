@@ -2323,7 +2323,7 @@ ENV_CONTENT+="$(printf 'SANDBOX_SOURCE_NAME=%q' "${SANDBOX_NAME}")"$'\n'
 # `hostname` returns sandbox-sb-<hash>, which identifies the sandbox, not the
 # machine — and sandbox.source already carries the sandbox identity. With
 # several machines shipping to one collector, host.name has to be the machine.
-# Must be the same `hostname` invocation the host's own claude.env uses, or the
+# Must be the same `hostname` invocation claude-otel-stack's bin/claude uses, or the
 # same laptop splits into two series (short name vs FQDN).
 HOST_NAME_VALUE="$(hostname)"
 ENV_CONTENT+="$(printf 'SANDBOX_HOST_NAME=%q' "$HOST_NAME_VALUE")"$'\n'

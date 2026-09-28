@@ -117,16 +117,17 @@ inherits from:
   selections, two intervals, two log-detail flags
 - sources `/sandbox/.env` with `set -a` (lines 33-37), *after* the policy, so a
   host-written value still wins
-- `alias claude="/sandbox/bin/harness-wrapper.sh"` (line 45)
+- no `claude`/`codex` aliases — `/sandbox/bin` first on `PATH` is what puts the
+  shims (below) ahead of `/usr/bin`
 
 A login shell reaches this file indirectly: `/sandbox/.profile` sources
 `$HOME/.bashrc`. Testing with `bash -lc` and a synthetic `$HOME` that has no
 `.profile` will show none of it.
 
-The alias applies **only to interactive bash**. It does not apply to
-`subprocess` calls, non-interactive shells, or `dtach`, all of which resolve
-`claude` through `$PATH` to `/usr/bin/claude` — which is the point: those
-callers get the policy by inheritance, not by resolving to a wrapper.
+Every caller — interactive bash, `subprocess`, non-interactive shells, `dtach`
+— resolves `claude` and `codex` through `$PATH` to the `/sandbox/bin` shims,
+which exec `/usr/bin`. The shims source nothing: callers get the policy by
+inheritance, not from the shim.
 
 ## Stage 3 — `bin/harness-wrapper.sh`
 
@@ -184,7 +185,8 @@ consumer re-reads — `/sandbox/.env`. And a non-`OTEL_*` value survives, so
   (`backend.py:257-263`)
 
 A sub-agent therefore reports with the sandbox's full identity plus its own run
-correlation, from `.env` alone. No shim, no wrapper.
+correlation, from `.env` alone. The `/sandbox/bin/claude` shim it resolves to
+only appends `headless=true` to what the orchestrator built.
 
 **What a sub-agent does not get:** `OTEL_METRIC_EXPORT_INTERVAL`,
 `OTEL_LOGS_EXPORT_INTERVAL` (SDK defaults apply) and `OTEL_LOG_TOOL_DETAILS` /
@@ -198,9 +200,9 @@ to match session logs.
 
 | Caller | Resolves to | Why |
 |---|---|---|
-| Interactive shell, typed `claude` | `harness-wrapper.sh` | bashrc alias beats `$PATH` |
-| `dtach -c $SOCKET claude ...` inside the wrapper | `/usr/bin/claude` | no shell, so no alias |
-| `subprocess` from a session tool call | `/usr/bin/claude` | `$PATH` |
+| Interactive shell, typed `claude` | `/sandbox/bin/claude` → `/usr/bin/claude` | `$PATH`, no alias |
+| `dtach -c $SOCKET claude ...` inside the wrapper | `/sandbox/bin/claude` → `/usr/bin/claude` | `$PATH` |
+| `subprocess` from a session tool call | `/sandbox/bin/claude` → `/usr/bin/claude` | `$PATH` |
 | `connect_sandbox()` | `harness-wrapper.sh` | absolute path, `sandbox.sh:251` |
 
 ## History
@@ -226,3 +228,14 @@ turned out to be the only value computed inside the sandbox, and every one of
 its inputs was already fixed at generate time, so nothing was lost by moving
 it. The genuinely dynamic part — a caller appending its own attributes — is
 done by the caller.
+
+The shim came back, from a different source and for a different job.
+`bin/claude` and `bin/codex` now live in claude-otel-stack, are staged into the
+image by `make build` (`OTEL_STACK_BIN`), and are the same files the host puts
+first on its own `PATH`. In here they replay nothing: `bin/claude` skips its
+host telemetry block when `/sandbox/.env` exists, so the sandbox shim only tags
+`-p`/`--print` runs `headless=true` and the codex shim only adds `project`
+when none is inherited. The old objection — resolution
+depending on whether a shell was interactive — is gone with the aliases:
+every caller now goes through `$PATH`. The shim cannot restore `OTEL_*` that
+Claude Code stripped (stage 4); that is still the caller's job.
