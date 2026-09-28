@@ -42,7 +42,3 @@ export EDITOR=vi
 export PYTHONDONTWRITEBYTECODE=1
 
 alias ll="ls -l"
-# Both agents launch through the wrapper, which gives each its own dtach
-# socket. Naming the harness here skips the wrapper's prompt.
-alias claude="/sandbox/bin/harness-wrapper.sh claude"
-alias codex="/sandbox/bin/harness-wrapper.sh codex"

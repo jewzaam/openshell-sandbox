@@ -571,7 +571,11 @@ is no default. `research` and `fetch-service` are policies only —
   launcher: `bin/claude.env` held the policy and only `harness-wrapper.sh` read
   it, so a bare `claude` came up with an endpoint and telemetry off; the
   attributes were assembled there too, so every review-orchestrator sub-agent
-  reported with no identity at all.
+  reported with no identity at all. The `/sandbox/bin/claude` and `codex` PATH
+  shims (from claude-otel-stack, staged by `make build`) are not that launcher
+  again: in here they set no telemetry (`bin/claude`'s host block is gated on
+  `/sandbox/.env` being absent), only tag headless runs and fill a missing
+  codex `project`. Renaming or moving `/sandbox/.env` breaks that gate.
   `docs/environment-variables.md` has the full chain and the evidence that
   Claude Code strips `OTEL_*` from the env it hands to tool subprocesses.
 
