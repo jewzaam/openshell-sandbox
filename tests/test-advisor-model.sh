@@ -42,8 +42,8 @@ check() {
 # --- the mapping: one class up, fable is the ceiling ---
 #
 # Matched on substring so a full id and a bare alias take the same row. The
-# wrapper's own pin is a full id with a bracketed suffix
-# (claude-opus-5[1m]); `/model haiku` at the prompt is not.
+# wrapper's own pin is an alias with a bracketed suffix (opus[1m]); a
+# hand-typed full id like claude-haiku-4-5-20251001 is not.
 check "haiku maps to sonnet" "sonnet" "$(advisor_for 'claude --model haiku')"
 check "a haiku id maps to sonnet" "sonnet" \
     "$(advisor_for 'claude --model claude-haiku-4-5-20251001')"
@@ -56,7 +56,7 @@ check "fable is its own advisor, nothing is above it" "fable" \
 # What the wrapper actually builds on personal/home, verbatim including the
 # bracketed context suffix — the one row that fires without a hand edit.
 check "the profile pin maps to fable" "fable" \
-    "$(advisor_for 'dtach -c /sandbox/.dtach-claude claude --model claude-opus-5[1m] --dangerously-skip-permissions -c')"
+    "$(advisor_for 'dtach -c /sandbox/.dtach-claude claude --model opus[1m] --dangerously-skip-permissions -c')"
 
 check "--model=X is the same as --model X" "fable" "$(advisor_for 'claude --model=opus')"
 
