@@ -20,7 +20,7 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "${TMP}/bin"
 cat > "${TMP}/bin/openshell" << 'STUB'
 #!/bin/bash
-printf '[{"name":"sb-test","phase":"%s"}]\n' "$(cat "${TMP}/phase")"
+printf '{"sandboxes":[{"name":"sb-test","phase":"%s"}]}\n' "$(cat "${TMP}/phase")"
 STUB
 cat > "${TMP}/bin/podman" << 'STUB'
 #!/bin/bash

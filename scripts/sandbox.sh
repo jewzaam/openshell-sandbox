@@ -299,7 +299,7 @@ connect_sandbox() {
 
 sandbox_phase() {
     openshell sandbox list "${GW_FLAG[@]}" --output json 2>/dev/null \
-        | jq -r --arg n "$1" '.[] | select(.name == $n) | .phase'
+        | jq -r --arg n "$1" '.sandboxes[] | select(.name == $n) | .phase'
 }
 
 # An Error-phase sandbox is a stopped container, and `sandbox exec` fails
