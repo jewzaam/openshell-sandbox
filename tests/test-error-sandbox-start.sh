@@ -181,8 +181,10 @@ for mode in "--connect probe" "--refresh probe" "--recreate probe --profile pers
         || fail "${mode%% *} did not start the stopped container"
 done
 
+# --refresh is absent on purpose: it defers on a stopped sandbox instead of
+# starting it (tests/test-pending-work.sh).
 echo Stopped > "${TMP}/phase"
-for mode in "--connect probe" "--refresh probe" "--recreate probe --profile personal --no-connect"; do
+for mode in "--connect probe" "--recreate probe --profile personal --no-connect"; do
     # shellcheck disable=SC2086  # deliberate word split: mode carries flags
     out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" $mode --dryrun 2>&1 || true)"
     grep -qF "[dryrun]: openshell sandbox start" <<<"$out" \

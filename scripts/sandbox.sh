@@ -366,6 +366,30 @@ start_error_sandbox() {
     done
 }
 
+# Run what --refresh / --recreate --all deferred while the sandbox was stopped
+# (manifest_pending, lib.sh). Recreate uploads config as well, so it covers a
+# pending refresh and only one of them runs. Each clears its own flags on
+# success; a failure leaves them for the next connect. The profile comes from
+# the manifest because only --recreate --all defers, and it never changes one.
+apply_pending() {
+    local name="$1" dir="$2" profile common=()
+    [[ -n "$GATEWAY" ]] && common+=(--gateway "$GATEWAY")
+    [[ "$DRYRUN" == true ]] && common+=(--dryrun)
+    if manifest_pending "$dir" recreate_pending; then
+        profile=$(jq -r '.profile // empty' "${dir}/manifest.json" 2>/dev/null || true)
+        if [[ -z "$profile" ]]; then
+            echo "Error: recreate pending for '${name}' but its manifest has no profile" >&2
+            echo "    recreate it by name: $(basename "$0") --recreate ${name} --profile <profile>" >&2
+            return 1
+        fi
+        echo "Recreate pending for ${name}, recreating before connect..." >&2
+        "$0" --recreate "$name" --profile "$profile" --no-connect "${common[@]}"
+    elif manifest_pending "$dir" refresh_pending; then
+        echo "Refresh pending for ${name}, refreshing before connect..." >&2
+        "$0" --refresh "$name" "${common[@]}"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Name resolution (short_name lives in lib.sh — scode needs it too)
 # ---------------------------------------------------------------------------
@@ -1819,6 +1843,10 @@ if [[ "$ALL_MODE" == true ]]; then
     [[ "$DRYRUN" == true ]] && ALL_COMMON+=(--dryrun)
     [[ "$DEBUG" == true ]] && ALL_COMMON+=(--debug)
 
+    # sandbox_phase reads it; the global one is set further down.
+    GW_FLAG=()
+    [[ -n "$GATEWAY" ]] && GW_FLAG=(--gateway "$GATEWAY")
+
     ALL_FAILED=()
     ALL_FOUND=false
     for manifest in "${SANDBOXES_DIR}"/*/manifest.json; do
@@ -1826,6 +1854,18 @@ if [[ "$ALL_MODE" == true ]]; then
         ALL_FOUND=true
         name="$(basename "$(dirname "$manifest")")"
         one=("$ALL_MODE_FLAG" "$name" "${ALL_COMMON[@]}")
+        # A stopped sandbox is recreated on its next connect instead
+        # (apply_pending). Only --all defers: --recreate NAME is the one path
+        # that can change the profile, and it connects when done anyway.
+        # --refresh defers on its own, NAME or --all, so it is not handled here.
+        if [[ "$RECREATE_MODE" == true ]]; then
+            case "$(sandbox_phase "$(resolve_openshell_name "$name")")" in
+                Stopped|Stopping)
+                    [[ "$DRYRUN" == true ]] || set_manifest_pending "$(dirname "$manifest")" recreate_pending
+                    echo "⊘ Skipped recreate: ${name} is stopped — runs on next connect" >&2
+                    continue ;;
+            esac
+        fi
         if [[ "$RECREATE_MODE" == true ]]; then
             # --recreate rejects a missing --profile before the manifest
             # fallback runs, and ends by exec'ing --connect. Neither is
@@ -1954,6 +1994,7 @@ elif [[ -n "$CONNECT_NAME" ]]; then
         WORKDIR="/sandbox/source/"
     fi
     start_error_sandbox "$OS_NAME" || exit 1
+    apply_pending "$CONNECT_NAME" "$SANDBOX_DIR" || exit 1
     # An explicit --harness is what changes the memory; the prompt does not.
     if [[ -n "$HARNESS" ]]; then
         init_manifest "$SANDBOX_DIR" "$CONNECT_NAME" "" "$HARNESS"
@@ -2134,6 +2175,9 @@ if [[ "$RECREATE_MODE" == true ]]; then
     # 4. Upload local repos
     "$0" --upload "$SANDBOX_NAME" --force "${COMMON_ARGS[@]}"
 
+    # A rebuild uploads config too, so it settles a pending refresh as well.
+    [[ "$DRYRUN" == true ]] || clear_manifest_pending "$SANDBOX_DIR" recreate_pending refresh_pending
+
     # 5. Connect
     if [[ "$NO_CONNECT" == true ]]; then
         echo "Recreated ${SANDBOX_NAME}. Connect with: $(basename "$0") --connect ${SANDBOX_NAME}" >&2
@@ -2177,6 +2221,7 @@ if [[ "$ENSURE_MODE" == true ]]; then
             echo "Sandbox '${SANDBOX_NAME}' refreshed; not connecting (--no-connect used)." >&2
             exit 0
         else
+            apply_pending "$SANDBOX_NAME" "$SANDBOX_DIR" || exit 1
             echo "Sandbox '${SANDBOX_NAME}' exists, connecting..." >&2
             connect_sandbox "$OS_NAME" "$WORKDIR"
         fi
@@ -2457,13 +2502,22 @@ fi
 
 # --- Refresh config on existing sandbox ---
 if [[ "$REFRESH_MODE" == true ]]; then
+    OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
+    SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
+    # Starting a stopped sandbox to refresh it hands it back to
+    # claude-dashboard's idle sweep; the next connect refreshes it instead
+    # (apply_pending). NAME or --all alike.
+    case "$(sandbox_phase "$OS_NAME")" in
+        Stopped|Stopping)
+            [[ "$DRYRUN" == true ]] || set_manifest_pending "$SANDBOX_DIR" refresh_pending
+            echo "⊘ Skipped refresh: ${SANDBOX_NAME} is stopped — runs on next connect" >&2
+            exit 0 ;;
+    esac
     if ! personal_profile "$SANDBOX_PROFILE"; then
         ensure_gws_creds
     fi
-    OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     start_error_sandbox "$OS_NAME" || exit 1
     echo "Refreshing config on ${SANDBOX_NAME}..." >&2
-    SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
     upload_config "$OS_NAME" "$SANDBOX_DIR"
     # Regenerate and upload context files for PR repos. Unconditional: --force
     # is about the upload and download change checks, and --refresh has no
@@ -2497,6 +2551,7 @@ if [[ "$REFRESH_MODE" == true ]]; then
             "${JIRA_TMP}/source" /sandbox
         rm -rf "$JIRA_TMP"
     fi
+    [[ "$DRYRUN" == true ]] || clear_manifest_pending "$SANDBOX_DIR" refresh_pending
     echo "Done. Reconnect to apply (sandbox.sh --connect)" >&2
     exit 0
 fi
