@@ -310,25 +310,55 @@ sandbox_phase() {
 # Returns non-zero rather than exiting so the caller's `|| exit 1` is visible
 # at the call site. Every caller stops — --recreate included, because its next
 # step deletes the container the download was supposed to drain.
+#
+# Stopped is the other not-running phase: claude-dashboard runs
+# `openshell sandbox stop` on sandboxes left unattached, in the background.
+# That is openshell's own lifecycle, so `openshell sandbox start` reverses it.
+# A connect landing mid-stop waits the stop out first — start against Stopping
+# is not a transition openshell offers. 300s matches openshell's own
+# OPENSHELL_LIFECYCLE_TIMEOUT default. An empty phase inside that wait is the
+# gateway not answering, not the stop finishing, so it keeps waiting.
 start_error_sandbox() {
-    local os_name="$1" cid elapsed=0
-    [[ "$(sandbox_phase "$os_name")" == "Error" ]] || return 0
-
-    cid=$(podman ps -a --format json 2>/dev/null \
-        | jq -r --arg n "$os_name" '.[] | select(.Labels["openshell.ai/sandbox-name"] == $n) | .Id' | head -1)
-    if [[ -z "$cid" ]]; then
-        echo "Error: sandbox '${os_name}' is in Error phase with no container — recreate it" >&2
-        return 1
+    local os_name="$1" cid phase stop_waited=0 ready_waited=0
+    phase="$(sandbox_phase "$os_name")"
+    if [[ "$phase" == "Stopping" ]]; then
+        echo "Sandbox stopping, waiting before start..." >&2
+        while [[ ("$phase" == "Stopping" || -z "$phase") && "$DRYRUN" != true ]]; do
+            stop_waited=$((stop_waited + 1))
+            if [[ $stop_waited -ge 300 ]]; then
+                echo "Error: sandbox '${os_name}' still Stopping after 300s" >&2
+                return 1
+            fi
+            sleep 1
+            phase="$(sandbox_phase "$os_name")"
+        done
+        [[ "$DRYRUN" == true ]] && phase=Stopped
     fi
 
-    echo "Sandbox in Error phase, starting container..." >&2
-    run podman start "$cid" >/dev/null
+    if [[ "$phase" == "Stopped" ]]; then
+        echo "Sandbox stopped, starting..." >&2
+        run openshell sandbox start "${GW_FLAG[@]}" "$os_name" >/dev/null || return 1
+    elif [[ "$phase" == "Error" ]]; then
+        cid=$(podman ps -a --format json 2>/dev/null \
+            | jq -r --arg n "$os_name" '.[] | select(.Labels["openshell.ai/sandbox-name"] == $n) | .Id' | head -1)
+        if [[ -z "$cid" ]]; then
+            echo "Error: sandbox '${os_name}' is in Error phase with no container — recreate it" >&2
+            return 1
+        fi
+        echo "Sandbox in Error phase, starting container..." >&2
+        run podman start "$cid" >/dev/null
+    else
+        return 0
+    fi
     [[ "$DRYRUN" == true ]] && return 0
 
     # Wait on openshell's phase, not podman's: exec goes through openshell.
+    # `openshell sandbox start` should already block until Ready (read from
+    # OpenShell source, not verified against an installed binary); when it
+    # does, this is one list call.
     while [[ "$(sandbox_phase "$os_name")" != "Ready" ]]; do
-        elapsed=$((elapsed + 1))
-        if [[ $elapsed -ge 30 ]]; then
+        ready_waited=$((ready_waited + 1))
+        if [[ $ready_waited -ge 30 ]]; then
             echo "Error: sandbox '${os_name}' not Ready 30s after start" >&2
             return 1
         fi
