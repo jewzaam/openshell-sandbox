@@ -593,6 +593,15 @@ init_manifest() {
         mv "${manifest}.tmp" "$manifest"
     fi
 
+    # Manifests written before openshell_name existed never gained it — the
+    # skeleton above only runs for a new file — so --list could not name
+    # them. Same derivation as the skeleton and resolve_openshell_name().
+    if [[ -z "$(jq -r '.openshell_name // empty' "$manifest")" ]]; then
+        jq --arg os_name "$(short_name "$sandbox_name")" '.openshell_name = $os_name' \
+            "$manifest" > "${manifest}.tmp"
+        mv "${manifest}.tmp" "$manifest"
+    fi
+
     if [[ -n "$profile" ]]; then
         jq --arg profile "$profile" '.profile = $profile' \
             "$manifest" > "${manifest}.tmp"
