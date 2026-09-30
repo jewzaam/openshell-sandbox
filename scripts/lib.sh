@@ -622,6 +622,33 @@ manifest_harness() {
     jq -r '.harness // ""' "${1}/manifest.json" 2>/dev/null || true
 }
 
+# Work deferred off a stopped sandbox: `refresh_pending`, `recreate_pending`.
+# claude-dashboard stops idle sandboxes, and starting one just to refresh or
+# recreate it hands it straight back to the dashboard, which stops it again —
+# mid-transfer if the next sweep lands first. So --refresh and --recreate --all
+# mark the manifest instead, and the next --connect/--ensure runs the work
+# before attaching. Host-side, so a session cannot clear its own flag.
+manifest_pending() {
+    [[ "$(jq -r --arg k "$2" '.[$k] // false' "${1}/manifest.json" 2>/dev/null)" == true ]]
+}
+
+set_manifest_pending() {
+    local manifest="${1}/manifest.json"
+    [[ -f "$manifest" ]] || return 0
+    jq --arg k "$2" '.[$k] = true' "$manifest" > "${manifest}.tmp" \
+        && mv "${manifest}.tmp" "$manifest"
+}
+
+clear_manifest_pending() {
+    local manifest="${1}/manifest.json" key
+    [[ -f "$manifest" ]] || return 0
+    shift
+    for key in "$@"; do
+        jq --arg k "$key" 'del(.[$k])' "$manifest" > "${manifest}.tmp" \
+            && mv "${manifest}.tmp" "$manifest"
+    done
+}
+
 valid_harness() {
     [[ "$1" == claude || "$1" == codex ]]
 }
