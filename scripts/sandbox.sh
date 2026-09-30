@@ -610,7 +610,11 @@ sandbox_clean_repos() {
     # copies agreed. A skipped upload deliberately does not stamp, so this
     # cannot advance past a divergence it never resolved.
     while IFS=$'\t' read -r repo since; do
-        [[ -n "$since" ]] || continue
+        if [[ -z "$since" ]]
+        then
+            [[ "$DEBUG" != true ]] || echo "Download reason: ${repo} has no previous transfer timestamp" >&2
+            continue
+        fi
         script+="check $(printf '%q' "$repo") $(printf '%q' "$since")"$'\n'
     done < <(jq -r '.repos | to_entries[] |
         [.key, ([.value.last_upload, .value.last_download]
@@ -638,13 +642,27 @@ check() {
     n=$(find "$d" -name .venv -prune -o -newermt "$2" \
         ! -path "$d/.git" ! -path "$d/.git/index" ! -path "$d/.git/index.lock" \
         -print -quit 2>/dev/null)
-    [ -n "$n" ] || echo "CLEAN $1"
+    [ -n "$n" ] && echo "DIRTY $1 $n" || echo "CLEAN $1"
 }
 '"$script"'
-echo WALKED' 2>/dev/null) || return 0
+echo WALKED' 2>/dev/null) || {
+        [[ "$DEBUG" != true ]] || echo "Download reason: remote change scan failed, pulling all repos" >&2
+        return 0
+    }
 
-    [[ "$out" == *WALKED* ]] || return 0
-    awk '/^CLEAN /{print $2}' <<<"$out"
+    [[ "$out" == *WALKED* ]] || {
+        [[ "$DEBUG" != true ]] || echo "Download reason: remote change scan did not complete, pulling all repos" >&2
+        return 0
+    }
+    awk -v debug="$DEBUG" '
+        /^CLEAN / { print $2 }
+        /^DIRTY / && debug == "true" {
+            line = substr($0, 7)
+            split(line, fields, " ")
+            path = substr(line, length(fields[1]) + 2)
+            printf "Download reason: %s has newer path %s\n", fields[1], path > "/dev/stderr"
+        }
+    ' <<<"$out"
 }
 
 download_sandbox() {
@@ -661,6 +679,13 @@ download_sandbox() {
 
     # --force always pulls, the same bargain --upload --force takes: it is the
     # path that assumes nothing about what the other side holds.
+    if [[ "$DEBUG" == true && "$FORCE_MODE" == true ]]
+    then
+        echo "Download reason: --force bypasses the change check" >&2
+    elif [[ "$DEBUG" == true && "$DRYRUN" == true ]]
+    then
+        echo "Download reason: --dryrun bypasses the change check, showing all repos" >&2
+    fi
     local clean=""
     if [[ "$FORCE_MODE" != true && "$DRYRUN" != true ]]; then
         clean=" $(sandbox_clean_repos "$sandbox_name" "$sandbox_dir" | tr '\n' ' ')"

@@ -365,7 +365,14 @@ if command -v rsync >/dev/null 2>&1; then
 
     # a sandbox-side edit brings it back, and the content actually arrives
     echo "edited in the sandbox" > "${SANDBOX_FS}/myrepo/file.txt"
-    download
+    sleep 1
+    : > "$CALL_LOG"
+    out="$( cd "$SBX" && "${WORK}/scripts/sandbox.sh" --download probe --debug 2>&1 )"
+    if ! grep -qE 'Download reason: myrepo has newer path .+' <<<"$out"
+    then
+        echo "FAIL: --debug did not show why the repo was downloaded" >&2
+        fail=1
+    fi
     pulled || { echo "FAIL: --download skipped a repo the sandbox changed" >&2; fail=1; }
     grep -q "edited in the sandbox" "${REPO}/file.txt" \
         || { echo "FAIL: --download did not bring the edit to the host" >&2; fail=1; }
