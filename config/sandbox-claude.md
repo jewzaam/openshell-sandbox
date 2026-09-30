@@ -79,6 +79,33 @@ yq -r '.network_policies[] | .name as $n | .endpoints[] | "\($n)\t\(.host):\(.po
     /sandbox/source/openshell-policy.yaml
 ```
 
+## Fetch service
+
+A `fetch-service` block in the policy file means a service on the host will
+GET public URLs on this sandbox's behalf. "Fetch service is enabled" (or
+running) from the user means that block is there — re-read the file. Without
+the block, nothing here can read an arbitrary URL.
+
+- **`WebFetch` and `curl` to the target fail** at the proxy, block or no
+  block. `WebSearch` always works — it runs server-side.
+- **Take host:port from the block** (the `yq` command above prints it) and
+  percent-encode the target, or a `?`/`&` in it silently truncates the
+  request:
+
+  ```bash
+  SVC="http://<host>:<port>"
+  curl -s "${SVC}/fetch?url=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "https://example.com/page")"
+  ```
+
+  The response status and body are the upstream's. `403` with body
+  `refused:` is the service declining (non-public address, non-http scheme);
+  `502` `upstream error:` is DNS/TLS/timeout upstream. A `403` without
+  `refused:`, or `CONNECT tunnel failed`, is the proxy — the block is gone.
+- **Offline** (`${SVC}/healthz` not `200`): tell the user to run
+  `sandbox.sh --fetch-service` on the host, then stop. There is no other route.
+- GET only, public addresses only, 8 MB / 30 s / 5 redirects. Every URL is
+  logged on the host.
+
 ## Telemetry
 
 This session ships OTEL metrics, logs, and traces to
