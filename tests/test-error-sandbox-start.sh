@@ -3,6 +3,7 @@
 #
 # Self-check for start_error_sandbox(): --ensure against a sandbox in Error
 # phase must podman start the container and wait for Ready before connecting.
+# Stopped (and Stopping, once it settles) goes through `openshell sandbox start`.
 # Stubs openshell and podman on $PATH and lifts the real functions out of
 # sandbox.sh, so the test cannot drift from the code it covers.
 #
@@ -18,8 +19,30 @@ trap 'rm -rf "$TMP"' EXIT
 
 # --- stubs: phase comes from $TMP/phase, `podman start` flips it to Ready ---
 mkdir -p "${TMP}/bin"
+# `openshell sandbox start` flips Stopped to Ready, or fails when
+# $TMP/start_fails exists. A Stopping phase turns into $TMP/stop_result
+# after $TMP/stopping_polls list calls, standing in for a
+# slow stop. List call number $TMP/blank_call (counted in $TMP/calls) omits
+# the sandbox, as a gateway that did not answer reads to sandbox_phase().
 cat > "${TMP}/bin/openshell" << 'STUB'
 #!/bin/bash
+if [[ "$2" == "start" ]]; then
+    [[ -f "${TMP}/start_fails" ]] && exit 1
+    echo "${*: -1}" >> "${TMP}/os_started"
+    echo Ready > "${TMP}/phase"
+    exit 0
+fi
+calls=$(( $(cat "${TMP}/calls" 2>/dev/null || echo 0) + 1 ))
+echo "$calls" > "${TMP}/calls"
+if [[ "$calls" == "$(cat "${TMP}/blank_call" 2>/dev/null)" ]]; then
+    echo '{"sandboxes":[]}'
+    exit 0
+fi
+if [[ "$(cat "${TMP}/phase")" == "Stopping" ]]; then
+    n=$(( $(cat "${TMP}/stopping_polls") - 1 ))
+    echo "$n" > "${TMP}/stopping_polls"
+    [[ $n -le 0 ]] && cat "${TMP}/stop_result" > "${TMP}/phase"
+fi
 printf '{"sandboxes":[{"name":"sb-test","phase":"%s"}]}\n' "$(cat "${TMP}/phase")"
 STUB
 cat > "${TMP}/bin/podman" << 'STUB'
@@ -75,6 +98,57 @@ if (start_error_sandbox sb-test 2>/dev/null); then
 fi
 if [[ -f "${TMP}/started" ]]; then fail "podman start ran without a container"; fi
 
+# --- Stopped sandbox: openshell start, never podman start ---
+echo Stopped > "${TMP}/phase"
+with_container
+rm -f "${TMP}/started" "${TMP}/os_started"
+start_error_sandbox sb-test 2>/dev/null
+[[ "$(cat "${TMP}/os_started" 2>/dev/null)" == "sb-test" ]] \
+    || fail "openshell sandbox start did not run on a Stopped sandbox"
+if [[ -f "${TMP}/started" ]]; then fail "podman start ran on a Stopped sandbox"; fi
+[[ "$(cat "${TMP}/phase")" == "Ready" ]] || fail "Stopped sandbox not Ready after start"
+
+# --- Stopping sandbox: wait for Stopped, then openshell start ---
+echo Stopping > "${TMP}/phase"
+echo Stopped > "${TMP}/stop_result"
+echo 2 > "${TMP}/stopping_polls"
+rm -f "${TMP}/started" "${TMP}/os_started"
+start_error_sandbox sb-test 2>/dev/null
+[[ "$(cat "${TMP}/os_started" 2>/dev/null)" == "sb-test" ]] \
+    || fail "Stopping sandbox was not started once it reached Stopped"
+if [[ -f "${TMP}/started" ]]; then fail "podman start ran on a Stopping sandbox"; fi
+
+# --- Gateway silent mid-wait: an empty phase keeps waiting, not "done" ---
+# Call 1 is the initial read (Stopping), call 2 comes back blank, call 3 is
+# where the stop settles.
+echo Stopping > "${TMP}/phase"
+echo 2 > "${TMP}/stopping_polls"
+echo 0 > "${TMP}/calls"
+echo 2 > "${TMP}/blank_call"
+rm -f "${TMP}/os_started"
+start_error_sandbox sb-test 2>/dev/null
+[[ "$(cat "${TMP}/os_started" 2>/dev/null)" == "sb-test" ]] \
+    || fail "an empty phase during the Stopping wait ended the wait without starting"
+rm -f "${TMP}/blank_call"
+
+# --- Stop that settles in Error: falls through to the podman path ---
+echo Stopping > "${TMP}/phase"
+echo Error > "${TMP}/stop_result"
+echo 1 > "${TMP}/stopping_polls"
+rm -f "${TMP}/started" "${TMP}/os_started"
+start_error_sandbox sb-test 2>/dev/null
+[[ "$(cat "${TMP}/started" 2>/dev/null)" == "deadbeef" ]] \
+    || fail "a stop that ended in Error did not podman start the container"
+if [[ -f "${TMP}/os_started" ]]; then fail "openshell start ran on an Error sandbox"; fi
+
+# --- openshell start fails: non-zero, so every caller stops ---
+echo Stopped > "${TMP}/phase"
+touch "${TMP}/start_fails"
+if (start_error_sandbox sb-test 2>/dev/null); then
+    fail "a failed openshell sandbox start should be fatal"
+fi
+rm -f "${TMP}/start_fails"
+
 # ---------------------------------------------------------------------------
 # Call sites: every mode that talks to the container must start a stopped one
 # ---------------------------------------------------------------------------
@@ -106,6 +180,15 @@ for mode in "--connect probe" "--refresh probe" "--recreate probe --profile pers
     grep -qF "Sandbox in Error phase, starting container..." <<<"$out" \
         || fail "${mode%% *} did not start the stopped container"
 done
+
+echo Stopped > "${TMP}/phase"
+for mode in "--connect probe" "--refresh probe" "--recreate probe --profile personal --no-connect"; do
+    # shellcheck disable=SC2086  # deliberate word split: mode carries flags
+    out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" $mode --dryrun 2>&1 || true)"
+    grep -qF "[dryrun]: openshell sandbox start" <<<"$out" \
+        || fail "${mode%% *} did not openshell-start a Stopped sandbox"
+done
+echo Error > "${TMP}/phase"
 
 # A container that will not start is fatal everywhere. --recreate most of all:
 # its next step deletes the container the download was supposed to drain, so
