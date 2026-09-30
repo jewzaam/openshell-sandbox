@@ -62,6 +62,29 @@ init_manifest "$D" "probe" "work"
 [[ "$(profile_of "$M")" == "work" ]] \
     || { echo "FAIL: init_manifest did not refresh .profile" >&2; fail=1; }
 
+# A manifest from before .openshell_name existed gains it on next use; a
+# stored value is never rewritten.
+L="${TMP}/legacy"
+mkdir -p "$L"
+printf '{"name":"legacy","profile":"personal","repos":{}}' > "${L}/manifest.json"
+init_manifest "$L" "legacy" "personal"
+[[ "$(jq -r '.openshell_name' "${L}/manifest.json")" == "$(short_name legacy)" ]] \
+    || { echo "FAIL: init_manifest did not backfill .openshell_name" >&2; fail=1; }
+jq '.openshell_name = "sb-kept"' "${L}/manifest.json" > "${L}/m.tmp" && cat "${L}/m.tmp" > "${L}/manifest.json"
+init_manifest "$L" "legacy" "personal"
+[[ "$(jq -r '.openshell_name' "${L}/manifest.json")" == "sb-kept" ]] \
+    || { echo "FAIL: init_manifest overwrote a stored .openshell_name" >&2; fail=1; }
+
+# --- resolve_full_name(): names a sandbox whose manifest predates the field ---
+eval "$(sed -n '/^resolve_full_name()/,/^}/p' "${WORK}/scripts/sandbox.sh")"
+SANDBOXES_DIR="${TMP}/rfn"
+mkdir -p "${SANDBOXES_DIR}/old-one"
+printf '{"name":"old-one","repos":{}}' > "${SANDBOXES_DIR}/old-one/manifest.json"
+[[ "$(resolve_full_name "$(short_name old-one)")" == "old-one" ]] \
+    || { echo "FAIL: resolve_full_name missed a manifest with no .openshell_name" >&2; fail=1; }
+[[ "$(resolve_full_name sb-unknown)" == "sb-unknown" ]] \
+    || { echo "FAIL: resolve_full_name did not fall through for an unknown sandbox" >&2; fail=1; }
+
 # --- scode: the manifest is there before VS Code opens the folder ---
 # The `code` stub is the whole point: it records what a shell starting with the
 # folder would see, at the moment it would see it.

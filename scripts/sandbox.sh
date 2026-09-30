@@ -418,6 +418,9 @@ resolve_full_name() {
         [[ -f "$manifest" ]] || continue
         local stored
         stored=$(jq -r '.openshell_name // empty' "$manifest")
+        # Manifests older than the field have none; init_manifest backfills
+        # it on next use, and until then the name is derivable the same way.
+        [[ -n "$stored" ]] || stored=$(short_name "$(basename "$(dirname "$manifest")")")
         if [[ "$stored" == "$os_name" ]]; then
             jq -r '.name' "$manifest"
             return
