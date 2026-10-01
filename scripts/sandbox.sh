@@ -858,10 +858,10 @@ download_claude_state() {
 # absolute (`/sandbox/.codex/sessions/...`) and that path is identical in the
 # rebuilt container, so nothing has to be rewritten.
 #
-# auth.json is deliberately NOT preserved — see gotcha 19. On work the host
-# ships it through upload_config(), and preserving a copy here would let a
-# stale key win over a rotated one.
-CODEX_STATE_KEEP=(sessions history.jsonl session_index.jsonl config.toml)
+# auth.json and config.toml are deliberately NOT preserved. The host ships a
+# fresh auth.json and renders config.toml during recreate; restoring old copies
+# afterward would override the host's current credentials and configuration.
+CODEX_STATE_KEEP=(sessions history.jsonl session_index.jsonl)
 
 # Copy the parts of a downloaded ~/.codex worth keeping from $1 into $2.
 # Returns non-zero when there was nothing to keep. Split out from
@@ -893,7 +893,7 @@ codex_state_filter() {
 # Render the config.toml a work-profile Codex sandbox should get: the host's
 # own top-level choices (`model`, `model_context_window`,
 # `model_auto_compact_token_limit*`, `model_reasoning_effort`, `status_line*`)
-# and its `[tui]` and `[features]` tables, if it set any, plus a
+# and its `[tui]`, `[features]`, and `[agents]` tables, if it set any, plus a
 # freshly-generated `[otel]` table pointed at *this* sandbox's own collector.
 #
 # The three `model_*` window keys travel for the same reason `model` does:
@@ -1014,7 +1014,7 @@ render_codex_config() {
         awk '
             /^[[:space:]]*\[/ {
                 in_table = 1
-                keep = ($0 ~ /^[[:space:]]*\[(tui|features)[.\]]/)
+                keep = ($0 ~ /^[[:space:]]*\[(tui|features|agents)[.\]]/)
                 in_features = ($0 ~ /^[[:space:]]*\[features\][[:space:]]*$/)
                 if (in_features) {
                     print

@@ -313,8 +313,8 @@ is no default. `research` and `fetch-service` are policies only —
       instead: the host's top-level `model =`, `model_context_window =`,
       `model_auto_compact_token_limit =`,
       `model_auto_compact_token_limit_scope =`, `model_reasoning_effort =`,
-      `status_line =` and `status_line_use_colors =` lines plus its `[tui]`
-      and `[features]` tables, if it has them (Codex has no per-profile
+      `status_line =` and `status_line_use_colors =` lines plus its `[tui]`,
+      `[features]`, and `[agents]` tables, if it has them (Codex has no per-profile
       default the way `harness-wrapper.sh` hardcodes one for Claude on
       personal/home, so leaving these off drops the host's choices
       silently). The three window keys are on that list because Codex reads
@@ -338,19 +338,18 @@ is no default. `research` and `fetch-service` are policies only —
       top-level keys are filtered by name, so a `model =` under a
       `[profiles.x]` table is not hoisted to the top level; from the first
       header on, a table is copied whole or dropped whole, which is what makes
-      a `[tui]` statusline config survive intact. The header match is on the
+      a `[tui]` statusline config and `[agents]` defaults/roles survive intact.
+      The header match is on the
       bare name, so a quoted `["tui"]` would read as a dropped table, and the
       top-level filter is per line, so a multi-line array up there would
       arrive truncated — Codex writes neither form. The host's `[otel]` table
       is the exception to copy-whole-or-drop-whole: dropped as a table, with
       `environment` and `log_user_prompt` lifted out into the generated one.
-      `CODEX_STATE_KEEP` still preserves the sandbox's own
-      `config.toml` across `--recreate` and that preserved copy still wins
-      (upload order: `upload_config()` then `upload_codex_state()`, and
-      gotcha 20's merge means the later write wins) — so a model changed
-      from inside the sandbox survives a recreate the same way it always did,
-      but so does a stale `$OTEL_URL` from before the collector moved. Only a
-      sandbox with no prior `.codex/` state gets the freshly-computed one.
+      `config.toml` is deliberately absent from `CODEX_STATE_KEEP`. During
+      `--recreate`, the generated host config is uploaded before sandbox state;
+      the state upload no longer overwrites it. Current host model/agent
+      settings and the newly computed `$OTEL_URL` therefore win, matching
+      `--refresh`. Sandbox-only edits to `config.toml` do not survive recreate.
     - **`[features] default_mode_request_user_input = true` is set here, and
       the prompt says so.** Upstream, `request_user_input` is granted only in
       Plan mode — and Plan mode cannot run anything, so a skill can ask a
@@ -471,9 +470,10 @@ is no default. `research` and `fetch-service` are policies only —
       SQLite says not to move it between machines: a stale one is worse than
       none. `tests/test-codex-state.sh` asserts both directions.
     - **`CODEX_STATE_KEEP` is an allowlist.** `sessions/`, `history.jsonl`,
-      `session_index.jsonl`, `config.toml`, plus the databases. Everything else
-      — `auth.json` (above), `thread-writer-locks/`, `shell_snapshots/`,
-      `tmp/`, `installation_id` — stays behind. Note this is the *opposite*
+      `session_index.jsonl`, plus the databases. `auth.json` and `config.toml`
+      stay behind because the host supplies fresh copies during recreation.
+      Everything else — `thread-writer-locks/`, `shell_snapshots/`, `tmp/`,
+      `installation_id` — stays behind. Note this is the *opposite*
       shape from the `~/.claude` upload in `upload_config()`, which is a
       denylist of `rsync --exclude`s: what a sandbox produces is open-ended, so
       naming what to rescue is safer than naming what to drop.
