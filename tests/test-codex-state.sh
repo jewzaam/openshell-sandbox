@@ -69,7 +69,6 @@ present "sessions/2026/09/01/rollout-x.jsonl"
 present "state_5.sqlite"
 present "history.jsonl"
 present "session_index.jsonl"
-present "config.toml"
 
 # Schema-versioned names mean the filter cannot hardcode one. All the databases
 # travel, and each keeps its write-ahead log: a state_5.sqlite moved without
@@ -87,6 +86,11 @@ done
 # host ships it through upload_config(), and a preserved copy would let a stale
 # key beat a rotated one. See gotcha 19.
 absent "auth.json"
+
+# config.toml is rendered from the current host config after sandbox state is
+# restored. Keeping this copy would restore stale model/agent settings and the
+# previous sandbox's OTEL endpoint.
+absent "config.toml"
 
 # Host-side or per-container junk.
 absent "thread-writer-locks"
