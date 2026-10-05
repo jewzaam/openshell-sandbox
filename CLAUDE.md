@@ -483,6 +483,31 @@ is no default. `research` and `fetch-service` are policies only —
       `tests/test-codex-state.sh` can drive it against a fake tree; the
       download needs a live sandbox, the filtering does not.
 
+24. **Gitignored files: repos keep them, config drops them.** Two opposite
+    rules, and copying either onto the other path is the regression.
+    - **Repos (`--upload`, `--download`, context files on `--refresh`) move
+      everything but `.venv`.** A repo is a working copy: untracked build
+      output, local notes, and host-gitignored `pr-context.md`/`open-prs.json`
+      must round-trip. That is why every repo/context upload passes
+      `--no-git-ignore` (without it openshell filters through
+      `git ls-files --exclude-standard`), and why neither the staging rsync,
+      the in-sandbox `tar`, nor the host rsync on download may learn a
+      gitignore filter. `tests/test-repo-gitignored-transfer.sh` breaks each
+      of those four ways.
+    - **Config (`~/.claude`, Codex `plugins`/`skills`, via `upload_config()`)
+      drops what git ignores.** Those rsyncs run `-L` (policy gotcha 8), which
+      follows a skill symlinked to its own checkout, and that checkout's
+      gitignored `.tmp-worktrees` (hundreds of MB) rode into every sandbox on
+      every create and `--refresh --all`. `git_ignored_excludes()` asks git per
+      work tree for untracked ignored paths. Rsync's own
+      `--filter=':- .gitignore'` is the attractive wrong fix, tried and
+      measured: `~/.claude/skills/.gitignore` (written by `link-skills.sh`)
+      lists every linked skill, so it dropped all of them, and it has no
+      `!negation`, so a plugin clone's committed `.claude/agents/` went too.
+      Hence two rules in `git_ignored_excludes()`: tracked files always ship,
+      and an ignored path that is a symlink still ships.
+      `tests/test-refresh-staging.sh` carries both traps in its fixture.
+
 ## Settled, do not re-evaluate
 
 - **screen and tmux were tested and rejected** for session persistence — both

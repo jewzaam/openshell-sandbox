@@ -11,6 +11,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SANDBOXES_DIR="${HOME}/sandboxes"
 
+# Every mktemp below lands in one per-run dir that the EXIT trap removes. The
+# inline `rm -rf` after each staging step only runs on success; a failed upload
+# under `set -e`, or a Ctrl-C mid-rsync, used to leave the staged ~/.claude
+# copy behind in /tmp for good. EXIT also fires on INT/TERM/HUP, but not across
+# `exec`, so every exec calls release_scratch first.
+ORIG_TMPDIR="${TMPDIR:-}"
+SCRATCH="$(mktemp -d)"
+export TMPDIR="$SCRATCH"
+trap 'rm -rf "$SCRATCH"' EXIT
+release_scratch() {
+    trap - EXIT
+    rm -rf "$SCRATCH"
+    if [[ -n "$ORIG_TMPDIR" ]]; then
+        export TMPDIR="$ORIG_TMPDIR"
+    else
+        unset TMPDIR
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Site config — where this host sends telemetry. See config/site.env.example.
 # Loaded before anything resolves a policy, because policies reference it.
@@ -293,6 +312,7 @@ connect_sandbox() {
         default="$(manifest_harness "$sandbox_dir")"
         valid_harness "$default" || default=""
     fi
+    release_scratch
     run exec openshell sandbox exec --name "${os_name}" "${GW_FLAG[@]}" \
         --tty --timeout 0 -- bash -c "(while sleep 30; do printf '\\005' 2>/dev/null; done) & source /sandbox/.bashrc && cd ${workdir} && HARNESS_DEFAULT=${default} /sandbox/bin/harness-wrapper.sh ${forced}"
 }
@@ -1283,6 +1303,32 @@ upload_claude_state() {
     rm -rf "$stage"
 }
 
+# Print an rsync exclude list, anchored at ROOT, of what git ignores in every
+# work tree under ROOT. The config rsyncs run `-L`, which follows a skill
+# symlinked to its own checkout and copied that checkout's gitignored scratch
+# (hundreds of MB of worktrees) into every sandbox. Git answers, not rsync's
+# own `.gitignore` merge: that has no `!negation`, and a plugin clone
+# re-includes committed files that way. Only untracked paths are listed, so a
+# tracked file always ships.
+#
+# An ignored path that is a symlink still ships: ~/.claude/skills/.gitignore
+# lists every linked skill, and a symlink here means "upload what it points
+# at" (policy gotcha 8). Dropping those dropped every linked skill.
+#
+# ponytail: walks all of ROOT, projects/ included. Prune at the rsync's
+# excludes if the walk ever shows up in a --refresh --all.
+git_ignored_excludes() {
+    local root="$1" git_entry work rel path
+    while IFS= read -r -d '' git_entry; do
+        work="$(dirname "$git_entry")"
+        rel="${work#"$root"}"
+        while IFS= read -r -d '' path; do
+            [[ -L "${work}/${path%/}" ]] && continue
+            printf '%s/%s\n' "$rel" "$path"
+        done < <(git -C "$work" ls-files -z -o -i --exclude-standard --directory 2>/dev/null || true)
+    done < <(find -L "$root" -name .git -prune -print0 2>/dev/null || true)
+}
+
 upload_config() {
     local sandbox_target="$1"
     local sandbox_dir="$2"
@@ -1290,7 +1336,9 @@ upload_config() {
     echo "Uploading Claude config..." >&2
     if [[ -d "${HOME}/.claude" ]]; then
         CLAUDE_TMP="$(mktemp -d)"
+        git_ignored_excludes "${HOME}/.claude" > "${CLAUDE_TMP}/ignored"
         rsync -rL \
+            --exclude-from="${CLAUDE_TMP}/ignored" \
             --exclude=projects \
             --exclude=agentpulse \
             --exclude=venvs \
@@ -1453,7 +1501,11 @@ upload_config() {
         # sandbox instead of pointing back at an unavailable host path.
         for codex_dir in plugins skills; do
             if [[ -d "${HOME}/.codex/${codex_dir}" ]]; then
-                rsync -rL "${HOME}/.codex/${codex_dir}/" \
+                git_ignored_excludes "${HOME}/.codex/${codex_dir}" \
+                    > "${CODEX_TMP}/ignored-${codex_dir}"
+                rsync -rL --exclude-from="${CODEX_TMP}/ignored-${codex_dir}" \
+                    --exclude=.git \
+                    "${HOME}/.codex/${codex_dir}/" \
                     "${CODEX_TMP}/.codex/${codex_dir}/"
                 codex_shipped=1
             fi
@@ -1961,7 +2013,7 @@ if [[ "$FETCH_SERVICE_MODE" == true ]]; then
     # lives exactly as long as this terminal does. The policy grant is applied
     # and reverted alongside it, so the sandbox cannot reach a service that is
     # not running and cannot keep the grant after it stops.
-    trap 'trap - INT TERM EXIT; fetch_service_teardown' INT TERM EXIT
+    trap 'trap - INT TERM EXIT; fetch_service_teardown; rm -rf "$SCRATCH"' INT TERM EXIT
     "$0" --policy fetch-service ${GATEWAY:+--gateway "$GATEWAY"} || exit 1
 
     echo "Following log — Ctrl-C stops the service" >&2
@@ -2186,6 +2238,7 @@ if [[ "$RECREATE_MODE" == true ]]; then
         echo "Recreated ${SANDBOX_NAME}. Connect with: $(basename "$0") --connect ${SANDBOX_NAME}" >&2
         exit 0
     fi
+    release_scratch
     exec "$0" --connect "$SANDBOX_NAME" ${HARNESS:+--harness "$HARNESS"} "${COMMON_ARGS[@]}"
 fi
 
@@ -2242,6 +2295,7 @@ if [[ "$ENSURE_MODE" == true ]]; then
         [[ -n "$SOURCE_DIR" ]] && ENSURE_ARGS+=(--source-dir "$SOURCE_DIR")
         [[ "$DRYRUN" == true ]] && ENSURE_ARGS+=(--dryrun)
         [[ "$NO_CONNECT" == true ]] && ENSURE_ARGS+=(--no-connect)
+        release_scratch
         exec "$0" "${ENSURE_ARGS[@]}"
     fi
 fi
