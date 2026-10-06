@@ -139,9 +139,15 @@ is no default. `research` and `fetch-service` are policies only —
     `~/.claude`. It keeps symlinks as symlinks (`-a`, not `-rL`), which is what
     uploading the directory did before it existed.
     `tests/test-upload-venv.sh` fails if the exclusion goes away.
-13. **`upload_repo()` pre-deletes the sandbox copy.** Without it, re-uploading a
-    repo where a path flipped between symlink and directory fails with tar
-    `Cannot open: File exists`.
+13. **`upload_repo()` pre-deletes the sandbox copy, except a top-level
+    `.venv`.** Without the delete, re-uploading a repo where a path flipped
+    between symlink and directory fails with tar `Cannot open: File exists`.
+    The venv is spared because it was built in here (gotcha 12 keeps the
+    host's out) and the host has no copy to restore it from, so deleting it
+    only forced a rebuild after every `--upload`, `--force` included. That
+    relies on the upload merging into the surviving dir (gotcha 20). A nested
+    `.venv` is still deleted: sparing its parent would bring the type conflict
+    back. `tests/test-upload-venv.sh`.
 14. **`manifest.json` is written before the sandbox is created, not after the
     repos are cloned.** `init_manifest()` (lib.sh) is called by scode before
     `code` opens the folder and by sandbox.sh before `openshell sandbox

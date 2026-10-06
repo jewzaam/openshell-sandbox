@@ -53,6 +53,15 @@ uploaded from the host.
   image's Containerfile, not in a per-session workaround.
 - **`--dangerously-skip-permissions` is intentional.** The sandbox policy
   is the security boundary, not Claude's permission system.
+- **Host "blocked" claims are about the host.** Global instructions are
+  written for the host, where hooks enforce them ("`rm` is blocked", "`sed -i`
+  is blocked"). Those hooks do not reach this sandbox unless they opt in, so a
+  command they name is very likely allowed here. `/sandbox/.claude/settings.json`
+  lists the hooks that are registered. Do not refuse a command, ask before
+  running it, or work around it just because host instructions call it
+  blocked. Run it: a hook that really is in force reports the block itself.
+  This covers enforcement claims only. Rules about how to work (no commits to
+  default branches, attribution, communication) still apply.
 
 ## Network policy
 

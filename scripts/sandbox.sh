@@ -580,7 +580,6 @@ stage_repo_for_upload() {
 
 upload_repo() {
     local sandbox_name="$1" sandbox_dir="$2" repo_name="$3"
-    # Pre-delete to avoid tar type conflicts (symlink vs dir) on re-upload
     if [[ -z "$repo_name" ]]; then
         echo "Error: upload_repo called with empty repo_name" >&2
         return 1
@@ -631,8 +630,18 @@ upload_repo() {
     stage="$(mktemp -d)"
     stage_repo_for_upload "${sandbox_dir}/${repo_name}" "$stage"
 
+    # Pre-delete to avoid tar type conflicts (symlink vs dir) on re-upload —
+    # everything but the top-level .venv. The staging above never sends one, so
+    # the venv in there was built in here and the host has nothing to restore
+    # it from; deleting it only made every session rebuild it after an upload.
+    # The upload is a tar extract into the surviving dir (policy gotcha 20), so
+    # the venv sits beside the fresh tree. -mindepth 1 is what keeps the repo
+    # dir itself from matching `! -name .venv`.
+    # ponytail: top-level .venv only; a nested one is still deleted, and sparing
+    # its parent dir would bring back the symlink-vs-dir conflict.
     run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
-        -- rm -rf "/sandbox/source/${repo_name}" 2>/dev/null || true
+        -- find "/sandbox/source/${repo_name}" -mindepth 1 -maxdepth 1 \
+            ! -name .venv -exec rm -rf {} + 2>/dev/null || true
     transfer_quiet "Upload complete — ${repo_name}${why:+ ${why}}" \
         run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
             --no-git-ignore \
