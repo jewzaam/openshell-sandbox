@@ -30,6 +30,7 @@ FAKE_HOME="${TMP}/home"
 mkdir -p "${FAKE_HOME}/sandboxes/myapp"
 
 fail=0
+unset SANDBOX_PROFILE
 
 # The dryrun trace carries the exec line; the wrapper argument is the last
 # thing on it.
