@@ -986,6 +986,10 @@ CODEX_STATE_KEEP=(sessions history.jsonl session_index.jsonl)
 codex_state_filter() {
     local src="$1" dst="$2" kept=1 item
     mkdir -p "$dst"
+    # Older recreates may already have staged these files. They are not state;
+    # leaving them behind lets upload_codex_state overwrite the freshly
+    # rendered config.toml after upload_config() finishes.
+    rm -f "${dst}/config.toml" "${dst}/auth.json"
     for item in "${CODEX_STATE_KEEP[@]}"; do
         if [[ -e "${src}/${item}" ]]; then
             rm -rf "${dst:?}/${item}"

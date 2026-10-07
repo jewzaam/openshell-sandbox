@@ -46,6 +46,9 @@ absent() {
 # A realistic ~/.codex as downloaded from a sandbox.
 SRC="${TMP}/src"
 DST="${TMP}/dst"
+mkdir -p "$DST"
+echo 'stale config' > "${DST}/config.toml"
+echo 'stale key' > "${DST}/auth.json"
 mkdir -p "${SRC}/sessions/2026/09/01" "${SRC}/thread-writer-locks" \
          "${SRC}/shell_snapshots" "${SRC}/tmp/arg0" "${SRC}/.tmp"
 echo '{"type":"session_meta"}' > "${SRC}/sessions/2026/09/01/rollout-x.jsonl"
