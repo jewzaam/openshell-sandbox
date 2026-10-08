@@ -2,14 +2,32 @@
 #
 # Reset the rootless podman network namespace.
 # Use when switching network interfaces (wired↔wifi) or after a pasta
-# version change. Stops all containers, kills pasta, recreates the
-# rootless-netns, then restarts the containers that were running.
+# version change. Stops Ready sandboxes via openshell, then all containers,
+# kills pasta, recreates the rootless-netns, then restarts the containers that
+# were running.
 
 set -euo pipefail
 
 UID_NUM="$(id -u)"
 NETNS_DIR="/run/user/${UID_NUM}/containers/networks/rootless-netns"
 PID_FILE="${NETNS_DIR}/rootless-netns-conn.pid"
+
+# A Ready sandbox whose container is pulled out from under it by `podman stop -a`
+# lands in Error. Stop them through openshell first, in parallel: each stop
+# blocks until Stopped. Error-phase sandboxes are left alone. A gateway that is
+# not up (fresh boot) lists nothing, so this step is a no-op then.
+echo "=== Stopping Ready sandboxes ==="
+READY=$(openshell sandbox list --output json 2>/dev/null \
+  | jq -r '.sandboxes[] | select(.phase == "Ready") | .name' || true)
+if [ -n "${READY}" ]; then
+  for name in ${READY}; do
+    echo "  stopping ${name}"
+    openshell sandbox stop "${name}" &
+  done
+  wait
+else
+  echo "  (none)"
+fi
 
 echo "=== Capturing running containers ==="
 RUNNING=$(podman ps -q)
