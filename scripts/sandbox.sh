@@ -1915,12 +1915,28 @@ if [[ "$ALL_MODE" == true ]]; then
     GW_FLAG=()
     [[ -n "$GATEWAY" ]] && GW_FLAG=(--gateway "$GATEWAY")
 
+    # A ~/sandboxes/<name>/ outlives its container, and the next connect
+    # creates a fresh one, so a missing container is nothing to do, not a
+    # failure. One list up front, because an empty sandbox_phase cannot tell
+    # "no such sandbox" from "gateway did not answer". Only a list that came
+    # back whole (exit 0, a JSON envelope, no second page) may skip anything;
+    # otherwise every sandbox runs and fails as before.
+    ALL_LIVE_OK=false
+    if ALL_LIVE="$(openshell sandbox list "${GW_FLAG[@]}" --output json 2>/dev/null \
+            | jq -rn 'input | if .next_page_token == "" then .sandboxes[].name else error("paged") end')"; then
+        ALL_LIVE_OK=true
+    fi
+
     ALL_FAILED=()
     ALL_FOUND=false
     for manifest in "${SANDBOXES_DIR}"/*/manifest.json; do
         [[ -f "$manifest" ]] || continue
         ALL_FOUND=true
         name="$(basename "$(dirname "$manifest")")"
+        if [[ "$ALL_LIVE_OK" == true ]] && ! grep -qxF "$(resolve_openshell_name "$name")" <<<"$ALL_LIVE"; then
+            echo "⊘ Skipped ${ALL_MODE_FLAG#--}: ${name} has no openshell sandbox — created on next use" >&2
+            continue
+        fi
         one=("$ALL_MODE_FLAG" "$name" "${ALL_COMMON[@]}")
         # A stopped sandbox is recreated on its next connect instead
         # (apply_pending). Only --all defers: --recreate NAME is the one path
