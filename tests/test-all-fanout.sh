@@ -34,6 +34,19 @@ if [[ ! -f "${WORK}/config/site.env" ]]; then
 fi
 SANDBOX_SH="${WORK}/scripts/sandbox.sh"
 
+# Fake openshell: `sandbox list` prints $FAKE_LIST when set, else fails like a
+# gateway that is down. Keeps the test hermetic on a host with a real gateway,
+# where none of these fake sandboxes exist.
+FAKE_BIN="${TMP}/bin"
+mkdir -p "$FAKE_BIN"
+cat > "${FAKE_BIN}/openshell" <<'EOF'
+#!/bin/bash
+[[ "$1 $2" == "sandbox list" && -n "${FAKE_LIST:-}" ]] || exit 1
+printf '%s\n' "$FAKE_LIST"
+EOF
+chmod +x "${FAKE_BIN}/openshell"
+export PATH="${FAKE_BIN}:${PATH}"
+
 FAKE_HOME="${TMP}/home"
 for n in alpha beta; do
     mkdir -p "${FAKE_HOME}/sandboxes/${n}"
@@ -80,6 +93,24 @@ old_out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --recreate --all --dryrun 2>&1 |
 grep -qF "Skipped oldie" <<<"$old_out" \
     || { echo "FAIL: --recreate --all did not skip the profile-less sandbox" >&2; fail=1; }
 rm -rf "${FAKE_HOME:?}/sandboxes/oldie"
+
+# --- a directory whose openshell sandbox is gone is skipped, not failed ---
+for mode in refresh recreate; do
+    gone_out="$(FAKE_LIST='{"sandboxes":[{"name":"sb-alpha","phase":"Ready"}],"next_page_token":""}' \
+        HOME="$FAKE_HOME" bash "$SANDBOX_SH" "--${mode}" --all --dryrun 2>&1 || true)"
+    grep -qF "=== ${mode} alpha ===" <<<"$gone_out" \
+        || { echo "FAIL: --${mode} --all skipped alpha, which exists" >&2; fail=1; }
+    grep -qF "⊘ Skipped ${mode}: beta has no openshell sandbox" <<<"$gone_out" \
+        || { echo "FAIL: --${mode} --all did not skip missing beta" >&2; fail=1; }
+    grep -qE "=== ${mode} beta ===|Failed.*beta" <<<"$gone_out" \
+        && { echo "FAIL: --${mode} --all ran or failed missing beta" >&2; fail=1; }
+done
+
+# --- an incomplete list skips nothing: a second page may hold beta ---
+paged_out="$(FAKE_LIST='{"sandboxes":[{"name":"sb-alpha"}],"next_page_token":"x"}' \
+    HOME="$FAKE_HOME" bash "$SANDBOX_SH" --refresh --all --dryrun 2>&1 || true)"
+grep -qF "=== refresh beta ===" <<<"$paged_out" \
+    || { echo "FAIL: --refresh --all skipped beta on a paged list" >&2; fail=1; }
 
 # --- rejections ---
 if HOME="$FAKE_HOME" bash "$SANDBOX_SH" --all --dryrun >/dev/null 2>&1; then
