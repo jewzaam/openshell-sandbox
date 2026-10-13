@@ -162,7 +162,7 @@ elif [[ "$HARNESS" == "codex" ]]; then
     # opens a new session as easily as it resumes one and works fine when there
     # are none, so branching on `-d /sandbox/.codex/sessions` bought nothing.
     # There is no --yolo in codex 0.152.0; the long flags are the flags.
-    cmd="dtach -c $SOCKET codex resume --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
+    cmd="dtach -c $SOCKET /sandbox/bin/codex-error-wrapper.sh codex resume --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
 else
     claude_cmd="claude"
     # $SANDBOX_PROFILE comes from /sandbox/.env, written and uploaded on the
@@ -188,8 +188,21 @@ if [[ -z "$user_cmd" ]]; then
     exec bash
 fi
 
+if [[ "$HARNESS" == "codex" ]]; then
+    CODEX_ERROR_LOG="$(mktemp)"
+    export CODEX_ERROR_LOG
+    trap 'rm -f "$CODEX_ERROR_LOG"' EXIT
+fi
+
 # After the prompt, not before: the model that counts is the one in the command
 # about to run, including a --model the user just typed over the default.
 apply_advisor "$user_cmd"
 
-exec $user_cmd
+$user_cmd
+status=$?
+if [[ "$HARNESS" == codex && $status -ne 0 ]] \
+    && grep -Fq 'refresh token was revoked' "$CODEX_ERROR_LOG"; then
+    cat "$CODEX_ERROR_LOG" >&2
+    echo "Sign in again on the host, then run sandbox.sh --refresh." >&2
+fi
+exit "$status"
