@@ -90,6 +90,8 @@ grep -q '/sandbox/\.dtach-\$1' "$W" \
     || { echo "FAIL: wrapper does not derive the dtach socket from the harness" >&2; fail=1; }
 grep -q 'codex resume --dangerously-bypass-approvals-and-sandbox' "$W" \
     || { echo "FAIL: wrapper does not launch codex resume with the bypass flag" >&2; fail=1; }
+grep -q 'codex-error-wrapper.sh codex resume' "$W" \
+    || { echo "FAIL: Codex errors are not captured outside dtach" >&2; fail=1; }
 # There is no --yolo in codex 0.152.0; it is not an alias for the long flag.
 # Comments are stripped first — the wrapper says so in prose, which is not a use.
 grep -v '^[[:space:]]*#' "$W" | grep -q -- '--yolo' \
@@ -116,6 +118,19 @@ grep -q 'if \[\[ -z "\$HARNESS" \]\]; then' "$W" \
 
 grep -q -- '--dangerously-bypass-hook-trust' "$W" \
     || { echo "FAIL: codex command is missing --dangerously-bypass-hook-trust" >&2; fail=1; }
+grep -q "refresh token was revoked' \"\$CODEX_ERROR_LOG\"" "$W" \
+    || { echo "FAIL: failed Codex startup does not explain how to refresh auth" >&2; fail=1; }
+
+if CODEX_ERROR_LOG="${TMP}/codex-error.log" \
+    "${REPO_ROOT}/bin/codex-error-wrapper.sh" bash -c 'echo "refresh token was revoked" >&2; exit 7' \
+    2>"${TMP}/codex-stderr"; then
+    status=0
+else
+    status=$?
+fi
+[[ $status -eq 7 ]] || { echo "FAIL: Codex error wrapper lost the command status" >&2; fail=1; }
+grep -q 'refresh token was revoked' "${TMP}/codex-error.log" \
+    || { echo "FAIL: Codex error wrapper did not save stderr" >&2; fail=1; }
 
 # --- default harness precedence ---
 #
