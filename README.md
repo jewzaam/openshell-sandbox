@@ -99,6 +99,9 @@ sandbox.sh --delete myapp
 # Open sandbox for a repo + ref (auto-names sandbox <repo>-<ref>)
 scode --profile work ~/source/myapp pr/1176
 
+# Open a GitHub branch URL directly (branch slashes are supported)
+scode https://github.com/org/myapp/tree/feature/my-branch --profile personal
+
 # Default branch
 scode --profile home ~/source/myapp
 
