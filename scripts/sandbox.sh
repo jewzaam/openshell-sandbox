@@ -639,9 +639,12 @@ upload_repo() {
     # dir itself from matching `! -name .venv`.
     # ponytail: top-level .venv only; a nested one is still deleted, and sparing
     # its parent dir would bring back the symlink-vs-dir conflict.
+    # Both streams: the remote find's stderr comes back on exec's stdout, so
+    # 2>/dev/null alone let "No such file or directory" through on a first
+    # upload (--add-repo), when the dir does not exist yet.
     run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
         -- find "/sandbox/source/${repo_name}" -mindepth 1 -maxdepth 1 \
-            ! -name .venv -exec rm -rf {} + 2>/dev/null || true
+            ! -name .venv -exec rm -rf {} + >/dev/null 2>&1 || true
     transfer_quiet "Upload complete — ${repo_name}${why:+ ${why}}" \
         run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
             --no-git-ignore \
