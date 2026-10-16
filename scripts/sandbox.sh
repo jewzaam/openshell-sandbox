@@ -213,7 +213,8 @@ OPTIONS:
                       and the policy of the same name. REQUIRED with --create and --recreate.
                       Only valid with --create, --recreate, or --ensure — applied at build, not after
     --gateway NAME    OpenShell gateway (default: \$OPENSHELL_GATEWAY)
-    --refresh [NAME]  Re-upload ~/.claude/, bin/, .bashrc, .env, system prompt
+    --refresh [NAME]  Re-upload ~/.claude/, bin/, .bashrc, .env, system prompt;
+                      re-render host .vscode/tasks.json from manifest
     --recreate [NAME] Download, delete sandbox container, recreate with new image, re-upload repos
     --all             With --refresh/--recreate: apply to every sandbox in ~/sandboxes/
                       instead of one NAME. --recreate --all never connects.
@@ -2593,6 +2594,15 @@ fi
 if [[ "$REFRESH_MODE" == true ]]; then
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
     SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
+    # scode writes tasks.json once, so it outlives a --recreate --profile and
+    # predates --profile on old sandboxes; --ensure then fails on folder open.
+    # Re-rendered from the manifest because --ensure checks against exactly
+    # that. Host-side, so before the stopped check: a stale task is what would
+    # fail before the deferred refresh ever ran.
+    if [[ "$DRYRUN" != true && -f "${SANDBOX_DIR}/manifest.json" ]]; then
+        write_tasks_json "$SANDBOX_DIR" \
+            "$(manifest_ensure_cmd "${SCRIPT_DIR}/sandbox.sh" "$SANDBOX_DIR" "$SANDBOX_PROFILE")"
+    fi
     # Starting a stopped sandbox to refresh it hands it back to
     # claude-dashboard's idle sweep; the next connect refreshes it instead
     # (apply_pending). NAME or --all alike.
