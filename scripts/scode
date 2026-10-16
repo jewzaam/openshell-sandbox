@@ -128,42 +128,7 @@ write_tasks_and_open() {
         init_manifest "$dir" "$sandbox_name" "$SCODE_PROFILE" "$SCODE_HARNESS"
     fi
 
-    mkdir -p "${dir}/.vscode"
-    if [[ ! -f "${dir}/.vscode/tasks.json" ]]; then
-        cat > "${dir}/.vscode/tasks.json" << TASKS
-{
-  "version": "2.0.0",
-  "tasks": [
-    {
-      "label": "sandbox",
-      "type": "shell",
-      "command": "${cmd}",
-      "isBackground": true,
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always",
-        "panel": "new",
-        "group": "sandbox-dev"
-      },
-      "runOptions": {"runOn": "folderOpen"}
-    },
-    {
-      "label": "bash",
-      "type": "shell",
-      "command": "exec bash -li",
-      "isBackground": true,
-      "problemMatcher": [],
-      "presentation": {
-        "reveal": "always",
-        "panel": "new",
-        "group": "sandbox-dev"
-      },
-      "runOptions": {"runOn": "folderOpen"}
-    }
-  ]
-}
-TASKS
-    fi
+    [[ -f "${dir}/.vscode/tasks.json" ]] || write_tasks_json "$dir" "$cmd"
     code "${dir}"
 }
 
@@ -234,13 +199,7 @@ target_path="$(realpath "$1" 2>/dev/null || echo "$1")"
 if [[ -f "${target_path}/manifest.json" ]]; then
     sandbox_name="$(jq -r '.name' "${target_path}/manifest.json")"
 
-    ENSURE_CMD="${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}${HARNESS_FLAG}"
-    while IFS=$'\t' read -r repo_name repo_url repo_ref; do
-        ENSURE_CMD+=" --repo ${repo_url}"
-        if [[ -n "$repo_ref" && "$repo_ref" != "null" ]]; then
-            ENSURE_CMD+=" --ref ${repo_ref}"
-        fi
-    done < <(jq -r '.repos | to_entries[] | [.key, .value.url, .value.ref] | @tsv' "${target_path}/manifest.json")
+    ENSURE_CMD="$(manifest_ensure_cmd "$SANDBOX_SH" "$target_path" "$SCODE_PROFILE")${HARNESS_FLAG}"
 
     write_tasks_and_open "${target_path}" "${ENSURE_CMD}"
     exit 0

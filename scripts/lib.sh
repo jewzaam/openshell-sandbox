@@ -631,6 +631,35 @@ manifest_harness() {
     jq -r '.harness // ""' "${1}/manifest.json" 2>/dev/null || true
 }
 
+# The `--ensure` command that reopens an existing sandbox dir, built from its
+# manifest's name and repos. The profile is the caller's: scode passes the one
+# on its command line, --refresh passes the manifest's. No --source-dir — the
+# manifest does not keep it, and it only matters on --add-repo.
+manifest_ensure_cmd() {
+    local sandbox_sh="$1" dir="$2" profile="${3:-}" manifest="${2}/manifest.json" cmd repo_url repo_ref
+    printf -v cmd '%s --ensure %q' "$sandbox_sh" "$(jq -r '.name' "$manifest")"
+    [[ -n "$profile" ]] && cmd+=" --profile ${profile}"
+    while IFS=$'\t' read -r repo_url repo_ref; do
+        cmd+=" --repo ${repo_url}"
+        [[ -n "$repo_ref" ]] && printf -v cmd '%s --ref %q' "$cmd" "$repo_ref"
+    done < <(jq -r '.repos[] | [.url, (.ref // "")] | @tsv' "$manifest")
+    printf '%s\n' "$cmd"
+}
+
+# VS Code tasks that run CMD (a sandbox.sh --ensure) and a host shell when the
+# folder opens. Overwrites; scode only calls it when the file is missing.
+write_tasks_json() {
+    local dir="$1" cmd="$2"
+    mkdir -p "${dir}/.vscode"
+    jq -n --arg cmd "$cmd" '
+        def task($label; $command): {label: $label, type: "shell", command: $command,
+            isBackground: true, problemMatcher: [],
+            presentation: {reveal: "always", panel: "new", group: "sandbox-dev"},
+            runOptions: {runOn: "folderOpen"}};
+        {version: "2.0.0", tasks: [task("sandbox"; $cmd), task("bash"; "exec bash -li")]}' \
+        > "${dir}/.vscode/tasks.json"
+}
+
 # Work deferred off a stopped sandbox: `refresh_pending`, `recreate_pending`.
 # claude-dashboard stops idle sandboxes, and starting one just to refresh or
 # recreate it hands it straight back to the dashboard, which stops it again —
