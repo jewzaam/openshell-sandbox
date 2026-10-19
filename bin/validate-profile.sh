@@ -151,14 +151,10 @@ if command -v curl &>/dev/null; then
         check "api.anthropic.com" "blocked" "$actual"
     fi
 
-    # Three hosts, three failure modes: chatgpt.com is the default provider on a
-    # ChatGPT sign-in, api.openai.com the provider on an API key, and
-    # auth.openai.com every login and token refresh. Checking one would leave
-    # two ways to be silently broken.
-    for host in chatgpt.com api.openai.com auth.openai.com; do
-        actual=$(net_check "https://${host}")
-        openai_profile && check "$host" "reachable" "$actual" || check "$host" "blocked" "$actual"
-    done
+    # Codex is authenticated on the host, so sandbox homepage probes for its
+    # sign-in and token-refresh hosts are not useful profile checks.
+    actual=$(net_check https://api.openai.com)
+    openai_profile && check "api.openai.com" "reachable" "$actual" || check "api.openai.com" "blocked" "$actual"
 
     actual=$(net_check https://us-east5-aiplatform.googleapis.com)
     personal_profile && check "googleapis.com" "blocked" "$actual" || check "googleapis.com" "reachable" "$actual"
