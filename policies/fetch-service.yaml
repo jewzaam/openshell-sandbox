@@ -137,7 +137,7 @@ network_policies:
     endpoints:
       # protocol/enforcement are required for anything beyond a plain
       # absolute-URI GET; omitting them returns 403 on CONNECT.
-      - host: 172.30.0.21
+      - host: host.openshell.internal
         port: 8090
         protocol: rest
         enforcement: enforce
