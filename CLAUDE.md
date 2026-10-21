@@ -311,15 +311,21 @@ is no default. `research` and `fetch-service` are policies only —
       sandbox reports no Codex state to the dashboard. They sit under the same
       `! personal_profile` gate as `auth.json`: hooks for an agent that cannot
       reach its provider report nothing.
-    - **`config.toml` is generated, never the host's file.** The host's own
-      file can carry MCP server commands and `sandbox_permissions` entries
+    - **`config.toml` is generated, never the host's file.** The sandbox's
+      model and reasoning-effort defaults override the host's values. It carries
+      the host's other top-level choices:
+      `model_context_window`, `model_auto_compact_token_limit`,
+      `model_auto_compact_token_limit_scope`, `status_line`, and
+      `status_line_use_colors`, plus `[tui]`, `[features]`, and `[agents]`.
+      The host's own file can carry MCP server commands and `sandbox_permissions` entries
       built around host paths, meaningless in here, and its `[otel]` table (if
       any) points at the host's own collector — typically `localhost`,
       unreachable from in here. So `upload_config()` writes a fresh one
-      instead: the host's top-level `model =`, `model_context_window =`,
-      `model_auto_compact_token_limit =`,
-      `model_auto_compact_token_limit_scope =`, `model_reasoning_effort =`,
-      `status_line =` and `status_line_use_colors =` lines plus its `[tui]`,
+      instead: the sandbox's fixed `model = "gpt-6-luna"` and
+      `model_reasoning_effort = "high"`, the host's top-level
+      `model_context_window =`, `model_auto_compact_token_limit =`,
+      `model_auto_compact_token_limit_scope =`, `status_line =` and
+      `status_line_use_colors =` lines plus its `[tui]`,
       `[features]`, and `[agents]` tables, if it has them (Codex has no per-profile
       default the way `harness-wrapper.sh` hardcodes one for Claude on
       personal/home, so leaving these off drops the host's choices

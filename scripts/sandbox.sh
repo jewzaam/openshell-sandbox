@@ -1009,18 +1009,18 @@ codex_state_filter() {
     return $kept
 }
 
-# Render the config.toml a work-profile Codex sandbox should get: the host's
-# own top-level choices (`model`, `model_context_window`,
-# `model_auto_compact_token_limit*`, `model_reasoning_effort`, `status_line*`)
-# and its `[tui]`, `[features]`, and `[agents]` tables, if it set any, plus a
-# freshly-generated `[otel]` table pointed at *this* sandbox's own collector.
+# Render the config.toml a work-profile Codex sandbox should get: fixed
+# sandbox defaults for `model` and `model_reasoning_effort`, the host's other
+# top-level choices (`model_context_window`, `model_auto_compact_token_limit*`,
+# `status_line*`) and its `[tui]`, `[features]`, and `[agents]` tables, if it
+# set any, plus a freshly-generated `[otel]` table pointed at this sandbox's
+# own collector.
 #
-# The three `model_*` window keys travel for the same reason `model` does:
-# Codex reads them from config only, so a host that opted its model up to the
-# catalog's max_context_window would otherwise silently drop back to the
-# catalog default in here — and the auto-compact threshold with it, since the
-# catalog pins `auto_compact_token_limit = null` on every shipped model and
-# derives it from whatever window is in effect.
+# Codex reads the three `model_*` window keys from config only, so a host that
+# opted its model up to the catalog's max_context_window would otherwise
+# silently drop back to the catalog default in here — and the auto-compact
+# threshold with it, since the catalog pins `auto_compact_token_limit = null`
+# on every shipped model and derives it from whatever window is in effect.
 # Never the host's own file — see gotcha 21 for why (host-only
 # MCP/sandbox_permissions entries, and an `[otel]` table pointed at the host's
 # own, unreachable collector).
@@ -1113,6 +1113,7 @@ render_codex_config() {
     local in_otel=0 line environment_re log_prompt_re
     environment_re='^[[:space:]]*environment[[:space:]]*=[[:space:]]*"([^"]*)"'
     log_prompt_re='^[[:space:]]*log_user_prompt[[:space:]]*=[[:space:]]*(true|false)[[:space:]]*$'
+    printf 'model = "gpt-6-luna"\nmodel_reasoning_effort = "high"\n'
     if [[ -f "$host_config" ]]; then
         # Two allowlists, one pass. Before the first table header the host's
         # top-level keys are filtered by name; from the first header on, a
@@ -1144,7 +1145,7 @@ render_codex_config() {
             }
             in_features && /^[[:space:]]*default_mode_request_user_input[[:space:]]*=/ { next }
             in_table { if (keep) print; next }
-            /^(model|model_context_window|model_auto_compact_token_limit|model_auto_compact_token_limit_scope|model_reasoning_effort|status_line|status_line_use_colors)[[:space:]]*=/
+            /^(model_context_window|model_auto_compact_token_limit|model_auto_compact_token_limit_scope|status_line|status_line_use_colors)[[:space:]]*=/
             END {
                 if (!have_features) {
                     print "[features]"
