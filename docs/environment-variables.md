@@ -115,6 +115,8 @@ inherits from:
 - `export PATH="/sandbox/bin:${PATH}"` (line 6)
 - **container policy** (lines 18-30): the two telemetry toggles, three exporter
   selections, two intervals, two log-detail flags
+- `CODEX_CMD=/usr/bin/codex` points the Codex shim at the npm-installed CLI;
+  `/sandbox/.env` can override it for a different installation.
 - sources `/sandbox/.env` with `set -a` (lines 33-37), *after* the policy, so a
   host-written value still wins
 - no `claude`/`codex` aliases — `/sandbox/bin` first on `PATH` is what puts the
