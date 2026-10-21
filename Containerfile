@@ -42,6 +42,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # unpacked, because the platform package vendors a musl codex binary plus
 # bwrap, rg and zsh.
 RUN npm install -g @anthropic-ai/claude-code @googleworkspace/cli @openai/codex
+ENV CODEX_CMD=/usr/bin/codex
 
 # uv (Python package manager)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
