@@ -172,7 +172,10 @@ is no default. `research` and `fetch-service` are policies only —
     and the reference repos dominate the payload. That mtime walk must
     keep excluding `.git`, `.git/index` and `.git/index.lock`: `git status`
     rewrites exactly those three and nothing else, so any editor or shell
-    prompt polling status makes every repo look modified on every run. The
+    prompt polling status makes every repo look modified on every run. Same
+    for `.git/objects` (the directory only), `.git/FETCH_HEAD`, and
+    directories under `.git/refs/remotes/`: a `git fetch` that brings nothing
+    touches exactly those (the last only on newer git — 2.56 yes, 2.47 no). The
     rest of `.git` is still walked, which is what keeps staging, commits and
     branch switches detected. Relatedly, do not add
     write-only-if-changed logic to the context writers to keep repos "clean":

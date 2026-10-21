@@ -223,6 +223,18 @@ repo_changed_since_upload() {
     # (`git add` always writes a blob under `.git/objects`), as are commits
     # (refs, logs) and branch switches (HEAD).
     #
+    # More for `git fetch` that brings nothing: it rewrites FETCH_HEAD and
+    # moves the `.git/objects` directory's mtime with a transient temp file;
+    # git 2.56 (not 2.47) also moves the mtime of each `refs/remotes/<remote>`
+    # directory without changing a ref in it. Measured the same way. A fetch
+    # that does bring something writes object files and ref files, which are
+    # still walked. Only directories under refs/remotes are skipped, and the one
+    # change only they showed — prune deleting a loose remote ref — also removes
+    # its reflog, which moves `logs/refs/remotes/<remote>`, still walked.
+    #
+    # ponytail: with core.logAllRefUpdates=false there is no reflog, so a prune
+    # that only deletes a loose remote ref is missed; --upload --force sends it.
+    #
     # ponytail: the gap is an index-only edit that writes no object — `git
     # reset` to unstage, with nothing else touched. The walk misses that;
     # --upload --force sends it.
@@ -231,6 +243,9 @@ repo_changed_since_upload() {
         ! -path "${repo_dir}/.git" \
         ! -path "${repo_dir}/.git/index" \
         ! -path "${repo_dir}/.git/index.lock" \
+        ! -path "${repo_dir}/.git/objects" \
+        ! -path "${repo_dir}/.git/FETCH_HEAD" \
+        ! \( -type d -path "${repo_dir}/.git/refs/remotes/*" \) \
         -print -quit 2>/dev/null || true)
     [[ -n "$newer" ]] || return 1
     local tail=""

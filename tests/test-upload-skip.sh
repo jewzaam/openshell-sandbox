@@ -278,6 +278,56 @@ git_quiet status --porcelain
 upload
 uploaded && { echo "FAIL: a bare 'git status' made the repo look modified" >&2; fail=1; }
 
+# `git fetch` that brings nothing rewrites FETCH_HEAD and moves .git/objects'
+# mtime, so a routine `fetch --all` made every repo upload. One that brings a
+# commit must still count.
+UPSTREAM="${TMP}/upstream.git"
+git clone -q --bare "$REPO" "$UPSTREAM"
+git_quiet remote add origin "$UPSTREAM"
+git_quiet fetch --all --prune --tags
+settle
+FETCH_STAMP="$(stamp_of last_upload)"
+fetch_out="$(git -C "$REPO" fetch --all --prune --tags 2>&1)"
+# Captured before upload(): a real upload moves last_upload, after which nothing
+# reads as newer and the evidence is gone. Every path, not just the first one
+# the walk stops on, with its mtime, so a new git that writes somewhere else on
+# a no-op fetch names that place outright.
+fetch_touched="$(TZ=UTC find "$REPO" -newermt "$FETCH_STAMP" -printf '    %TY-%Tm-%Td %TH:%TM:%TS  %P\n' | sort)"
+fetch_verdict="$(repo_changed_since_upload "$SBX" myrepo 2>&1 && echo changed || echo unchanged)"
+upload
+if uploaded; then
+    {
+        echo "FAIL: a fetch that brought nothing made the repo look modified"
+        echo "    $(git --version), last_upload ${FETCH_STAMP}"
+        echo "    walk said: ${fetch_verdict//$'\n'/; }"
+        echo "    git fetch output: ${fetch_out:-<none>}"
+        echo "    every path newer than last_upload (excluded ones included):"
+        echo "${fetch_touched:-    <none>}"
+    } >&2
+    fail=1
+fi
+
+UPWORK="${TMP}/upwork"
+git clone -q "$UPSTREAM" "$UPWORK"
+git -C "$UPWORK" -c commit.gpgsign=false commit -q --allow-empty -m upstream
+git -C "$UPWORK" push -q origin HEAD >/dev/null 2>&1
+settle
+git_quiet fetch --all --prune --tags
+upload
+uploaded || { echo "FAIL: a fetch that brought a commit was not detected" >&2; fail=1; }
+
+# A branch fetched after the clone is a loose ref, not in packed-refs, so a
+# prune that deletes it writes no file under refs/ at all — only the
+# refs/remotes/origin directory moves, and that is excluded. Its reflog going
+# is what still has to catch it.
+git -C "$UPWORK" push -q origin HEAD:refs/heads/loose >/dev/null 2>&1
+git_quiet fetch --all --prune --tags
+settle
+git -C "$UPWORK" push -q origin :refs/heads/loose >/dev/null 2>&1
+git_quiet fetch --all --prune --tags
+upload
+uploaded || { echo "FAIL: a fetch that pruned a remote branch was not detected" >&2; fail=1; }
+
 echo staged > "${REPO}/staged.txt"
 git_quiet add staged.txt
 rm -f "${REPO}/staged.txt"          # worktree back as it was; only the index and objects hold it
