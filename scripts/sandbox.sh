@@ -2279,7 +2279,17 @@ fi
 # --- Ensure (create-or-connect) ---
 if [[ "$ENSURE_MODE" == true ]]; then
     OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
-    if openshell sandbox list "${GW_FLAG[@]}" 2>/dev/null | grep -q "^${OS_NAME}[[:space:]]"; then
+    # A failed list is not "missing": falling through to create against a
+    # gateway that did not answer ends in "already exists" with the cause
+    # hidden. JSON + jq, not table + `grep -q`: grep quitting on the first
+    # match can close the pipe while openshell is still writing rows, and
+    # pipefail then reads a match as a miss (suspected, not reproduced).
+    if ! ENSURE_LIST="$(openshell sandbox list "${GW_FLAG[@]}" --output json)"; then
+        echo "Error: openshell sandbox list failed, not creating '${SANDBOX_NAME}'" >&2
+        exit 1
+    fi
+    if jq -e --arg n "$OS_NAME" 'any((.sandboxes // [])[]; .name == $n)' \
+        <<<"$ENSURE_LIST" >/dev/null; then
         SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
         WORKDIR="/sandbox"
         if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
