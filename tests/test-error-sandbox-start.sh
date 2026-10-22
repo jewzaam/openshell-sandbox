@@ -32,6 +32,7 @@ if [[ "$2" == "start" ]]; then
     echo Ready > "${TMP}/phase"
     exit 0
 fi
+[[ -f "${TMP}/list_fails" ]] && { echo "gateway unreachable" >&2; exit 1; }
 calls=$(( $(cat "${TMP}/calls" 2>/dev/null || echo 0) + 1 ))
 echo "$calls" > "${TMP}/calls"
 if [[ "$calls" == "$(cat "${TMP}/blank_call" 2>/dev/null)" ]]; then
@@ -174,7 +175,7 @@ printf '{"name":"probe","openshell_name":"sb-test","profile":"personal","repos":
 echo Error > "${TMP}/phase"
 with_container
 
-for mode in "--connect probe" "--refresh probe" "--recreate probe --profile personal --no-connect"; do
+for mode in "--connect probe" "--ensure probe --profile personal" "--refresh probe" "--recreate probe --profile personal --no-connect"; do
     # shellcheck disable=SC2086  # deliberate word split: mode carries flags
     out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" $mode --dryrun 2>&1 || true)"
     grep -qF "Sandbox in Error phase, starting container..." <<<"$out" \
@@ -184,7 +185,7 @@ done
 # --refresh is absent on purpose: it defers on a stopped sandbox instead of
 # starting it (tests/test-pending-work.sh).
 echo Stopped > "${TMP}/phase"
-for mode in "--connect probe" "--recreate probe --profile personal --no-connect"; do
+for mode in "--connect probe" "--ensure probe --profile personal" "--recreate probe --profile personal --no-connect"; do
     # shellcheck disable=SC2086  # deliberate word split: mode carries flags
     out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" $mode --dryrun 2>&1 || true)"
     grep -qF "[dryrun]: openshell sandbox start" <<<"$out" \
@@ -196,7 +197,7 @@ echo Error > "${TMP}/phase"
 # its next step deletes the container the download was supposed to drain, so
 # proceeding would rebuild from stale local state and lose the session's work.
 no_container
-for mode in "--connect probe" "--refresh probe" "--recreate probe --profile personal --no-connect"; do
+for mode in "--connect probe" "--ensure probe --profile personal" "--refresh probe" "--recreate probe --profile personal --no-connect"; do
     # shellcheck disable=SC2086  # deliberate word split: mode carries flags
     if HOME="$FAKE_HOME" bash "$SANDBOX_SH" $mode --dryrun >/dev/null 2>&1; then
         fail "${mode%% *} proceeded against an unstartable sandbox"
@@ -206,5 +207,17 @@ done
 rc_out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --recreate probe --profile personal --no-connect --dryrun 2>&1 || true)"
 grep -qF "sandbox delete" <<<"$rc_out" \
     && fail "--recreate deleted the container after failing to download from it"
+
+# A list that fails is not a missing sandbox: --ensure must stop, not create.
+echo Stopped > "${TMP}/phase"
+touch "${TMP}/list_fails"
+if ens_out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --ensure probe --profile personal --dryrun 2>&1)"; then
+    fail "--ensure succeeded with a failing sandbox list"
+fi
+grep -qF "sandbox create" <<<"$ens_out" \
+    && fail "--ensure fell through to create when the sandbox list failed"
+grep -qF "gateway unreachable" <<<"$ens_out" \
+    || fail "--ensure hid openshell's error"
+rm -f "${TMP}/list_fails"
 
 echo "PASS: tests/test-error-sandbox-start.sh"
