@@ -13,6 +13,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 TMP="$(mktemp -d)"
+# shellcheck disable=SC1091 # tests/isolate.sh: fail-closed fakes, scratch HOME
+source "$(dirname "${BASH_SOURCE[0]}")/isolate.sh"
 trap 'rm -rf "$TMP"' EXIT
 
 # The fixture below commits, and the real gitconfig has commit.gpgsign=true

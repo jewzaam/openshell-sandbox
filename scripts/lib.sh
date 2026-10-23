@@ -583,6 +583,12 @@ short_name() {
     echo "sb-${hash}"
 }
 
+# True for a name short_name() could have produced. --reap and --delete use it
+# to touch only containers this script named; keep it beside the derivation.
+is_our_short_name() {
+    [[ "$1" =~ ^sb-[0-9a-f]{12}$ ]]
+}
+
 # Write the manifest skeleton — name, openshell name, profile — creating the
 # sandbox dir if needed. Idempotent: an existing manifest keeps its repos and
 # only has .profile refreshed.

@@ -30,6 +30,7 @@ make build
 1. Podman 5.x with rootless support and cgroups v2
 2. OpenShell CLI installed
 3. OpenShell gateway running: `openshell gateway start --driver podman`
+4. fzf, for the `--reap` picker (`--reap --all` runs without it)
 
 ## Usage
 
@@ -66,9 +67,15 @@ sandbox.sh --connect myapp
 # List / delete
 sandbox.sh --list
 sandbox.sh --delete myapp
+
+# Pick idle sandboxes to delete (stopped, orphaned directory, or orphaned container)
+sandbox.sh --reap
+sandbox.sh --reap --older-than 7 --dryrun
 ```
 
 ### Options
+
+Common options below; `sandbox.sh --help` lists every one.
 
 | Option | Description |
 |--------|-------------|
@@ -88,6 +95,8 @@ sandbox.sh --delete myapp
 | `--gateway NAME` | OpenShell gateway |
 | `--connect [NAME]` | Reconnect to existing sandbox (launches Claude) |
 | `--delete [NAME]` | Delete sandbox and local state |
+| `--reap` | Pick idle sandboxes to delete in fzf, then confirm. Offers a stopped container with its directory, a directory with no container, and an `sb-<hash>` container with no directory. Columns show dirty repos, stashes and unpushed commits in the host copy |
+| `--older-than DAYS` | With `--reap`: idle threshold, default 30 |
 | `--no-clone` | Skip repo cloning |
 | `--list` | List sandboxes |
 

@@ -24,6 +24,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SANDBOX_SH="${REPO_ROOT}/scripts/sandbox.sh"
 
 TMP="$(mktemp -d)"
+# shellcheck disable=SC1091 # tests/isolate.sh: fail-closed fakes, scratch HOME
+source "$(dirname "${BASH_SOURCE[0]}")/isolate.sh"
 trap 'rm -rf "$TMP"' EXIT
 
 # Lift the renderer out of sandbox.sh — sourcing the script would run it.
