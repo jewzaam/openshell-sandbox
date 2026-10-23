@@ -18,6 +18,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 TMP="$(mktemp -d)"
+# shellcheck disable=SC1091 # tests/isolate.sh: fail-closed fakes, scratch HOME
+source "$(dirname "${BASH_SOURCE[0]}")/isolate.sh"
 trap 'rm -rf "$TMP"' EXIT
 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null

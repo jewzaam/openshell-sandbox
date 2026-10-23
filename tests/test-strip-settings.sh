@@ -26,6 +26,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STRIP="${REPO_ROOT}/scripts/strip-settings.py"
 
 TMP="$(mktemp -d)"
+# shellcheck disable=SC1091 # tests/isolate.sh: fail-closed fakes, scratch HOME
+source "$(dirname "${BASH_SOURCE[0]}")/isolate.sh"
 trap 'rm -rf "$TMP"' EXIT
 
 fail=0

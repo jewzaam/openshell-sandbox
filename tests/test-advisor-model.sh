@@ -18,6 +18,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 W="${REPO_ROOT}/bin/harness-wrapper.sh"
 
 TMP="$(mktemp -d)"
+# shellcheck disable=SC1091 # tests/isolate.sh: fail-closed fakes, scratch HOME
+source "$(dirname "${BASH_SOURCE[0]}")/isolate.sh"
 trap 'rm -rf "$TMP"' EXIT
 
 HELPERS="${TMP}/helpers.sh"

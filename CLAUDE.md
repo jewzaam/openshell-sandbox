@@ -27,6 +27,10 @@ is no default. `research` and `fetch-service` are policies only —
   them all; run one directly when iterating. They live outside `scripts/`
   because that directory is on `$PATH`. Each synthesises its own
   `config/site.env` when none exists, so they pass on a fresh clone and in CI.
+  Each sources `tests/isolate.sh` right after `TMP=$(mktemp -d)`: fail-closed
+  fakes for openshell/podman/gh/code/gws/fzf and a scratch `HOME`. A new test
+  without it reaches the real gateway and `gws auth login` on the host, where
+  those tools are installed and here they are not.
 
 ## Rules where the obvious change is wrong
 

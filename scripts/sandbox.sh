@@ -97,6 +97,9 @@ ENSURE_MODE=false
 REFRESH_MODE=false
 RECREATE_MODE=false
 ALL_MODE=false
+REAP_MODE=false
+REAP_DAYS=30
+REAP_DAYS_FROM_CLI=false
 GATEWAY=""
 POLICY_FILE=""
 SANDBOX_PROFILE=""
@@ -218,6 +221,14 @@ OPTIONS:
     --recreate [NAME] Download, delete sandbox container, recreate with new image, re-upload repos
     --all             With --refresh/--recreate: apply to every sandbox in ~/sandboxes/
                       instead of one NAME. --recreate --all never connects.
+                      With --reap: delete every candidate without the picker.
+    --reap            Pick sandboxes to delete in fzf, then confirm. Candidates are idle past
+                      --older-than: a stopped or errored container with its
+                      ~/sandboxes/<name>/, a ~/sandboxes/<name>/ with no
+                      container, or an sb-<hash> container with no directory.
+                      Columns show per-sandbox git state (dirty repos, stashes,
+                      unpushed commits) on the host copy only.
+    --older-than DAYS With --reap: idle threshold in days (default 30)
     --connect [NAME]  Reconnect to an existing sandbox
     --harness NAME    Agent to launch: claude or codex. Recorded in
                       manifest.json and reused by later --connect/--recreate.
@@ -255,6 +266,8 @@ EXAMPLES:
     $(basename "$0") --delete myapp
     $(basename "$0") --refresh --all
     $(basename "$0") --recreate --all
+    $(basename "$0") --reap
+    $(basename "$0") --reap --older-than 7 --dryrun
 EOF
     exit "${1:-0}"
 }
@@ -409,6 +422,76 @@ apply_pending() {
         echo "Refresh pending for ${name}, refreshing before connect..." >&2
         "$0" --refresh "$name" "${common[@]}"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# --reap helpers
+# ---------------------------------------------------------------------------
+
+# Epoch seconds for a timestamp, failing on empty or unparseable input and on
+# podman's zero time (0001-01-01, a container that never exited). The empty
+# check is load bearing: `date -d ""` is midnight today, not an error.
+reap_epoch() {
+    local seconds
+    [[ -n "$1" ]] || return 1
+    seconds=$(date -d "$1" +%s 2>/dev/null) || return 1
+    (( seconds > 0 )) || return 1
+    echo "$seconds"
+}
+
+# When a sandbox directory was last used: the newest of the manifest's
+# created/last_upload/last_download stamps. No file or directory mtime: every
+# manifest rewrite (set_manifest_pending on each --refresh --all, init_manifest
+# on --harness) writes a temp file and renames it over manifest.json, which
+# bumps both, and would keep a stopped sandbox looking fresh forever. Only a
+# manifest with no parseable stamp at all falls back to its own mtime.
+reap_dir_epoch() {
+    local dir="$1" newest=0 stamp seconds
+    while IFS= read -r stamp; do
+        seconds=$(reap_epoch "$stamp") || continue
+        (( seconds > newest )) && newest=$seconds
+    done < <(jq -r '.created // empty, (.repos[]? | .last_upload // empty, .last_download // empty)' \
+        "${dir}/manifest.json" 2>/dev/null)
+    (( newest > 0 )) || newest=$(stat -c %Y "${dir}/manifest.json")
+    echo "$newest"
+}
+
+# "<dirty repos> <stash entries> <unpushed commits>" across the git repos in a
+# sandbox directory. Host copy only: a stopped container cannot be read without
+# starting it. Unpushed counts commits on any local branch that no remote has,
+# so a branch with no upstream counts in full.
+reap_git_counts() {
+    local dir="$1" repo dirty=0 stash=0 unpushed=0 count
+    for repo in "$dir"/*/; do
+        [[ -e "${repo}.git" ]] || continue
+        if [[ -n "$(reap_git "$repo" status --porcelain --ignore-submodules=all 2>/dev/null)" ]]; then
+            dirty=$((dirty + 1))
+        fi
+        count=$(reap_git "$repo" stash list 2>/dev/null | wc -l)
+        stash=$((stash + count))
+        count=$(reap_git "$repo" rev-list --count --branches --not --remotes 2>/dev/null || echo 0)
+        unpushed=$((unpushed + count))
+    done
+    echo "$dirty $stash $unpushed"
+}
+
+# git on the host against a repo a sandbox session wrote, .git/config included
+# (--download carries the whole .git back). status runs core.fsmonitor and any
+# filter driver .gitattributes names; stash list (log -g) runs gpg.program under
+# log.showSignature. Each is overridden here, filters by every name the repo's
+# config defines, since a driver cannot be disabled without its name. Measured
+# on git 2.47: a planted fsmonitor and clean filter both run on plain
+# `git status`, neither runs with these overrides, and status still reports
+# the modified file. Submodules are skipped: each has its own config.
+reap_git() {
+    local repo="$1" filter_name safe=(--no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false)
+    shift
+    while IFS= read -r filter_name; do
+        safe+=(-c "filter.${filter_name}.clean=" -c "filter.${filter_name}.smudge="
+            -c "filter.${filter_name}.process=" -c "filter.${filter_name}.required=false")
+    done < <(git -C "$repo" config --get-regexp '^filter\.' 2>/dev/null \
+        | sed -nE 's/^filter\.(.*)\.[^. ]+ .*$/\1/p; s/^filter\.(.*)\.[^. ]+$/\1/p' | sort -u)
+    git "${safe[@]}" -C "$repo" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -1848,6 +1931,16 @@ while [[ $# -gt 0 ]]; do
             LIST_MODE=true
             shift
             ;;
+        --reap)
+            REAP_MODE=true
+            shift
+            ;;
+        --older-than)
+            [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "Error: --older-than requires a whole number of days" >&2; exit 1; }
+            REAP_DAYS="$2"
+            REAP_DAYS_FROM_CLI=true
+            shift 2
+            ;;
         --fetch-service)
             FETCH_SERVICE_MODE=true
             shift
@@ -1898,9 +1991,15 @@ fi
 # modes read and write host-side state under ~/sandboxes/<name>/, and a remote
 # container with no local directory has neither a name to resolve back to nor
 # repos to re-upload.
-if [[ "$ALL_MODE" == true ]]; then
+if [[ "$REAP_DAYS_FROM_CLI" == true && "$REAP_MODE" != true ]]; then
+    echo "Error: --older-than is only valid with --reap" >&2
+    exit 1
+fi
+
+# --reap reads --all itself; it is not a fan-out.
+if [[ "$ALL_MODE" == true && "$REAP_MODE" != true ]]; then
     if [[ "$REFRESH_MODE" != true && "$RECREATE_MODE" != true ]]; then
-        echo "Error: --all is only valid with --refresh or --recreate" >&2
+        echo "Error: --all is only valid with --refresh, --recreate or --reap" >&2
         exit 1
     fi
     if [[ -n "$SANDBOX_NAME" ]]; then
@@ -2055,6 +2154,164 @@ if [[ "$FETCH_SERVICE_MODE" == true ]]; then
     exit 0
 fi
 
+# --- Reap: delete idle sandboxes, picked in fzf ---
+# Manual only, never on a sweep: a delete cannot be undone, and a stopped
+# container may hold work that was never downloaded. Nothing here can look
+# inside one without starting it, and starting it hands it back to
+# claude-dashboard's idle stop. The git columns are information, not a gate.
+if [[ "$REAP_MODE" == true ]]; then
+    if [[ "$ALL_MODE" != true ]] && ! command -v fzf >/dev/null 2>&1; then
+        echo "Error: --reap needs fzf (or --all to take every candidate)" >&2
+        exit 1
+    fi
+
+    # Only a complete list may say a container is gone, same as --all above.
+    # Reading "the gateway did not answer" as "no container" would offer every
+    # live sandbox's directory for deletion. The default page is 100, and an
+    # accumulation of sandboxes is what this exists for, so ask for the
+    # server's maximum; past that the paged check still aborts.
+    if ! REAP_LIVE="$(openshell sandbox list "${GW_FLAG[@]}" --page-size 1000 --output json 2>/dev/null \
+            | jq -ec 'if .next_page_token == "" then
+                [.sandboxes[] | {name, phase, created_at}]
+              else error("paged") end')"; then
+        echo "Error: openshell sandbox list failed or came back incomplete; nothing reaped" >&2
+        exit 1
+    fi
+
+    # openshell keeps no stopped-at time; podman does. No podman, or no
+    # match, falls back to the manifest's stamps (or excludes a zombie).
+    # One inspect for every container is the fast path. A container removed
+    # between `ps` and `inspect` fails the whole batch, so a failed batch is
+    # retried one id at a time and keeps every id that still answers.
+    REAP_FINISHED="{}"
+    if reap_ids="$(podman ps -aq 2>/dev/null)" && [[ -n "$reap_ids" ]]; then
+        # shellcheck disable=SC2086 # one argument per container id
+        if ! reap_inspect="$(podman inspect $reap_ids 2>/dev/null)"; then
+            reap_inspect="$(for reap_id in $reap_ids; do
+                podman inspect "$reap_id" 2>/dev/null || true
+            done | jq -cs 'add // []' 2>/dev/null)" || reap_inspect="[]"
+        fi
+        REAP_FINISHED="$(jq -c '
+            map({key: (.Config.Labels["openshell.ai/sandbox-name"] // empty), value: .State.FinishedAt})
+            | from_entries' <<<"$reap_inspect" 2>/dev/null)" || REAP_FINISHED="{}"
+    fi
+
+    reap_now=$(date +%s)
+    reap_cutoff=$((REAP_DAYS * 86400))
+    reap_kind=() reap_name=() reap_age=() reap_profile=() reap_git=()
+    declare -A reap_ours=()
+
+    for manifest in "${SANDBOXES_DIR}"/*/manifest.json; do
+        [[ -f "$manifest" ]] || continue
+        dir="$(dirname "$manifest")"
+        name="$(basename "$dir")"
+        os_name="$(resolve_openshell_name "$name")"
+        phase="$(jq -r --arg o "$os_name" '.[] | select(.name == $o) | .phase' <<<"$REAP_LIVE")"
+        if [[ -z "$phase" ]]; then
+            kind=orphan-dir
+            since=$(reap_dir_epoch "$dir")
+        elif [[ "$phase" == Stopped || "$phase" == Error ]]; then
+            reap_ours[$os_name]=1
+            kind=stopped
+            since=$(reap_epoch "$(jq -r --arg n "$os_name" '.[$n] // empty' <<<"$REAP_FINISHED")") \
+                || since=$(reap_dir_epoch "$dir")
+        else
+            reap_ours[$os_name]=1
+            continue
+        fi
+        (( reap_now - since >= reap_cutoff )) || continue
+        reap_kind+=("$kind")
+        reap_name+=("$name")
+        reap_age+=("$(( (reap_now - since) / 86400 ))d")
+        reap_profile+=("$(jq -r '.profile // "-"' "$manifest")")
+        reap_git+=("$(reap_git_counts "$dir")")
+    done
+
+    # A container with no directory is only ours if sandbox.sh's naming made
+    # it. Anything else may be a deliberate plain-openshell sandbox, the same
+    # reason claude-dashboard never stops them.
+    while IFS=$'\t' read -r os_name phase created; do
+        [[ -z "${reap_ours[$os_name]:-}" ]] && is_our_short_name "$os_name" || continue
+        if [[ "$phase" == Stopped || "$phase" == Error ]]; then
+            since=$(reap_epoch "$(jq -r --arg n "$os_name" '.[$n] // empty' <<<"$REAP_FINISHED")") \
+                || since=$(reap_epoch "${created} UTC") || continue
+        else
+            since=$(reap_epoch "${created} UTC") || continue
+        fi
+        (( reap_now - since >= reap_cutoff )) || continue
+        reap_kind+=(zombie)
+        reap_name+=("$os_name")
+        reap_age+=("$(( (reap_now - since) / 86400 ))d")
+        reap_profile+=(-)
+        reap_git+=("- - -")
+    done < <(jq -r '.[] | select(.phase != "Deleting") | [.name, .phase, (.created_at // "")] | @tsv' <<<"$REAP_LIVE")
+
+    if [[ ${#reap_kind[@]} -eq 0 ]]; then
+        echo "No sandboxes idle for ${REAP_DAYS}+ days" >&2
+        exit 0
+    fi
+
+    reap_width=4
+    for name in "${reap_name[@]}"; do
+        (( ${#name} > reap_width )) && reap_width=${#name}
+    done
+    reap_row() {
+        printf '%-*s  %-10s  %4s  %-8s  %5s  %5s  %8s' "$reap_width" "$@"
+    }
+
+    reap_selected=()
+    if [[ "$ALL_MODE" == true ]]; then
+        reap_selected=("${!reap_kind[@]}")
+    else
+        # Index in a hidden first field, so a pick maps back without matching
+        # on the label text.
+        picked="$({
+            printf -- '-\t%s\n' "$(reap_row NAME GROUP AGE PROFILE DIRTY STASH UNPUSHED)"
+            for i in "${!reap_kind[@]}"; do
+                read -r dirty stash unpushed <<<"${reap_git[$i]}"
+                printf '%s\t%s\n' "$i" "$(reap_row "${reap_name[$i]}" "${reap_kind[$i]}" \
+                    "${reap_age[$i]}" "${reap_profile[$i]}" "$dirty" "$stash" "$unpushed")"
+            done
+        } | fzf --multi --reverse --header-lines=1 --delimiter=$'\t' --with-nth=2 \
+                --header "TAB toggle, ctrl-a all, ENTER delete. Git columns cover the host copy only." \
+                --bind "ctrl-a:select-all")" || reap_fzf=$?
+        # 1 is no match and 130 is Esc/Ctrl-C: nothing picked. Anything else
+        # is fzf refusing to run, which must not read as an empty pick.
+        if [[ -n "${reap_fzf:-}" && "$reap_fzf" != 1 && "$reap_fzf" != 130 ]]; then
+            echo "Error: fzf exited ${reap_fzf}; nothing reaped" >&2
+            exit 1
+        fi
+        while IFS=$'\t' read -r i _; do
+            [[ -n "$i" ]] && reap_selected+=("$i")
+        done <<<"$picked"
+        # fzf --multi hands back the highlighted row on ENTER with nothing
+        # toggled, so a pick is not proof anything was chosen. Name what goes
+        # and ask once; anything but y, EOF included, deletes nothing.
+        if [[ ${#reap_selected[@]} -gt 0 && "$DRYRUN" != true ]]; then
+            echo "Delete ${#reap_selected[@]} sandbox(es):" >&2
+            for i in "${reap_selected[@]}"; do
+                echo "    ${reap_name[$i]}" >&2
+            done
+            reap_answer=""
+            read -r -p "Delete? [y/N] " reap_answer || true
+            [[ "$reap_answer" == [yY] ]] || exit 0
+        fi
+    fi
+
+    reap_common=()
+    [[ -n "$GATEWAY" ]] && reap_common+=(--gateway "$GATEWAY")
+    [[ "$DRYRUN" == true ]] && reap_common+=(--dryrun)
+    [[ "$DEBUG" == true ]] && reap_common+=(--debug)
+    reap_failed=false
+    # --delete reports each outcome itself, --dryrun included; stdout is
+    # openshell's own line for the same thing.
+    for i in "${reap_selected[@]}"; do
+        "$0" --delete "${reap_name[$i]}" "${reap_common[@]}" >/dev/null || reap_failed=true
+    done
+    [[ "$reap_failed" == true ]] && exit 1
+    exit 0
+fi
+
 if [[ "$LIST_MODE" == true ]]; then
     openshell sandbox list "${GW_FLAG[@]}" | while IFS= read -r line; do
         os_name=$(echo "$line" | awk '{print $1}')
@@ -2068,12 +2325,23 @@ if [[ "$LIST_MODE" == true ]]; then
     exit $?
 elif [[ -n "$DELETE_NAME" ]]; then
     OS_NAME=$(resolve_openshell_name "$DELETE_NAME")
-    run openshell sandbox delete "$OS_NAME" "${GW_FLAG[@]}" || true
+    # A bare sb-<hash> with no directory is a container sandbox.sh named and
+    # lost the directory for; hashing it again names nothing.
+    if [[ ! -d "${SANDBOXES_DIR}/${DELETE_NAME}" ]] && is_our_short_name "$DELETE_NAME"; then
+        OS_NAME="$DELETE_NAME"
+    fi
+    # openshell deletes with allow_missing, so an absent sandbox already exits
+    # 0 and a non-zero exit is a real failure. Keep the directory then:
+    # removing it would leave a container nothing can name.
+    if ! run openshell sandbox delete "$OS_NAME" "${GW_FLAG[@]}"; then
+        echo "Error: openshell could not delete ${OS_NAME}; kept ${SANDBOXES_DIR}/${DELETE_NAME}" >&2
+        exit 1
+    fi
     if [[ -d "${SANDBOXES_DIR}/${DELETE_NAME}" ]]; then
         # ${...:?} so an empty name aborts instead of deleting ~/sandboxes
-        rm -rf "${SANDBOXES_DIR:?}/${DELETE_NAME:?}"
-        echo "Removed local state: ${SANDBOXES_DIR}/${DELETE_NAME}" >&2
+        run rm -rf "${SANDBOXES_DIR:?}/${DELETE_NAME:?}"
     fi
+    [[ "$DRYRUN" == true ]] || echo "Deleted ${DELETE_NAME}" >&2
     exit 0
 elif [[ -n "$CONNECT_NAME" ]]; then
     OS_NAME=$(resolve_openshell_name "$CONNECT_NAME")
