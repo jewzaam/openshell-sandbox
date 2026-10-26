@@ -876,9 +876,9 @@ download_sandbox() {
             echo "${MARK_SKIP} Download skipped — ${repo_name} unchanged in the sandbox (--force to pull)" >&2
             continue
         fi
-        # tar fails on a missing dir, and the files dir need not exist yet.
-        # Creating it is what puts it in every sandbox. Not an existence probe:
-        # that would be a second `bash -c` exec beside the one change walk.
+        # tar fails on a missing dir, and a sandbox not refreshed since the
+        # files dir existed has none. Not an existence probe: that would be a
+        # second `bash -c` exec beside the one change walk.
         if [[ "$repo_name" == "$FILES_DIR" ]]; then
             run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
                 -- mkdir -p "/sandbox/source/${FILES_DIR}"
@@ -970,8 +970,9 @@ upload_sandbox() {
         local repos
         repos=$( { jq -r '.repos | keys[]' "$manifest"; echo "$FILES_DIR"; } | sort -u)
         for repo_name in $repos; do
-            # ponytail: an empty files dir (what a first download leaves) is not
-            # sent; empty-dir upload through openshell is unverified.
+            # An empty host files dir (what create leaves) has nothing to send,
+            # and upload_repo() empties the sandbox copy first — sending it
+            # would wipe whatever the session put there.
             if [[ "$repo_name" == "$FILES_DIR" && -z "$(ls -A "${sandbox_dir}/${FILES_DIR}" 2>/dev/null)" ]]; then
                 continue
             fi
@@ -1767,6 +1768,14 @@ upload_static() {
     else
         echo "Warning: no policy artifact in ${sandbox_dir} — leaving the sandbox's copy as-is. Run --policy NAME to set and record one." >&2
     fi
+
+    # mkdir: the files dir, both sides, so every sandbox has it from create on
+    # and --refresh adds it to older ones. Empty and merged (gotcha 20): an
+    # existing sandbox copy keeps its contents. OpenShell tars a directory
+    # entry before its children, so an empty one is created (ssh.rs
+    # append_upload_path).
+    [[ "$DRYRUN" == true ]] || mkdir -p "${sandbox_dir}/${FILES_DIR}"
+    mkdir -p "${tmp}/source/${FILES_DIR}"
 
     # do: upload
     transfer_quiet "Upload complete — sandbox config (prompt, manifest, policy)" \
