@@ -107,14 +107,15 @@ if [[ "$1 $2" == "sandbox exec" && -n "${SANDBOX_FS:-}" ]]; then
         [[ $seen == 1 ]] && cmd+=("${a//\/sandbox\/source/$SANDBOX_FS}")
         [[ "$a" == "--" ]] && seen=1
     done
-    # Only the two execs the paths under test depend on actually run: the
-    # clean-repos walk (bash -c) and the download tar. Everything else stays a
+    # Only the execs the paths under test depend on actually run: the
+    # clean-repos walk (bash -c), the download tar, and the mkdir that gives
+    # the files dir something to tar. Everything else stays a
     # no-op, as it was before this stub could run commands at all. upload_repo's
     # `rm -rf /sandbox/source/<repo>` is the one that matters — running it for
     # real would have every `upload` in this file wipe the fixture, and `upload`
     # is used throughout just to move the stamp.
     case "${cmd[0]:-}" in
-        bash|tar) "${cmd[@]}"; exit $? ;;
+        bash|tar|mkdir) "${cmd[@]}"; exit $? ;;
     esac
     exit 0
 fi
