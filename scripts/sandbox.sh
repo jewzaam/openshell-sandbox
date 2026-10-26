@@ -77,6 +77,11 @@ PY
 )"
 GWS_SANDBOX_SCOPES="https://www.googleapis.com/auth/calendar.readonly,https://www.googleapis.com/auth/directory.readonly,https://www.googleapis.com/auth/documents.readonly,https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/meetings.space.readonly,https://www.googleapis.com/auth/presentations.readonly,https://www.googleapis.com/auth/spreadsheets.readonly,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/userinfo.profile"
 
+# ~/sandboxes/<name>/files <-> /sandbox/source/files, in every sandbox. Not a
+# repo and never registered: --upload and --download always include it, so
+# loose files need no --add-repo. Its stamps still land in .repos.files.
+FILES_DIR=files
+
 # Defaults
 DRYRUN=false
 DEBUG=false
@@ -848,7 +853,7 @@ download_sandbox() {
     fi
 
     local repos
-    repos=$(jq -r '.repos | keys[]' "$manifest")
+    repos=$( { jq -r '.repos | keys[]' "$manifest"; echo "$FILES_DIR"; } | sort -u)
 
     # --force always pulls, the same bargain --upload --force takes: it is the
     # path that assumes nothing about what the other side holds.
@@ -870,6 +875,13 @@ download_sandbox() {
         if [[ "$clean" == *" ${repo_name} "* ]]; then
             echo "${MARK_SKIP} Download skipped — ${repo_name} unchanged in the sandbox (--force to pull)" >&2
             continue
+        fi
+        # tar fails on a missing dir, and the files dir need not exist yet.
+        # Creating it is what puts it in every sandbox. Not an existence probe:
+        # that would be a second `bash -c` exec beside the one change walk.
+        if [[ "$repo_name" == "$FILES_DIR" ]]; then
+            run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+                -- mkdir -p "/sandbox/source/${FILES_DIR}"
         fi
         # tar at the source, pull one file, unpack here. `openshell sandbox
         # download` takes a path and a destination and nothing else — no
@@ -956,8 +968,13 @@ upload_sandbox() {
         upload_repo "$sandbox_name" "$sandbox_dir" "$target_repo"
     else
         local repos
-        repos=$(jq -r '.repos | keys[]' "$manifest")
+        repos=$( { jq -r '.repos | keys[]' "$manifest"; echo "$FILES_DIR"; } | sort -u)
         for repo_name in $repos; do
+            # ponytail: an empty files dir (what a first download leaves) is not
+            # sent; empty-dir upload through openshell is unverified.
+            if [[ "$repo_name" == "$FILES_DIR" && -z "$(ls -A "${sandbox_dir}/${FILES_DIR}" 2>/dev/null)" ]]; then
+                continue
+            fi
             if [[ -d "${sandbox_dir}/${repo_name}" ]]; then
                 upload_repo "$sandbox_name" "$sandbox_dir" "$repo_name"
             fi

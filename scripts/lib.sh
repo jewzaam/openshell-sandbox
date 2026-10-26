@@ -661,6 +661,8 @@ manifest_ensure_cmd() {
     printf -v cmd '%s --ensure %q' "$sandbox_sh" "$(jq -r '.name' "$manifest")"
     [[ -n "$profile" ]] && cmd+=" --profile ${profile}"
     while IFS=$'\t' read -r repo_url repo_ref; do
+        # The files dir (sandbox.sh FILES_DIR) gets an entry from its stamps, no url.
+        [[ -n "$repo_url" ]] || continue
         cmd+=" --repo ${repo_url}"
         [[ -n "$repo_ref" ]] && printf -v cmd '%s --ref %q' "$cmd" "$repo_ref"
     done < <(jq -r '.repos[] | [.url, (.ref // "")] | @tsv' "$manifest")
