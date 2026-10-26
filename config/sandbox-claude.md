@@ -178,5 +178,5 @@ changes with `sandbox.sh --download`. Upload fresh code from host with
 `sandbox.sh --upload`.
 
 `/sandbox/source/files/` is the non-repo transfer directory, in every
-sandbox: put loose files (notes, data, output) there and both `--download`
-and `--upload` move it, no registration. Create it if it is missing.
+sandbox (host side: `~/sandboxes/<name>/files/`). Put loose files (notes,
+data, output) there; `--download` and `--upload` move it like a repo.
