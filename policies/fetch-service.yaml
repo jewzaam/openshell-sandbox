@@ -137,7 +137,16 @@ network_policies:
     endpoints:
       # protocol/enforcement are required for anything beyond a plain
       # absolute-URI GET; omitting them returns 403 on CONNECT.
+      # Two addresses because which one reaches the service differs by host
+      # (both Fedora 43): one machine needs host.openshell.internal, another
+      # gets upstream_unreachable there and only answers on the container IP
+      # fetchsvc.sh assigns.
       - host: host.openshell.internal
+        port: 8090
+        protocol: rest
+        enforcement: enforce
+        access: full
+      - host: 172.30.0.21
         port: 8090
         protocol: rest
         enforcement: enforce

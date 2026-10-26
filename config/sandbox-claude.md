@@ -99,7 +99,8 @@ the block, nothing here can read an arbitrary URL.
   block. `WebSearch` always works — it runs server-side.
 - **Take host:port from the block** (the `yq` command above prints it) and
   percent-encode the target, or a `?`/`&` in it silently truncates the
-  request:
+  request. The block can list more than one address, since which one answers
+  depends on the host; use the first whose `/healthz` returns `200`:
 
   ```bash
   SVC="http://<host>:<port>"
@@ -110,7 +111,7 @@ the block, nothing here can read an arbitrary URL.
   `refused:` is the service declining (non-public address, non-http scheme);
   `502` `upstream error:` is DNS/TLS/timeout upstream. A `403` without
   `refused:`, or `CONNECT tunnel failed`, is the proxy — the block is gone.
-- **Offline** (`${SVC}/healthz` not `200`): tell the user to run
+- **Offline** (`/healthz` not `200` on any listed address): tell the user to run
   `sandbox.sh --fetch-service` on the host, then stop. There is no other route.
 - GET only, public addresses only, 8 MB / 30 s / 5 redirects. Every URL is
   logged on the host.
