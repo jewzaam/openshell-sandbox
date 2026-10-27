@@ -48,14 +48,13 @@ export PATH="${TMP}/bin:${PATH}"
 WORK="${TMP}/work"
 mkdir -p "$WORK"
 cp -r "${REPO_ROOT}/scripts" "${REPO_ROOT}/config" "${REPO_ROOT}/policies" "$WORK/"
-if [[ ! -f "${WORK}/config/site.env" ]]; then
     printf 'OTEL_URL=http://x:4318\nPROMETHEUS_URL=http://x:9090\nLOKI_URL=http://x:3100\n' \
         > "${WORK}/config/site.env"
-fi
 
 SBX="${HOME}/sandboxes/scratch"
 mkdir -p "$SBX"
 echo '{"name":"scratch","openshell_name":"sb-x","profile":"personal","repos":{}}' > "${SBX}/manifest.json"
+seed_codex_bindings "$SBX" personal
 sb() { bash "${WORK}/scripts/sandbox.sh" "$@" >/dev/null 2>&1 || fail "sandbox.sh $* exited non-zero"; }
 
 # Absent on both sides: upload sends nothing; download creates it in the

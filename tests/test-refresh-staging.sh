@@ -34,10 +34,8 @@ trap 'rm -rf "$TMP"' EXIT
 WORK="${TMP}/work"
 mkdir -p "$WORK"
 cp -r "${REPO_ROOT}/scripts" "${REPO_ROOT}/config" "${REPO_ROOT}/policies" "${REPO_ROOT}/bin" "$WORK/"
-if [[ ! -f "${WORK}/config/site.env" ]]; then
     printf 'OTEL_URL=http://x:4318\nPROMETHEUS_URL=http://x:9090\nLOKI_URL=http://x:3100\n' \
         > "${WORK}/config/site.env"
-fi
 SANDBOX_SH="${WORK}/scripts/sandbox.sh"
 
 FAKE_HOME="${TMP}/home"
@@ -45,6 +43,7 @@ mkdir -p "${FAKE_HOME}/sandboxes/probe" "${FAKE_HOME}/.claude/skills"
 printf '{"name":"probe","openshell_name":"sb-probe","profile":"personal","repos":{}}' \
     > "${FAKE_HOME}/sandboxes/probe/manifest.json"
 echo '{}' > "${FAKE_HOME}/.claude/settings.json"
+seed_codex_bindings "${FAKE_HOME}/sandboxes/probe" personal
 
 export GIT_CONFIG_GLOBAL=/dev/null
 git_repo() {

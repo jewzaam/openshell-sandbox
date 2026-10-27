@@ -159,6 +159,17 @@ if command -v curl &>/dev/null; then
     actual=$(net_check https://us-east5-aiplatform.googleapis.com)
     personal_profile && check "googleapis.com" "blocked" "$actual" || check "googleapis.com" "reachable" "$actual"
 
+    # These endpoints are published only by this sandbox profile's bindings.
+    if isset SANDBOX_CODEX_PROVIDER_URLS
+    then
+        read -r -a codex_urls <<< "$SANDBOX_CODEX_PROVIDER_URLS"
+        for url in "${codex_urls[@]}"
+        do
+            actual=$(net_check "$url")
+            check "codex provider" "reachable" "$actual"
+        done
+    fi
+
     actual=$(net_check https://redhat.atlassian.net)
     personal_profile && check "redhat.atlassian.net" "blocked" "$actual" || check "redhat.atlassian.net" "reachable" "$actual"
 

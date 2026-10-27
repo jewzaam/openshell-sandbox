@@ -67,14 +67,31 @@ sandbox.sh literals + assembled OTEL identity ────┴──▶ /sandbox/
 
 | Source | What | Where |
 |---|---|---|
-| Host env capture | Only names in `ACTIVE_VARS`, and only if set on the host | `sandbox.sh:1651-1665` |
-| `config/site.env` | `OTEL_EXPORTER_OTLP_ENDPOINT` (from `OTEL_URL`), the Prometheus and Loki URLs | `sandbox.sh:1710-1715` |
+| Host env capture | Only names in `ACTIVE_VARS`, and only if set on the host | `sandbox.sh:2812-2826` |
+| `config/site.env` | `OTEL_EXPORTER_OTLP_ENDPOINT` (from `OTEL_URL`), the Prometheus and Loki URLs, and explicit `CODEX_PROFILES_WORK`, `CODEX_PROFILES_PERSONAL`, `CODEX_PROFILES_HOME` publication allowlists | `resolve_codex_profiles()` in `scripts/sandbox.sh` |
 | Computed on the host | `SANDBOX_*`, `CLAUDE_DASHBOARD_HOST`, OTLP protocol, `OTEL_RESOURCE_ATTRIBUTES` | `sandbox.sh:1704-1785` |
 
-`ACTIVE_VARS` is profile-dependent (`sandbox.sh:1651-1656`): `personal` and
+`ACTIVE_VARS` is profile-dependent (`sandbox.sh:2812-2816`): `personal` and
 `home` get `ANTHROPIC_VARS + CLAUDE_VARS`; `work` gets `ALL_VARS`, which adds
-Vertex and Jira. Capture is conditional on the host actually exporting the
-variable.
+Vertex and Jira. Each sandbox additionally receives only the environment keys
+referenced by its explicitly bound Codex providers (`env_key` and
+`env_http_headers`). Capture is conditional on the host exporting the variable.
+An unbound profile grants no config, catalog, credential, or endpoint access,
+even if selected on the host. The old `CODEX_PROVIDER_PROFILE` grants nothing.
+
+Bindings are resolved after the sandbox profile is read from the CLI or manifest.
+`config.toml` contains only bound provider definitions, matching the host
+layout. The bound `<profile>.config.toml` keeps its own filename and contains
+model settings, not host projects or nested provider definitions. Its
+referenced model catalog is copied as
+`/sandbox/.codex/<profile>.models.json` and the config path is rewritten.
+Provider URLs are exported as `SANDBOX_CODEX_PROVIDER_URLS` for validation.
+Public examples and tests use synthetic values only.
+
+Bindings are recorded in the host sandbox directory's
+`codex-profile-bindings.json`. Changed or unknown bindings require recreation:
+merge uploads cannot revoke files or credentials already present. On that
+recreation, old Codex session state remains on the host but is not restored.
 
 **Nothing telemetry-related is captured** (`sandbox.sh:121`). There is no
 `OTEL_VARS` list. Exporters, intervals, toggles and log-detail flags are

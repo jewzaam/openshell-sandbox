@@ -30,10 +30,8 @@ trap 'rm -rf "$TMP"' EXIT
 WORK="${TMP}/work"
 mkdir -p "$WORK"
 cp -r "${REPO_ROOT}/scripts" "${REPO_ROOT}/config" "${REPO_ROOT}/policies" "$WORK/"
-if [[ ! -f "${WORK}/config/site.env" ]]; then
     printf 'OTEL_URL=http://x:4318\nPROMETHEUS_URL=http://x:9090\nLOKI_URL=http://x:3100\n' \
         > "${WORK}/config/site.env"
-fi
 SANDBOX_SH="${WORK}/scripts/sandbox.sh"
 
 # Fake openshell: `sandbox list` prints $FAKE_LIST when set, else fails like a
@@ -54,6 +52,7 @@ for n in alpha beta; do
     mkdir -p "${FAKE_HOME}/sandboxes/${n}"
     printf '{"name":"%s","openshell_name":"sb-%s","profile":"personal","repos":{}}' "$n" "$n" \
         > "${FAKE_HOME}/sandboxes/${n}/manifest.json"
+    seed_codex_bindings "${FAKE_HOME}/sandboxes/${n}" personal
 done
 # No manifest: not a sandbox.
 mkdir -p "${FAKE_HOME}/sandboxes/notasandbox"

@@ -37,6 +37,10 @@ process:
   run_as_group: sandbox
 
 network_policies:
+  # BEGIN optional codex provider
+  # Filled only from Codex profiles explicitly bound to this sandbox profile.
+  # END optional codex provider
+
   anthropic_api:
     name: anthropic-api
     endpoints:

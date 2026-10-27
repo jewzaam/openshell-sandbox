@@ -21,10 +21,8 @@ trap 'rm -rf "$TMP"' EXIT
 WORK="${TMP}/work"
 mkdir -p "$WORK"
 cp -r "${REPO_ROOT}/scripts" "${REPO_ROOT}/config" "${REPO_ROOT}/policies" "$WORK/"
-if [[ ! -f "${WORK}/config/site.env" ]]; then
     printf 'OTEL_URL=http://x:4318\nPROMETHEUS_URL=http://x:9090\nLOKI_URL=http://x:3100\n' \
         > "${WORK}/config/site.env"
-fi
 SANDBOX_SH="${WORK}/scripts/sandbox.sh"
 
 # Stub Jira: no Acceptance Criteria field, one canned issue for any key. The
