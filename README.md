@@ -11,7 +11,12 @@ SDLC skill access. Podman-based, rootless.
   telemetry push-only), **home** (personal plus Prometheus/Loki reads)
 - `--harness claude|codex` picks the agent; Codex runs on **work**, which
   carries OpenAI alongside Vertex, and is what a work sandbox defaults to when
-  nothing else is running or remembered
+  nothing else is running or remembered. Extra Codex profiles must be explicitly
+  bound to sandbox profiles with `CODEX_PROFILES_WORK`, `CODEX_PROFILES_PERSONAL`,
+  or `CODEX_PROFILES_HOME` in gitignored `config/site.env`. Only each sandbox's
+  authorized provider definitions, profile configs, model catalogs, keys, and
+  endpoints are published. Unbound profiles never ship. Changed bindings require
+  recreation, and old Codex session state is not restored across that boundary.
 - `--profile` is required on `scode` and on `sandbox.sh --create/--recreate`
 - Clones repos on host (SSH works), uploads to sandbox for private repo support
 - Uploads `~/.claude/` config with symlinks resolved (skills, plugins, settings)
@@ -128,9 +133,12 @@ and bash terminals, then opens VS Code.
 
 | Profile | Auth | Network Access |
 |---------|------|----------------|
-| `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`), plus OpenAI for `--harness codex` (`/sandbox/.codex/auth.json`) | Google APIs, Jira, OpenAI, npm, PyPI, OTEL push, Prometheus + Loki reads |
+| `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`), plus OpenAI for `--harness codex` (`/sandbox/.codex/auth.json`) and explicitly bound Codex providers | Google APIs, Jira, OpenAI, bound Codex providers, npm, PyPI, OTEL push, Prometheus + Loki reads |
 | `personal` | Anthropic direct (API key or OAuth) | Anthropic API, npm, PyPI, Debian, OTEL push only |
 | `home` | Anthropic direct (API key or OAuth) | as `personal`, plus Prometheus + Loki reads |
+
+`personal` and `home` may also receive explicitly bound custom Codex providers.
+They never receive the host's OpenAI `auth.json` or work Codex configuration.
 
 No default and no auto-detection: name the profile or the command refuses.
 `scode` needs it on every invocation, reopening an existing sandbox included —

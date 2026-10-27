@@ -27,12 +27,10 @@ trap 'rm -rf "$TMP"' EXIT
 WORK="${TMP}/work"
 mkdir -p "$WORK"
 cp -r "${REPO_ROOT}/scripts" "${REPO_ROOT}/config" "${REPO_ROOT}/policies" "$WORK/"
-# site.env is gitignored and absent on a fresh clone; sandbox.sh refuses to run
-# without one. Values are never dialled — every run below is --dryrun.
-if [[ ! -f "${WORK}/config/site.env" ]]; then
+# Always write our own site.env: a developer checkout has a real one whose
+# bindings must not leak into a test. sandbox.sh also refuses to run without one.
     printf 'OTEL_URL=http://x:4318\nPROMETHEUS_URL=http://x:9090\nLOKI_URL=http://x:3100\n' \
         > "${WORK}/config/site.env"
-fi
 
 FAKE_HOME="${TMP}/home"
 mkdir -p "${FAKE_HOME}/sandboxes"

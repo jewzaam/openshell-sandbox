@@ -25,12 +25,10 @@ trap 'rm -rf "$TMP"' EXIT
 WORK="${TMP}/work"
 mkdir -p "$WORK"
 cp -r "${REPO_ROOT}/scripts" "${REPO_ROOT}/config" "${REPO_ROOT}/policies" "$WORK/"
-# site.env is gitignored and absent on a fresh clone (and in CI); sandbox.sh
-# refuses to run without one. Values are never dialled — every run is --dryrun.
-if [[ ! -f "${WORK}/config/site.env" ]]; then
+# Always write our own site.env: a developer checkout has a real one whose
+# bindings must not leak into a test. sandbox.sh also refuses to run without one.
     printf 'OTEL_URL=http://x:4318\nPROMETHEUS_URL=http://x:9090\nLOKI_URL=http://x:3100\n' \
         > "${WORK}/config/site.env"
-fi
 SANDBOX_SH="${WORK}/scripts/sandbox.sh"
 
 FAKE_HOME="${TMP}/home"
@@ -45,6 +43,7 @@ subst() { sed -e 's|${OTEL_HOST}|x|g' -e 's|${OTEL_PORT}|4318|g' \
 # Stand in for a sandbox running a --policy-applied fetch-service policy.
 seed_applied() {
     printf '{"name":"probe","profile":"personal","repos":{}}' > "${D}/manifest.json"
+    seed_codex_bindings "$D" personal
     subst "${WORK}/policies/fetch-service.yaml" > "${D}/openshell-policy.yaml"
 }
 

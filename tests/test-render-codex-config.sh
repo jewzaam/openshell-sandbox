@@ -64,6 +64,12 @@ command = "/home/me/bin/my-mcp-server"
 [profiles.other]
 model = "not-this-one"
 
+[model_providers.site]
+name = "Site Model"
+base_url = "https://llm.example.com/v1"
+env_key = "SITE_MODEL_KEY"
+wire_api = "responses"
+
 [tui]
 status_line = ["context-used"]
 notifications = true
@@ -120,6 +126,10 @@ echo "$OUT" | grep -q 'host-only' \
     && { echo "FAIL: host [otel] table was copied whole" >&2; fail=1; }
 echo "$OUT" | grep -q 'not-this-one' \
     && { echo "FAIL: host [profiles.other] table leaked into rendered config" >&2; fail=1; }
+echo "$OUT" | grep -q '^\[model_providers\.site\]$' \
+    && { echo "FAIL: unbound model provider table leaked" >&2; fail=1; }
+echo "$OUT" | grep -qx 'base_url = "https://llm.example.com/v1"' \
+    && { echo "FAIL: unbound model provider base_url leaked" >&2; fail=1; }
 echo "$OUT" | grep -q '^\[otel.exporter.otlp-http\]$' \
     || { echo "FAIL: otel exporter table missing" >&2; fail=1; }
 echo "$OUT" | grep -qx 'environment = "staging"' \
