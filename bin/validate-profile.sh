@@ -83,9 +83,26 @@ if personal_profile; then
         check "Google/Vertex vars" "unset" "unset"
     fi
 else
-    isset CLAUDE_CODE_USE_VERTEX && check "CLAUDE_CODE_USE_VERTEX" "set" "set" || check "CLAUDE_CODE_USE_VERTEX" "set" "unset"
-    isset ANTHROPIC_VERTEX_PROJECT_ID && check "ANTHROPIC_VERTEX_PROJECT_ID" "set" "set" || check "ANTHROPIC_VERTEX_PROJECT_ID" "set" "unset"
-    isset ANTHROPIC_API_KEY && check "ANTHROPIC_API_KEY" "unset" "set" || check "ANTHROPIC_API_KEY" "unset" "unset"
+    # Work has two possible Claude paths. A non-Anthropic provider (enmaas here)
+    # is selected by ANTHROPIC_BASE_URL, which sandbox.sh captures for work
+    # only; without it Claude Code would fall back to api.anthropic.com, which
+    # the work policy blocks. Vertex is only the expectation when no provider
+    # URL travelled, and ANTHROPIC_API_KEY is then expected to be absent
+    # because Vertex authenticates through the gcloud credentials instead.
+    if isset ANTHROPIC_BASE_URL; then
+        isset ANTHROPIC_API_KEY && check "ANTHROPIC_API_KEY (provider)" "set" "set" \
+            || check "ANTHROPIC_API_KEY (provider)" "set" "unset"
+        # Claude Code reads the PRESENCE of this variable as "use Vertex", so
+        # unset makes it ignore ANTHROPIC_BASE_URL and dial api.anthropic.com,
+        # which the work policy blocks. `0` is the off switch, not an optional
+        # extra: measured on the host and in a sandbox, unset fails in the TUI
+        # (exit 1, ECONNREFUSED) while `claude -p` still works.
+        check "CLAUDE_CODE_USE_VERTEX (provider)" "0" "${CLAUDE_CODE_USE_VERTEX:-<unset>}"
+    else
+        check "CLAUDE_CODE_USE_VERTEX" "1" "${CLAUDE_CODE_USE_VERTEX:-<unset>}"
+        isset ANTHROPIC_VERTEX_PROJECT_ID && check "ANTHROPIC_VERTEX_PROJECT_ID" "set" "set" || check "ANTHROPIC_VERTEX_PROJECT_ID" "set" "unset"
+        isset ANTHROPIC_API_KEY && check "ANTHROPIC_API_KEY" "unset" "set" || check "ANTHROPIC_API_KEY" "unset" "unset"
+    fi
 
     # Codex runs on work via --harness codex. It writes $CODEX_HOME/auth.json
     # for both sign-in methods — ChatGPT OAuth and `--with-api-key` alike — so
@@ -149,6 +166,16 @@ if command -v curl &>/dev/null; then
         check "api.anthropic.com" "reachable" "$actual"
     else
         check "api.anthropic.com" "blocked" "$actual"
+    fi
+
+    # When work runs Claude against a provider, the provider URL is the one the
+    # session actually needs; the direct Anthropic host above stays blocked.
+    # Probed from .env rather than SANDBOX_*, because the same value is what
+    # Claude Code reads at launch.
+    if ! personal_profile && isset ANTHROPIC_BASE_URL
+    then
+        actual=$(net_check "$ANTHROPIC_BASE_URL")
+        check "Claude provider" "reachable" "$actual"
     fi
 
     # Codex is authenticated on the host, so sandbox homepage probes for its

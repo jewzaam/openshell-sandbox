@@ -587,6 +587,28 @@ is no default. `research` and `fetch-service` are policies only —
   uploaded `settings.json` for every profile**, by
   `scripts/strip-settings.py`. A host pins models for host reasons; in a
   sandbox available models may differ.  Pinning model is not required.
+- **`ANTHROPIC_BASE_URL` and `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` are
+  captured for work only** (`CLAUDE_PROVIDER_VARS`). They select a Claude
+  provider such as enmaas instead of Anthropic or Vertex. Personal and home
+  capture neither: the host env is one global value, and both are
+  credential-less by design, so a provider URL there would point a personal
+  session at a host its policy blocks while carrying the work key along.
+  Do not widen it to `ANTHROPIC_VARS`. The endpoint reaches the work policy
+  through the bound Codex provider (`CODEX_PROFILES_WORK`), so a host that
+  unbinds enmaas from Codex loses Claude's path to it as well —
+  `validate-profile.sh` probes `ANTHROPIC_BASE_URL` and fails loudly rather
+  than letting Claude fall back to the blocked api.anthropic.com. A per-profile
+  binding of its own is the shape to build if another profile ever needs a
+  provider; env capture alone is not it.
+  **`CLAUDE_CODE_USE_VERTEX=0` is required alongside the URL**, and it travels
+  through the Vertex group rather than `CLAUDE_PROVIDER_VARS` because it is the
+  same key either path uses. Claude Code treats the variable's *presence* as
+  "use Vertex": unset, the TUI ignores `ANTHROPIC_BASE_URL` and dials the
+  blocked api.anthropic.com (`Failed to connect ... ECONNREFUSED`, exit 1)
+  while `claude -p` succeeds — measured on the host and in a sandbox. So the
+  host must export `0`, not leave it unset, and `validate-profile.sh` asserts
+  the value in both directions (`0` with a provider URL, `1` without) instead
+  of just checking that the variable is set.
 - **Personal and home set `--model opus[1m]`** in the sandbox
   `harness-wrapper.sh`, off `$SANDBOX_PROFILE` from `/sandbox/.env`. Not off
   manifest.json — that is uploaded by `upload_static()` and used to lose the
