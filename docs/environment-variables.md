@@ -68,7 +68,7 @@ sandbox.sh literals + assembled OTEL identity ────┴──▶ /sandbox/
 | Source | What | Where |
 |---|---|---|
 | Host env capture | Only names in `ACTIVE_VARS`, and only if set on the host | `sandbox.sh:2812-2826` |
-| `config/site.env` | `OTEL_EXPORTER_OTLP_ENDPOINT` (from `OTEL_URL`), the Prometheus and Loki URLs, and explicit `CODEX_PROFILES_WORK`, `CODEX_PROFILES_PERSONAL`, `CODEX_PROFILES_HOME` publication allowlists | `resolve_codex_profiles()` in `scripts/sandbox.sh` |
+| `config/site.env` | `OTEL_EXPORTER_OTLP_ENDPOINT` (from `OTEL_URL`), the Prometheus and Loki URLs, and explicit `PROVIDER_PROFILES_WORK`, `PROVIDER_PROFILES_PERSONAL`, `PROVIDER_PROFILES_HOME` publication allowlists | `resolve_provider_profiles()` in `scripts/sandbox.sh` |
 | Computed on the host | `SANDBOX_*`, `CLAUDE_DASHBOARD_HOST`, OTLP protocol, `OTEL_RESOURCE_ATTRIBUTES` | `sandbox.sh:1704-1785` |
 
 `ACTIVE_VARS` is profile-dependent (`sandbox.sh:2812-2816`): `personal` and
@@ -77,7 +77,7 @@ Vertex, Claude provider, and Jira. The Claude provider pair
 (`ANTHROPIC_BASE_URL` and `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`) is work
 only: it points Claude Code at a provider such as enmaas instead of Anthropic,
 and the personal/home policies reach no provider. The same provider host is
-allowed by the work policy through the Codex provider binding, so the two must
+allowed by the work policy through the provider profile binding, so the two must
 stay in step — `validate-profile.sh` probes `ANTHROPIC_BASE_URL` and fails when
 the policy does not reach it. The provider path also needs
 `CLAUDE_CODE_USE_VERTEX=0` in `.env`: Claude Code reads the *presence* of that
@@ -85,7 +85,7 @@ variable as "use Vertex", so with it unset the TUI ignores `ANTHROPIC_BASE_URL`
 and dials the blocked api.anthropic.com (exit 1, ECONNREFUSED), while `claude
 -p` still works. It travels with the Vertex group, so the host has to export
 the `0` rather than leave it unset; `validate-profile.sh` asserts the value. Each sandbox additionally receives only the
-environment keys referenced by its explicitly bound Codex providers (`env_key`
+environment keys referenced by its explicitly bound provider profiles (`env_key`
 and `env_http_headers`). Capture is conditional on the host exporting the
 variable.
 
@@ -98,11 +98,11 @@ layout. The bound `<profile>.config.toml` keeps its own filename and contains
 model settings, not host projects or nested provider definitions. Its
 referenced model catalog is copied as
 `/sandbox/.codex/<profile>.models.json` and the config path is rewritten.
-Provider URLs are exported as `SANDBOX_CODEX_PROVIDER_URLS` for validation.
+Provider URLs are exported as `SANDBOX_PROVIDER_URLS` for validation.
 Public examples and tests use synthetic values only.
 
 Bindings are recorded in the host sandbox directory's
-`codex-profile-bindings.json`. Changed or unknown bindings require recreation:
+`provider-profile-bindings.json`. Changed or unknown bindings require recreation:
 merge uploads cannot revoke files or credentials already present. On that
 recreation, old Codex session state remains on the host but is not restored.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage only the Codex profiles explicitly authorized for one sandbox profile."""
+"""Stage only the provider profiles explicitly authorized for one sandbox profile."""
 
 import json
 import pathlib
@@ -23,7 +23,7 @@ def toml_value(value):
     if isinstance(value, list):
         return "[" + ", ".join(toml_value(v) for v in value) + "]"
     if not isinstance(value, (str, bool, int, float)):
-        raise ValueError("unsupported value in Codex profile configuration")
+        raise ValueError("unsupported value in provider profile configuration")
     return json.dumps(value, ensure_ascii=False)
 
 
@@ -35,7 +35,7 @@ def toml_table(path, values):
 def stage(root, destination, sandbox_profile, names):
     names = sorted(set(names.split()))
     if any(not re.fullmatch(r"[A-Za-z0-9_-]+", name) for name in names):
-        raise ValueError("Codex profile names must contain only letters, digits, underscores, and hyphens")
+        raise ValueError("Provider profile names must contain only letters, digits, underscores, and hyphens")
     host = {}
     if names:
         with (root / "config.toml").open("rb") as stream:
@@ -107,8 +107,8 @@ def stage(root, destination, sandbox_profile, names):
     (destination / "providers.toml").write_text(fragment)
     (destination / "policy.yaml").write_text(policy)
     (destination / "bindings.json").write_text(json.dumps(receipt, sort_keys=True) + "\n")
-    print("CODEX_VARS=(" + " ".join(shlex.quote(key) for key in sorted(keys)) + ")")
-    print("CODEX_PROVIDER_URLS=" + shlex.quote(" ".join(sorted(urls))))
+    print("PROVIDER_PROFILE_VARS=(" + " ".join(shlex.quote(key) for key in sorted(keys)) + ")")
+    print("PROVIDER_URLS=" + shlex.quote(" ".join(sorted(urls))))
 
 
 if __name__ == "__main__":
@@ -116,5 +116,5 @@ if __name__ == "__main__":
         stage(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4])
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
         # Do not echo configuration values or parser excerpts into logs.
-        print(f"Error: cannot stage bound Codex profiles ({type(error).__name__})", file=sys.stderr)
+        print(f"Error: cannot stage bound provider profiles ({type(error).__name__})", file=sys.stderr)
         sys.exit(1)
