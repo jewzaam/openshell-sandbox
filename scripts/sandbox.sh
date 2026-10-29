@@ -1540,6 +1540,49 @@ git_ignored_excludes() {
     done < <(find -L "$root" -name .git -prune -print0 2>/dev/null || true)
 }
 
+# Claude Code's first-run gate runs the "Anthropic services" reachability check
+# BEFORE it reads ANTHROPIC_BASE_URL, and the work policy blocks
+# api.anthropic.com — so a provider sandbox with no `.claude.json` dies in the
+# TUI ("Failed to connect to api.anthropic.com: ECONNREFUSED", exit 1) while
+# `claude -p` works, which sends you looking at the wrong variable. Once
+# onboarding is complete and the API key approved that check is skipped; those
+# two fields are exactly what the CLI writes after a first successful run
+# (verified against the host's own `~/.claude.json`: the approved entry is the
+# key's last 20 characters). Seed them instead of depending on a first run that
+# cannot complete in here.
+#
+# Merged, not written: the file also carries `projects`, `numStartups` and
+# session state a sandbox builds up, and `--recreate` restores its own copy
+# through `upload_claude_state()` after this runs. `.[0] * .[1]` lets the seed
+# win only on its own keys, so a sandbox restored from a broken `.claude.json`
+# is repaired rather than left failing a check it cannot pass.
+seed_claude_json() {
+    local sandbox_name="$1"
+    # personal and home never capture ANTHROPIC_BASE_URL (CLAUDE_PROVIDER_VARS),
+    # so a seed there would claim a provider approval the sandbox does not use.
+    personal_profile "${SANDBOX_PROFILE:-}" && return 0
+    [[ -n "${ANTHROPIC_BASE_URL:-}" && -n "${ANTHROPIC_API_KEY:-}" ]] || return 0
+    local stage
+    stage="$(mktemp -d)"
+    if ! jq -n --arg tail "${ANTHROPIC_API_KEY: -20}" \
+            '{hasCompletedOnboarding: true,
+              customApiKeyResponses: {approved: [$tail], rejected: []}}' \
+            > "${stage}/.claude-seed.json"; then
+        rm -rf "$stage"
+        return 0
+    fi
+    run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
+        "${stage}/.claude-seed.json" /sandbox
+    run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" -- sh -c \
+        'f=/sandbox/.claude.json
+         if [ -f "$f" ]; then
+             jq -s ".[0] * .[1]" "$f" /sandbox/.claude-seed.json > "$f.tmp" && mv "$f.tmp" "$f"
+         else
+             mv /sandbox/.claude-seed.json "$f"
+         fi'
+    rm -rf "$stage"
+}
+
 upload_config() {
     local sandbox_target="$1"
     local sandbox_dir="$2"
@@ -1594,6 +1637,8 @@ upload_config() {
             "${CLAUDE_TMP}/.env" /sandbox
         rm -rf "$CLAUDE_TMP"
     fi
+
+    seed_claude_json "$sandbox_target"
 
     # Upload the gitconfig — user, aliases, url rewrites. NOT the signing key.
     #

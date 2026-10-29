@@ -84,10 +84,20 @@ the policy does not reach it. The provider path also needs
 variable as "use Vertex", so with it unset the TUI ignores `ANTHROPIC_BASE_URL`
 and dials the blocked api.anthropic.com (exit 1, ECONNREFUSED), while `claude
 -p` still works. It travels with the Vertex group, so the host has to export
-the `0` rather than leave it unset; `validate-profile.sh` asserts the value. Each sandbox additionally receives only the
-environment keys referenced by its explicitly bound provider profiles (`env_key`
-and `env_http_headers`). Capture is conditional on the host exporting the
-variable.
+the `0` rather than leave it unset; `validate-profile.sh` asserts the value.
+Each sandbox additionally receives only the environment keys referenced by its
+explicitly bound provider profiles (`env_key` and `env_http_headers`). Capture
+is conditional on the host exporting the variable.
+
+A provider sandbox also gets `/sandbox/.claude.json` seeded by
+`seed_claude_json()` (from `upload_config()`, so create and refresh alike):
+`hasCompletedOnboarding: true` and
+`customApiKeyResponses.approved: [<last 20 chars of ANTHROPIC_API_KEY>]`. The
+TUI runs an Anthropic reachability check *before* it reads `ANTHROPIC_BASE_URL`
+and only skips it for an onboarded profile, so without those fields the screen
+fails with `Failed to connect to api.anthropic.com: ECONNREFUSED` while
+`claude -p` in the same shell works. The file is merged, not replaced — it also
+holds `projects` and session state.
 
 An unbound profile grants no config, catalog, credential, or endpoint access,
 even if selected on the host. The old `CODEX_PROVIDER_PROFILE` grants nothing.
