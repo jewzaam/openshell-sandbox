@@ -86,13 +86,13 @@ HARNESS_FALLBACK=claude
 #    what this sandbox is doing right now. Two live sockets is not a signal —
 #    both agents are up and neither is the better guess — so it falls through.
 # 2. Whatever was launched here last.
-# 3. The work profile, which means codex.
-# 4. HARNESS_FALLBACK.
+# 3. HARNESS_FALLBACK.
 #
-# The profile decides only when nothing else has spoken. It says which
-# credentials and which network policy a sandbox got, and work carries both
-# Anthropic and OpenAI egress and runs either — so it cannot outrank the
-# remembered harness: a work sandbox that last ran claude still offers claude.
+# The profile never decides. It says which credentials and which network policy
+# a sandbox got; `work` carries both Anthropic and OpenAI egress and runs
+# either, so it has no opinion to offer — it used to answer "codex", which
+# predated Claude reaching a provider from in here. The harness is a choice,
+# not a consequence of the profile (gotcha 19).
 #
 # Emits "<harness> <reason>" from ONE set of branches. Recomputing the reason
 # separately drifts from the chooser — it reports a value the chooser rejected.
@@ -105,8 +105,6 @@ default_harness() {
         echo "${live[0]} session running"
     elif [[ -n "$HARNESS_DEFAULT" ]]; then
         echo "$HARNESS_DEFAULT remembered"
-    elif [[ "${SANDBOX_PROFILE:-}" == work ]]; then
-        echo "codex work profile"
     else
         echo "$HARNESS_FALLBACK default"
     fi

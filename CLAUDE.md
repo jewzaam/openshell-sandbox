@@ -436,18 +436,17 @@ is no default. `research` and `fetch-service` are policies only —
       made. The manifest's value goes as `$HARNESS_DEFAULT` and only
       preselects. Collapsing them into one would either stall an explicit
       choice for the timeout or make the remembered value unoverridable.
-    - **The profile is the last word in the default, not the first.** In
-      precedence: exactly one live dtach socket (reattaching to the running
-      session is the reason to ask at all), then `$HARNESS_DEFAULT`, then
-      `work` → codex, then `HARNESS_FALLBACK` (claude). Two live sockets is not
-      a signal — both agents are up and neither is the better guess. The
-      profile sits below the remembered harness because it decides which
-      credentials and which network policy a sandbox got, not which agent the
-      human wants this time: `work` carries both Anthropic and OpenAI egress
-      and runs either, so a work sandbox that last ran claude still offers
-      claude. Above it only `HARNESS_FALLBACK`, which is now the non-work case.
-      `tests/test-connect-harness.sh` drives the whole precedence against real
-      AF_UNIX sockets.
+    - **The profile is not an input to the default at all.** In precedence:
+      exactly one live dtach socket (reattaching to the running session is the
+      reason to ask at all), then `$HARNESS_DEFAULT`, then `HARNESS_FALLBACK`
+      (claude). Two live sockets is not a signal — both agents are up and
+      neither is the better guess. `work` used to answer "codex" as a third
+      branch; it was removed once Claude reached a provider from in here and
+      the profile's own rule — it decides credentials and policy, not the
+      agent (gotcha 19) — was the simpler description. A work sandbox with
+      nothing running and nothing remembered now offers claude, the same as
+      every other profile. `tests/test-connect-harness.sh` drives the whole
+      precedence against real AF_UNIX sockets.
     - **`default_harness` emits `"<harness> <reason>"` from one set of
       branches**, and the prompt shows the reason (`[codex - remembered]`).
       Recomputing the reason in a second function drifts from the chooser and
@@ -609,6 +608,22 @@ is no default. `research` and `fetch-service` are policies only —
   host must export `0`, not leave it unset, and `validate-profile.sh` asserts
   the value in both directions (`0` with a provider URL, `1` without) instead
   of just checking that the variable is set.
+  **`.claude.json` is seeded, because the TUI checks Anthropic reachability
+  before it reads the provider URL.** A provider sandbox with no
+  `~/.claude.json` dies in the TUI (`Failed to connect to api.anthropic.com:
+  ECONNREFUSED`, exit 1) while `claude -p` in the same shell works — the
+  headless path skips that gate. The CLI skips it too once onboarding is
+  complete and the key is approved; `seed_claude_json()` (called from
+  `upload_config()`, so create and refresh both) writes exactly those two
+  fields: `hasCompletedOnboarding: true` and
+  `customApiKeyResponses.approved: [<last 20 chars of ANTHROPIC_API_KEY>]`,
+  which is the CLI's own format on the host. It is **merged** with
+  `jq -s '.[0] * .[1]'`, never written over: the file carries `projects`,
+  `numStartups` and session state, and `--recreate` restores a copy through
+  `upload_claude_state()` — a sandbox restored from a broken file is repaired
+  rather than left failing. `validate-profile.sh` asserts
+  `hasCompletedOnboarding` on the provider path; `tests/test-claude-seed.sh`
+  pins the contents, the 20-character tail, and the merge.
 - **Personal and home set `--model opus[1m]`** in the sandbox
   `harness-wrapper.sh`, off `$SANDBOX_PROFILE` from `/sandbox/.env`. Not off
   manifest.json — that is uploaded by `upload_static()` and used to lose the

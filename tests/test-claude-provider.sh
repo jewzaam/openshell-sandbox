@@ -93,6 +93,8 @@ grep -q 'ANTHROPIC_API_KEY (provider).*PASS' <<< "$with_provider" \
     || { echo "FAIL: provider key was not accepted:" >&2; echo "$with_provider" >&2; fail=1; }
 grep -q 'CLAUDE_CODE_USE_VERTEX (provider).*0.*PASS' <<< "$with_provider" \
     || { echo "FAIL: provider path accepted with CLAUDE_CODE_USE_VERTEX=0 missing:" >&2; echo "$with_provider" >&2; fail=1; }
+grep -q 'claude onboarding (provider)' <<< "$with_provider" \
+    || { echo "FAIL: provider path does not check the TUI onboarding gate:" >&2; echo "$with_provider" >&2; fail=1; }
 grep -q 'Claude provider.*reachable.*PASS' <<< "$with_provider" \
     || { echo "FAIL: provider URL was not probed:" >&2; echo "$with_provider" >&2; fail=1; }
 if grep -qE 'CLAUDE_CODE_USE_VERTEX +1' <<< "$with_provider"; then

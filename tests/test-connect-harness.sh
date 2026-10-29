@@ -136,9 +136,9 @@ grep -q 'refresh token was revoked' "${TMP}/codex-error.log" \
 # --- default harness precedence ---
 #
 # The rule the wrapper must implement, in order: one live dtach socket wins,
-# then whatever ran here last, then the work profile (codex), then the
-# fallback. The profile sits last because work carries both agents — it is a
-# tiebreak, not a verdict. Exercised for real: the helpers are lifted out of
+# then whatever ran here last, then the fallback. The profile never decides —
+# work carries both agents and has no opinion — so it must not reappear here as
+# an input. Exercised for real: the helpers are lifted out of
 # the wrapper and driven against actual AF_UNIX sockets in a scratch dir.
 HELPERS="${TMP}/helpers.sh"
 sed -n '/^default_harness()/,/^}/p' "$W" > "$HELPERS"
@@ -172,7 +172,7 @@ check "the remembered harness wins over the fallback" "codex remembered" \
 mksock claude
 check "a live socket beats the remembered harness" "claude session running" \
     "$(HARNESS_DEFAULT=codex picks)"
-check "a live socket beats the work profile" "claude session running" \
+check "a live socket beats the fallback on work" "claude session running" \
     "$(SANDBOX_PROFILE=work HARNESS_DEFAULT='' picks)"
 
 mksock codex
@@ -181,11 +181,11 @@ check "two live sockets are not a signal, so the remembered harness decides" \
 
 rm -f "${SOCKDIR}/.dtach-claude" "${SOCKDIR}/.dtach-codex"
 
-# The work profile decides only when nothing else has: a live socket and the
-# remembered harness both outrank it, and no other profile changes anything.
-check "work with nothing remembered picks codex" "codex work profile" \
+# The profile is not an input to the default anymore: a work sandbox with
+# nothing remembered and nothing running offers the same fallback as any other.
+check "work with nothing remembered falls back" "claude default" \
     "$(SANDBOX_PROFILE=work HARNESS_DEFAULT='' picks)"
-check "the remembered harness beats the work profile" "claude remembered" \
+check "the remembered harness still wins on work" "claude remembered" \
     "$(SANDBOX_PROFILE=work HARNESS_DEFAULT=claude picks)"
 check "a non-work profile still falls back" "claude default" \
     "$(SANDBOX_PROFILE=personal HARNESS_DEFAULT='' picks)"

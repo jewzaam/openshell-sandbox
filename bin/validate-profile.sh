@@ -98,6 +98,15 @@ else
         # extra: measured on the host and in a sandbox, unset fails in the TUI
         # (exit 1, ECONNREFUSED) while `claude -p` still works.
         check "CLAUDE_CODE_USE_VERTEX (provider)" "0" "${CLAUDE_CODE_USE_VERTEX:-<unset>}"
+        # The TUI runs its own reachability check before reading the provider
+        # URL and only skips it for an onboarded profile. sandbox.sh seeds that
+        # into .claude.json; without it the session dies on the blocked
+        # api.anthropic.com while `claude -p` works.
+        onboarded="no .claude.json"
+        if [[ -f /sandbox/.claude.json ]]; then
+            onboarded=$(jq -r '.hasCompletedOnboarding // false' /sandbox/.claude.json 2>/dev/null || echo "unreadable")
+        fi
+        check "claude onboarding (provider)" "true" "$onboarded"
     else
         check "CLAUDE_CODE_USE_VERTEX" "1" "${CLAUDE_CODE_USE_VERTEX:-<unset>}"
         isset ANTHROPIC_VERTEX_PROJECT_ID && check "ANTHROPIC_VERTEX_PROJECT_ID" "set" "set" || check "ANTHROPIC_VERTEX_PROJECT_ID" "set" "unset"
