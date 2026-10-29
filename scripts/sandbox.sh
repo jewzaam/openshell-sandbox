@@ -2922,7 +2922,18 @@ POLICY_FILE="$(render_policy "$POLICY_FILE")" || exit 1
 # Build active var list based on profile
 ACTIVE_VARS=()
 if personal_profile "$SANDBOX_PROFILE"; then
-    ACTIVE_VARS+=("${ANTHROPIC_VARS[@]}" "${CLAUDE_VARS[@]}")
+    ACTIVE_VARS+=("${CLAUDE_VARS[@]}")
+    # ANTHROPIC_API_KEY is a personal credential only while the host talks to
+    # Anthropic directly. With ANTHROPIC_BASE_URL set it is the *provider's*
+    # key, and that pair is work-only (`CLAUDE_PROVIDER_VARS`): shipping it to
+    # personal or home hands a work sandbox's credential to a profile whose
+    # policy cannot reach the provider it belongs to, where it can only fail an
+    # Anthropic auth check. A host that signs in with OAuth carries no
+    # ANTHROPIC_API_KEY at all, which is the other personal path
+    # (`validate-profile.sh` accepts either).
+    if [[ -z "${ANTHROPIC_BASE_URL:-}" ]]; then
+        ACTIVE_VARS+=("${ANTHROPIC_VARS[@]}")
+    fi
 else
     ACTIVE_VARS+=("${ALL_VARS[@]}")
 fi

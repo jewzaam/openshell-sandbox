@@ -72,8 +72,13 @@ sandbox.sh literals + assembled OTEL identity ────┴──▶ /sandbox/
 | Computed on the host | `SANDBOX_*`, `CLAUDE_DASHBOARD_HOST`, OTLP protocol, `OTEL_RESOURCE_ATTRIBUTES` | `sandbox.sh:1704-1785` |
 
 `ACTIVE_VARS` is profile-dependent (`sandbox.sh:2812-2816`): `personal` and
-`home` get `ANTHROPIC_VARS + CLAUDE_VARS`; `work` gets `ALL_VARS`, which adds
-Vertex, Claude provider, and Jira. The Claude provider pair
+`home` get `CLAUDE_VARS`, plus `ANTHROPIC_VARS` (`ANTHROPIC_API_KEY`) only when
+the host has no `ANTHROPIC_BASE_URL`; `work` gets `ALL_VARS`, which adds
+Vertex, Claude provider, and Jira. A base URL on the host means
+`ANTHROPIC_API_KEY` is the *provider's* key, so the two travel together: a
+personal sandbox that captured the key without the URL carried a work
+credential its policy cannot reach, where it can only fail an Anthropic auth
+check. The Claude provider pair
 (`ANTHROPIC_BASE_URL` and `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`) is work
 only: it points Claude Code at a provider such as enmaas instead of Anthropic,
 and the personal/home policies reach no provider. The same provider host is

@@ -592,8 +592,13 @@ is no default. `research` and `fetch-service` are policies only —
   capture neither: the host env is one global value, and both are
   credential-less by design, so a provider URL there would point a personal
   session at a host its policy blocks while carrying the work key along.
-  Do not widen it to `ANTHROPIC_VARS`. The endpoint reaches the work policy
-  through the bound provider profile (`PROVIDER_PROFILES_WORK`), so a host that
+  Do not widen it to `ANTHROPIC_VARS`. `ANTHROPIC_API_KEY` is the same
+  credential: personal and home capture it only when the host has **no**
+  `ANTHROPIC_BASE_URL`, because that variable being set means the key belongs
+  to the provider rather than to Anthropic. Without the condition a personal
+  sandbox inherited a work provider key its own policy cannot reach, so it
+  could only ever fail an Anthropic auth check. The endpoint reaches the
+  work policy through the bound provider profile (`PROVIDER_PROFILES_WORK`), so a host that
   unbinds enmaas from Codex loses Claude's path to it as well —
   `validate-profile.sh` probes `ANTHROPIC_BASE_URL` and fails loudly rather
   than letting Claude fall back to the blocked api.anthropic.com. A per-profile

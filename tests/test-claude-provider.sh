@@ -69,8 +69,19 @@ create_env() {
             --no-clone --no-connect --dryrun 2>&1
 }
 
+# Same host, no provider: ANTHROPIC_API_KEY is then an Anthropic credential and
+# personal is supposed to capture it.
+create_env_direct() {
+    local profile="$1" name="$2"
+    env -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY \
+        HOME="$FAKE_HOME" ANTHROPIC_API_KEY=sk-ant-direct \
+        bash "$SANDBOX_SH" --create "$name" --profile "$profile" \
+            --no-clone --no-connect --dryrun 2>&1
+}
+
 work_env="$(create_env work probe-work)"
 personal_env="$(create_env personal probe-personal)"
+direct_env="$(create_env_direct personal probe-personal-direct)"
 
 grep -q "ANTHROPIC_BASE_URL=${PROVIDER_URL}" <<< "$work_env" \
     || { echo "FAIL: work .env does not capture ANTHROPIC_BASE_URL" >&2; fail=1; }
@@ -80,6 +91,16 @@ if grep -q 'ANTHROPIC_BASE_URL' <<< "$personal_env"; then
     echo "FAIL: personal .env captures ANTHROPIC_BASE_URL — its policy reaches no provider" >&2
     fail=1
 fi
+# The pair is one credential: a base URL on the host means the key belongs to
+# that provider, so a personal sandbox must not receive it.
+if grep -q 'ANTHROPIC_API_KEY' <<< "$personal_env"; then
+    echo "FAIL: personal .env captures the provider's ANTHROPIC_API_KEY" >&2
+    fail=1
+fi
+grep -q 'ANTHROPIC_API_KEY' <<< "$work_env" \
+    || { echo "FAIL: work .env lost ANTHROPIC_API_KEY" >&2; fail=1; }
+grep -q 'ANTHROPIC_API_KEY' <<< "$direct_env" \
+    || { echo "FAIL: personal .env stopped capturing ANTHROPIC_API_KEY with no provider URL" >&2; fail=1; }
 
 run_validate() {
     env -u ANTHROPIC_BASE_URL -u SANDBOX_PROMETHEUS_URL -u SANDBOX_LOKI_URL \
