@@ -65,18 +65,18 @@ done
 
 # Resolve only after the sandbox profile is known, including manifest-based
 # refresh/ensure. Selecting a Codex profile is not permission to publish it.
-resolve_codex_profiles() {
+resolve_provider_profiles() {
     local binding_var resolved profiles=""
-    CODEX_VARS=()
-    CODEX_PROVIDER_URLS=""
-    CODEX_PROFILE_STAGE="$(mktemp -d)" || return 1
+    PROVIDER_PROFILE_VARS=()
+    PROVIDER_URLS=""
+    PROVIDER_PROFILE_STAGE="$(mktemp -d)" || return 1
     if [[ "$SANDBOX_PROFILE" == work || "$SANDBOX_PROFILE" == personal || "$SANDBOX_PROFILE" == home ]]
     then
-        binding_var="CODEX_PROFILES_${SANDBOX_PROFILE^^}"
+        binding_var="PROVIDER_PROFILES_${SANDBOX_PROFILE^^}"
         profiles="${!binding_var:-}"
     fi
-    resolved="$(python3 "${SCRIPT_DIR}/codex-profiles.py" "${HOME}/.codex" \
-        "$CODEX_PROFILE_STAGE" "$SANDBOX_PROFILE" "$profiles")" || return 1
+    resolved="$(python3 "${SCRIPT_DIR}/provider-profiles.py" "${HOME}/.codex" \
+        "$PROVIDER_PROFILE_STAGE" "$SANDBOX_PROFILE" "$profiles")" || return 1
     eval "$resolved"
 }
 
@@ -185,7 +185,7 @@ CLAUDE_PROVIDER_VARS=(
 )
 
 # Filled only after resolving the sandbox profile's explicit Codex bindings.
-CODEX_VARS=()
+PROVIDER_PROFILE_VARS=()
 
 # No OTEL_VARS list: nothing telemetry-related is captured from the host env.
 #
@@ -1322,18 +1322,18 @@ render_codex_config() {
     printf 'endpoint = "%s/v1/metrics"\n' "$otel_url"
     printf 'protocol = "binary"\n'
     codex_marketplace_data render "$host_config"
-    if [[ -n "${CODEX_PROFILE_STAGE:-}" ]]
+    if [[ -n "${PROVIDER_PROFILE_STAGE:-}" ]]
     then
-        cat "${CODEX_PROFILE_STAGE}/providers.toml"
+        cat "${PROVIDER_PROFILE_STAGE}/providers.toml"
     fi
 }
 
 # The shared host config and profile catalogs are never copied wholesale.
-stage_codex_profile_config() {
+stage_provider_profile_config() {
     local destination_root="$1" source
-    [[ -n "${CODEX_PROFILE_STAGE:-}" ]] || return 0
+    [[ -n "${PROVIDER_PROFILE_STAGE:-}" ]] || return 0
     mkdir -p "${destination_root}/.codex"
-    for source in "${CODEX_PROFILE_STAGE}"/*.config.toml "${CODEX_PROFILE_STAGE}"/*.models.json
+    for source in "${PROVIDER_PROFILE_STAGE}"/*.config.toml "${PROVIDER_PROFILE_STAGE}"/*.models.json
     do
         [[ -f "$source" ]] || continue
         cp "$source" "${destination_root}/.codex/"
@@ -1342,10 +1342,10 @@ stage_codex_profile_config() {
 
 # Provider tables alone are not proof a profile is bound: one may use the
 # implicit OpenAI provider and still need its staged config file.
-codex_profiles_bound() {
+provider_profiles_bound() {
     local source
-    [[ -n "${CODEX_PROFILE_STAGE:-}" ]] || return 1
-    for source in "${CODEX_PROFILE_STAGE}"/*.config.toml
+    [[ -n "${PROVIDER_PROFILE_STAGE:-}" ]] || return 1
+    for source in "${PROVIDER_PROFILE_STAGE}"/*.config.toml
     do
         [[ -f "$source" ]] && return 0
     done
@@ -1354,7 +1354,7 @@ codex_profiles_bound() {
 
 # Uploads merge files, and running processes retain old credentials. A changed
 # authorization therefore needs a new container, not a best-effort deletion.
-check_codex_profile_bindings() {
+check_provider_profile_bindings() {
     local sandbox_dir="$1"
     if [[ "$SANDBOX_PROFILE" != work && "$SANDBOX_PROFILE" != personal && "$SANDBOX_PROFILE" != home ]]
     then
@@ -1362,9 +1362,9 @@ check_codex_profile_bindings() {
         return 1
     fi
     [[ "${CREATE_MODE:-false}" == true ]] && return 0
-    if ! cmp -s "${CODEX_PROFILE_STAGE}/bindings.json" "${sandbox_dir}/codex-profile-bindings.json"
+    if ! cmp -s "${PROVIDER_PROFILE_STAGE}/bindings.json" "${sandbox_dir}/provider-profile-bindings.json"
     then
-        echo "Error: Codex profile bindings changed or were never recorded. Recreate this sandbox with --recreate NAME --profile PROFILE before publishing config." >&2
+        echo "Error: Provider profile bindings changed or were never recorded. Recreate this sandbox with --recreate NAME --profile PROFILE before publishing config." >&2
         return 1
     fi
 }
@@ -1393,9 +1393,9 @@ upload_codex_marketplaces() {
     local sandbox_target="$1"
     local sandbox_dir="$2"
     local tmp
-    resolve_codex_profiles || return 1
-    check_codex_profile_bindings "$sandbox_dir" || return 1
-    if personal_profile "$SANDBOX_PROFILE" && ! codex_profiles_bound
+    resolve_provider_profiles || return 1
+    check_provider_profile_bindings "$sandbox_dir" || return 1
+    if personal_profile "$SANDBOX_PROFILE" && ! provider_profiles_bound
     then
         return 0
     fi
@@ -1409,7 +1409,7 @@ upload_codex_marketplaces() {
     fi
     render_codex_config "$host_config" "$OTEL_URL" \
         > "${tmp}/.codex/config.toml"
-    stage_codex_profile_config "$tmp"
+    stage_provider_profile_config "$tmp"
     run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
         "${tmp}/.codex" /sandbox
     rm -rf "$tmp"
@@ -1544,7 +1544,7 @@ upload_config() {
     local sandbox_target="$1"
     local sandbox_dir="$2"
 
-    check_codex_profile_bindings "$sandbox_dir" || return 1
+    check_provider_profile_bindings "$sandbox_dir" || return 1
 
     echo "Uploading Claude config..." >&2
     if [[ -d "${HOME}/.claude" ]]; then
@@ -1708,7 +1708,7 @@ upload_config() {
         # render_codex_config() above.
         render_codex_config "${HOME}/.codex/config.toml" "$OTEL_URL" \
             > "${CODEX_TMP}/.codex/config.toml"
-        stage_codex_profile_config "$CODEX_TMP"
+        stage_provider_profile_config "$CODEX_TMP"
         codex_shipped=1
 
         # Resolve symlinks so links into a host checkout remain usable in the
@@ -1732,14 +1732,14 @@ upload_config() {
         rm -rf "$CODEX_TMP"
     fi
 
-    if personal_profile "$SANDBOX_PROFILE" && codex_profiles_bound
+    if personal_profile "$SANDBOX_PROFILE" && provider_profiles_bound
     then
         CODEX_TMP="$(mktemp -d)"
         mkdir -p "${CODEX_TMP}/.codex"
         # Personal profiles receive only their bound config, never work auth,
         # hooks, plugins, marketplaces, or host-wide agent settings.
         render_codex_config /dev/null "$OTEL_URL" > "${CODEX_TMP}/.codex/config.toml"
-        stage_codex_profile_config "$CODEX_TMP"
+        stage_provider_profile_config "$CODEX_TMP"
         run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
             "${CODEX_TMP}/.codex" /sandbox
         rm -rf "$CODEX_TMP"
@@ -1747,7 +1747,7 @@ upload_config() {
 
     if [[ "$DRYRUN" != true ]]
     then
-        cp "${CODEX_PROFILE_STAGE}/bindings.json" "${sandbox_dir}/codex-profile-bindings.json"
+        cp "${PROVIDER_PROFILE_STAGE}/bindings.json" "${sandbox_dir}/provider-profile-bindings.json"
     fi
 
     # Re-upload bin/
@@ -1804,8 +1804,8 @@ render_policy() {
         expr+=(-e "s|\${${v}}|${!v}|g")
     done
     sed "${expr[@]}" "$src" | awk \
-        -v provider_policy="${CODEX_PROFILE_STAGE:+${CODEX_PROFILE_STAGE}/policy.yaml}" '
-        /^  # BEGIN optional codex provider$/ {
+        -v provider_policy="${PROVIDER_PROFILE_STAGE:+${PROVIDER_PROFILE_STAGE}/policy.yaml}" '
+        /^  # BEGIN optional model provider$/ {
             skip = 1
             if (provider_policy != "") {
                 while ((getline line < provider_policy) > 0) print line
@@ -1813,7 +1813,7 @@ render_policy() {
             }
             next
         }
-        /^  # END optional codex provider$/ {
+        /^  # END optional model provider$/ {
             skip = 0
             next
         }
@@ -2770,8 +2770,8 @@ if [[ -n "$POLICY_FILE" && -z "$SANDBOX_NAME" && -z "$CONNECT_NAME" && "$ENSURE_
     OS_NAME=$(resolve_openshell_name "$POLICY_TARGET")
     POLICY_DIR="${SANDBOXES_DIR}/${POLICY_TARGET}"
     SANDBOX_PROFILE=$(jq -r '.profile // empty' "${POLICY_DIR}/manifest.json")
-    resolve_codex_profiles || exit 1
-    check_codex_profile_bindings "$POLICY_DIR" || exit 1
+    resolve_provider_profiles || exit 1
+    check_provider_profile_bindings "$POLICY_DIR" || exit 1
     POLICY_FILE="$(render_policy "$POLICY_FILE")" || exit 1
     echo "Setting policy on ${POLICY_TARGET}..." >&2
     if [[ "$DRYRUN" == true ]]; then
@@ -2867,7 +2867,7 @@ fi
 # only becomes the sandbox's openshell-policy.yaml once that create succeeds.
 # --refresh reaches here too and renders a temp it never installs, which costs
 # one sed and changes nothing on disk.
-resolve_codex_profiles || exit 1
+resolve_provider_profiles || exit 1
 POLICY_FILE="$(render_policy "$POLICY_FILE")" || exit 1
 
 # ---------------------------------------------------------------------------
@@ -2883,7 +2883,7 @@ else
 fi
 
 ENV_CONTENT=""
-ACTIVE_VARS+=("${CODEX_VARS[@]}")
+ACTIVE_VARS+=("${PROVIDER_PROFILE_VARS[@]}")
 captured=0
 for var in "${ACTIVE_VARS[@]}"; do
     if [[ -n "${!var+x}" ]]; then
@@ -2941,9 +2941,9 @@ ENV_CONTENT+="OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf"$'\n'
 # Telemetry query endpoints — consumed only by validate-profile.sh.
 ENV_CONTENT+="$(printf 'SANDBOX_PROMETHEUS_URL=%q' "$PROMETHEUS_URL")"$'\n'
 ENV_CONTENT+="$(printf 'SANDBOX_LOKI_URL=%q' "$LOKI_URL")"$'\n'
-if [[ -n "${CODEX_PROVIDER_URLS:-}" ]]
+if [[ -n "${PROVIDER_URLS:-}" ]]
 then
-    ENV_CONTENT+="$(printf 'SANDBOX_CODEX_PROVIDER_URLS=%q' "$CODEX_PROVIDER_URLS")"$'\n'
+    ENV_CONTENT+="$(printf 'SANDBOX_PROVIDER_URLS=%q' "$PROVIDER_URLS")"$'\n'
 fi
 
 # Sandbox source directory name for OTEL enrichment
@@ -3181,7 +3181,7 @@ if ! personal_profile "$SANDBOX_PROFILE" && [[ -d "${HOME}/.config/gcloud" ]]; t
 fi
 
 RESTORE_CODEX_STATE=false
-if cmp -s "${CODEX_PROFILE_STAGE}/bindings.json" "${SANDBOXES_DIR}/${SANDBOX_NAME}/codex-profile-bindings.json"
+if cmp -s "${PROVIDER_PROFILE_STAGE}/bindings.json" "${SANDBOXES_DIR}/${SANDBOX_NAME}/provider-profile-bindings.json"
 then
     RESTORE_CODEX_STATE=true
 fi

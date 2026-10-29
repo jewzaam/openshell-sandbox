@@ -52,7 +52,7 @@ for n in alpha beta; do
     mkdir -p "${FAKE_HOME}/sandboxes/${n}"
     printf '{"name":"%s","openshell_name":"sb-%s","profile":"personal","repos":{}}' "$n" "$n" \
         > "${FAKE_HOME}/sandboxes/${n}/manifest.json"
-    seed_codex_bindings "${FAKE_HOME}/sandboxes/${n}" personal
+    seed_provider_bindings "${FAKE_HOME}/sandboxes/${n}" personal
 done
 # No manifest: not a sandbox.
 mkdir -p "${FAKE_HOME}/sandboxes/notasandbox"

@@ -42,7 +42,7 @@ D="${FAKE_HOME}/sandboxes/probe"
 mkdir -p "${D}/myrepo"
 printf '{"name":"probe","openshell_name":"sb-probe","profile":"personal","repos":{"myrepo":{"url":"git@github.com:x/myrepo.git"}}}' \
     > "${D}/manifest.json"
-seed_codex_bindings "$D" personal
+seed_provider_bindings "$D" personal
 for f in pr-context.md jira-context.md open-prs.json; do
     echo "seeded" > "${D}/myrepo/${f}"
 done

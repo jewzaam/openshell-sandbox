@@ -79,9 +79,9 @@ network_policies:
     binaries:
       - { path: "/**" }
 
-  # BEGIN optional codex provider
-  # Filled only from Codex profiles explicitly bound to this sandbox profile.
-  # END optional codex provider
+  # BEGIN optional model provider
+  # Filled only from provider profiles explicitly bound to this sandbox profile.
+  # END optional model provider
 
   jira_api:
     name: jira-rw

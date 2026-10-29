@@ -594,7 +594,7 @@ is no default. `research` and `fetch-service` are policies only —
   credential-less by design, so a provider URL there would point a personal
   session at a host its policy blocks while carrying the work key along.
   Do not widen it to `ANTHROPIC_VARS`. The endpoint reaches the work policy
-  through the bound Codex provider (`CODEX_PROFILES_WORK`), so a host that
+  through the bound provider profile (`PROVIDER_PROFILES_WORK`), so a host that
   unbinds enmaas from Codex loses Claude's path to it as well —
   `validate-profile.sh` probes `ANTHROPIC_BASE_URL` and fails loudly rather
   than letting Claude fall back to the blocked api.anthropic.com. A per-profile

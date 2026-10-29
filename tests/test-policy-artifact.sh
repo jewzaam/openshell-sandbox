@@ -43,7 +43,7 @@ subst() { sed -e 's|${OTEL_HOST}|x|g' -e 's|${OTEL_PORT}|4318|g' \
 # Stand in for a sandbox running a --policy-applied fetch-service policy.
 seed_applied() {
     printf '{"name":"probe","profile":"personal","repos":{}}' > "${D}/manifest.json"
-    seed_codex_bindings "$D" personal
+    seed_provider_bindings "$D" personal
     subst "${WORK}/policies/fetch-service.yaml" > "${D}/openshell-policy.yaml"
 }
 

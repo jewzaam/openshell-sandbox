@@ -54,7 +54,7 @@ cp -r "${REPO_ROOT}/scripts" "${REPO_ROOT}/config" "${REPO_ROOT}/policies" "$WOR
 SBX="${HOME}/sandboxes/scratch"
 mkdir -p "$SBX"
 echo '{"name":"scratch","openshell_name":"sb-x","profile":"personal","repos":{}}' > "${SBX}/manifest.json"
-seed_codex_bindings "$SBX" personal
+seed_provider_bindings "$SBX" personal
 sb() { bash "${WORK}/scripts/sandbox.sh" "$@" >/dev/null 2>&1 || fail "sandbox.sh $* exited non-zero"; }
 
 # Absent on both sides: upload sends nothing; download creates it in the

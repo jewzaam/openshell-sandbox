@@ -48,7 +48,7 @@ mkdir -p "$PROBE"
 MANIFEST="${PROBE}/manifest.json"
 reset_manifest() {
     printf '{"name":"probe","openshell_name":"sb-test","profile":"personal","repos":{}}' > "$MANIFEST"
-    seed_codex_bindings "$PROBE" personal
+    seed_provider_bindings "$PROBE" personal
 }
 flag() { jq -r --arg k "$1" '.[$k] // false' "$MANIFEST"; }
 sb() { HOME="$FAKE_HOME" bash "$SANDBOX_SH" "$@" 2>&1; }

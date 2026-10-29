@@ -187,13 +187,13 @@ if command -v curl &>/dev/null; then
     personal_profile && check "googleapis.com" "blocked" "$actual" || check "googleapis.com" "reachable" "$actual"
 
     # These endpoints are published only by this sandbox profile's bindings.
-    if isset SANDBOX_CODEX_PROVIDER_URLS
+    if isset SANDBOX_PROVIDER_URLS
     then
-        read -r -a codex_urls <<< "$SANDBOX_CODEX_PROVIDER_URLS"
-        for url in "${codex_urls[@]}"
+        read -r -a provider_urls <<< "$SANDBOX_PROVIDER_URLS"
+        for url in "${provider_urls[@]}"
         do
             actual=$(net_check "$url")
-            check "codex provider" "reachable" "$actual"
+            check "model provider" "reachable" "$actual"
         done
     fi
 

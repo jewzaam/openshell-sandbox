@@ -43,7 +43,7 @@ mkdir -p "${FAKE_HOME}/sandboxes/probe" "${FAKE_HOME}/.claude/skills"
 printf '{"name":"probe","openshell_name":"sb-probe","profile":"personal","repos":{}}' \
     > "${FAKE_HOME}/sandboxes/probe/manifest.json"
 echo '{}' > "${FAKE_HOME}/.claude/settings.json"
-seed_codex_bindings "${FAKE_HOME}/sandboxes/probe" personal
+seed_provider_bindings "${FAKE_HOME}/sandboxes/probe" personal
 
 export GIT_CONFIG_GLOBAL=/dev/null
 git_repo() {

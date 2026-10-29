@@ -32,10 +32,10 @@ export HOME="${TMP}/isolate-home"
 export XDG_CONFIG_HOME="${HOME}/.config"
 
 # Existing-container fixtures represent an explicitly authorized empty set.
-seed_codex_bindings() {
+seed_provider_bindings() {
     local sandbox_dir="$1" profile="$2" stage
     stage="$(mktemp -d "${TMP}/bindings.XXXXXX")"
-    python3 "${REPO_ROOT}/scripts/codex-profiles.py" "${HOME}/.codex" \
+    python3 "${REPO_ROOT}/scripts/provider-profiles.py" "${HOME}/.codex" \
         "$stage" "$profile" '' >/dev/null
-    cp "${stage}/bindings.json" "${sandbox_dir}/codex-profile-bindings.json"
+    cp "${stage}/bindings.json" "${sandbox_dir}/provider-profile-bindings.json"
 }

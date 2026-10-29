@@ -11,9 +11,10 @@ SDLC skill access. Podman-based, rootless.
   telemetry push-only), **home** (personal plus Prometheus/Loki reads)
 - `--harness claude|codex` picks the agent; Codex runs on **work**, which
   carries OpenAI alongside Vertex, and is what a work sandbox defaults to when
-  nothing else is running or remembered. Extra Codex profiles must be explicitly
-  bound to sandbox profiles with `CODEX_PROFILES_WORK`, `CODEX_PROFILES_PERSONAL`,
-  or `CODEX_PROFILES_HOME` in gitignored `config/site.env`. Only each sandbox's
+  nothing else is running or remembered. Extra provider profiles (Codex-format,
+  also how Claude reaches `ANTHROPIC_BASE_URL`) must be explicitly bound to
+  sandbox profiles with `PROVIDER_PROFILES_WORK`, `PROVIDER_PROFILES_PERSONAL`,
+  or `PROVIDER_PROFILES_HOME` in gitignored `config/site.env`. Only each sandbox's
   authorized provider definitions, profile configs, model catalogs, keys, and
   endpoints are published. Unbound profiles never ship. Changed bindings require
   recreation, and old Codex session state is not restored across that boundary.
