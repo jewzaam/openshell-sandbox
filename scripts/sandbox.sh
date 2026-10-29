@@ -166,8 +166,22 @@ JIRA_VARS=(
 
 CLAUDE_VARS=(
     CLAUDE_CODE_MAX_TURNS
+    CLAUDE_CODE_MAX_CONTEXT_TOKENS
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
     CLAUDE_CODE_USE_BEDROCK
+)
+
+# A Claude Code provider other than Anthropic itself is reached by pointing
+# ANTHROPIC_BASE_URL at it; on this host that is enmaas, the same provider the
+# work Codex profile uses. Work only, with the Vertex group: personal and home
+# policies reach api.anthropic.com and nothing else, so capturing a provider
+# URL there would hand a personal sandbox an address its policy blocks and
+# validate-profile.sh would report it as unreachable rather than absent.
+# CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY travels with it because a provider
+# model id is not in the CLI's own catalog.
+CLAUDE_PROVIDER_VARS=(
+    ANTHROPIC_BASE_URL
+    CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
 )
 
 # Filled only after resolving the sandbox profile's explicit Codex bindings.
@@ -189,6 +203,7 @@ CODEX_VARS=()
 ALL_VARS=(
     "${ANTHROPIC_VARS[@]}"
     "${VERTEX_VARS[@]}"
+    "${CLAUDE_PROVIDER_VARS[@]}"
     "${JIRA_VARS[@]}"
     "${CLAUDE_VARS[@]}"
 )

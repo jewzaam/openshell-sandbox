@@ -73,9 +73,22 @@ sandbox.sh literals + assembled OTEL identity ────┴──▶ /sandbox/
 
 `ACTIVE_VARS` is profile-dependent (`sandbox.sh:2812-2816`): `personal` and
 `home` get `ANTHROPIC_VARS + CLAUDE_VARS`; `work` gets `ALL_VARS`, which adds
-Vertex and Jira. Each sandbox additionally receives only the environment keys
-referenced by its explicitly bound Codex providers (`env_key` and
-`env_http_headers`). Capture is conditional on the host exporting the variable.
+Vertex, Claude provider, and Jira. The Claude provider pair
+(`ANTHROPIC_BASE_URL` and `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`) is work
+only: it points Claude Code at a provider such as enmaas instead of Anthropic,
+and the personal/home policies reach no provider. The same provider host is
+allowed by the work policy through the Codex provider binding, so the two must
+stay in step — `validate-profile.sh` probes `ANTHROPIC_BASE_URL` and fails when
+the policy does not reach it. The provider path also needs
+`CLAUDE_CODE_USE_VERTEX=0` in `.env`: Claude Code reads the *presence* of that
+variable as "use Vertex", so with it unset the TUI ignores `ANTHROPIC_BASE_URL`
+and dials the blocked api.anthropic.com (exit 1, ECONNREFUSED), while `claude
+-p` still works. It travels with the Vertex group, so the host has to export
+the `0` rather than leave it unset; `validate-profile.sh` asserts the value. Each sandbox additionally receives only the
+environment keys referenced by its explicitly bound Codex providers (`env_key`
+and `env_http_headers`). Capture is conditional on the host exporting the
+variable.
+
 An unbound profile grants no config, catalog, credential, or endpoint access,
 even if selected on the host. The old `CODEX_PROVIDER_PROFILE` grants nothing.
 

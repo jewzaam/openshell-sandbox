@@ -133,7 +133,7 @@ and bash terminals, then opens VS Code.
 
 | Profile | Auth | Network Access |
 |---------|------|----------------|
-| `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`), plus OpenAI for `--harness codex` (`/sandbox/.codex/auth.json`) and explicitly bound Codex providers | Google APIs, Jira, OpenAI, bound Codex providers, npm, PyPI, OTEL push, Prometheus + Loki reads |
+| `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`) or a Claude provider via `ANTHROPIC_BASE_URL` (enmaas on this host), plus OpenAI for `--harness codex` (`/sandbox/.codex/auth.json`) and explicitly bound Codex providers | Google APIs, Jira, OpenAI, bound Codex providers, npm, PyPI, OTEL push, Prometheus + Loki reads |
 | `personal` | Anthropic direct (API key or OAuth) | Anthropic API, npm, PyPI, Debian, OTEL push only |
 | `home` | Anthropic direct (API key or OAuth) | as `personal`, plus Prometheus + Loki reads |
 
