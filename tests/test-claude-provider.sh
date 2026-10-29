@@ -62,8 +62,12 @@ fail=0
 
 create_env() {
     local profile="$1" name="$2"
+    # The key is passed explicitly, never inherited: on a host that does not
+    # export one (CI) the presence assertions below would fail for a reason
+    # that has nothing to do with the profile rule under test.
     HOME="$FAKE_HOME" \
         ANTHROPIC_BASE_URL="$PROVIDER_URL" \
+        ANTHROPIC_API_KEY=sk-ant-provider \
         CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \
         bash "$SANDBOX_SH" --create "$name" --profile "$profile" \
             --no-clone --no-connect --dryrun 2>&1
