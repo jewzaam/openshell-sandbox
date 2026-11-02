@@ -36,10 +36,13 @@ S="${TMP}/settings.json"
 seed() {
     cat > "$S" << 'JSON'
 {
+  "model": "rits/deepseek-ai/DeepSeek-V4.1-Flash-1017",
   "env": {
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5-20251001",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5",
+    "ANTHROPIC_BASE_URL": "https://api.example-provider.net",
+    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
     "CLAUDE_CODE_USE_VERTEX": "1",
     "JIRA_URL": "https://example.atlassian.net",
     "OTEL_METRICS_EXPORTER": "otlp",
@@ -94,7 +97,25 @@ for profile in personal home; do
         || { echo "FAIL: vertex env survived on ${profile}" >&2; fail=1; }
     [[ "$(get '.env.JIRA_URL // "gone"')" == "gone" ]] \
         || { echo "FAIL: jira env survived on ${profile}" >&2; fail=1; }
+    # A provider pair in settings.env is the same credential class as the work
+    # env: the policy there reaches no provider, so pointing Claude at one buys
+    # a `Connection refused` that validate-profile.sh cannot see (it reads the
+    # shell env, not settings.json).
+    for key in ANTHROPIC_BASE_URL CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY; do
+        [[ "$(get ".env.\"${key}\" // \"gone\"")" == "gone" ]] \
+            || { echo "FAIL: ${key} survived on ${profile}" >&2; fail=1; }
+    done
+    # The top-level model names a provider model that does not exist here.
+    [[ "$(get '.model // "gone"')" == "gone" ]] \
+        || { echo "FAIL: host model pin survived on ${profile}" >&2; fail=1; }
 done
+
+seed
+strip work
+[[ "$(get '.env.ANTHROPIC_BASE_URL')" == "https://api.example-provider.net" ]] \
+    || { echo "FAIL: work profile lost its provider URL" >&2; fail=1; }
+[[ "$(get '.model')" == "rits/deepseek-ai/DeepSeek-V4.1-Flash-1017" ]] \
+    || { echo "FAIL: work profile lost the model its provider serves" >&2; fail=1; }
 
 seed
 strip work

@@ -35,8 +35,18 @@ MODEL_KEYS = (
 PERSONAL_PROFILES = ("personal", "home")
 
 # Personal sandboxes get no work credentials or work-only integrations.
+#
+# ANTHROPIC_BASE_URL is the same credential as the env pair sandbox.sh captures
+# for work only (`CLAUDE_PROVIDER_VARS`): it points Claude at a private
+# provider, which a personal policy blocks. A host that keeps it in
+# settings.json `env` rather than its shell hands it to every sandbox that way,
+# and the TUI then fails with `Connection refused` (ECONNREFUSED) against a
+# host it was never allowed to reach. Its discovery flag travels with it for the
+# same reason a provider model id is not in the CLI's catalog.
 PERSONAL_STRIP_RE = re.compile(
-    r"^(CLAUDE_CODE_USE_VERTEX|ANTHROPIC_VERTEX|GOOGLE|CLOUDSDK|CLOUD_ML|JIRA|ATLASSIAN)",
+    r"^(CLAUDE_CODE_USE_VERTEX|ANTHROPIC_VERTEX|ANTHROPIC_BASE_URL"
+    r"|CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
+    r"|GOOGLE|CLOUDSDK|CLOUD_ML|JIRA|ATLASSIAN)",
     re.I,
 )
 
@@ -78,6 +88,16 @@ def strip_env(settings, profile):
         env.pop(key, None)
     if profile in PERSONAL_PROFILES:
         settings["env"] = {k: v for k, v in env.items() if not PERSONAL_STRIP_RE.match(k)}
+
+
+def strip_model(settings, profile):
+    # The top-level `model` is the same host pin as MODEL_KEYS, and on a
+    # provider host it names a model that only exists behind ANTHROPIC_BASE_URL.
+    # Personal and home have no provider, and the wrapper passes --model for
+    # them anyway, so the host's value can only be wrong here. Work keeps it:
+    # the model and the provider it belongs to travel together.
+    if profile in PERSONAL_PROFILES:
+        settings.pop("model", None)
 
 
 def keep_hook(hook):
@@ -130,6 +150,7 @@ def main():
 
     strip_permissions(settings)
     strip_env(settings, profile)
+    strip_model(settings, profile)
     strip_hooks(settings)
 
     with open(path, "w") as f:
