@@ -80,7 +80,7 @@ personal sandbox that captured the key without the URL carried a work
 credential its policy cannot reach, where it can only fail an Anthropic auth
 check. The Claude provider pair
 (`ANTHROPIC_BASE_URL` and `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`) is work
-only: it points Claude Code at a provider such as enmaas instead of Anthropic,
+only: it points Claude Code at a private provider instead of Anthropic,
 and the personal/home policies reach no provider. The same provider host is
 allowed by the work policy through the provider profile binding, so the two must
 stay in step — `validate-profile.sh` probes `ANTHROPIC_BASE_URL` and fails when

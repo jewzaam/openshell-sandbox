@@ -588,7 +588,7 @@ is no default. `research` and `fetch-service` are policies only —
   sandbox available models may differ.  Pinning model is not required.
 - **`ANTHROPIC_BASE_URL` and `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` are
   captured for work only** (`CLAUDE_PROVIDER_VARS`). They select a Claude
-  provider such as enmaas instead of Anthropic or Vertex. Personal and home
+  provider instead of Anthropic or Vertex. Personal and home
   capture neither: the host env is one global value, and both are
   credential-less by design, so a provider URL there would point a personal
   session at a host its policy blocks while carrying the work key along.
@@ -599,7 +599,7 @@ is no default. `research` and `fetch-service` are policies only —
   sandbox inherited a work provider key its own policy cannot reach, so it
   could only ever fail an Anthropic auth check. The endpoint reaches the
   work policy through the bound provider profile (`PROVIDER_PROFILES_WORK`), so a host that
-  unbinds enmaas from Codex loses Claude's path to it as well —
+  unbinds that provider from Codex loses Claude's path to it as well —
   `validate-profile.sh` probes `ANTHROPIC_BASE_URL` and fails loudly rather
   than letting Claude fall back to the blocked api.anthropic.com. A per-profile
   binding of its own is the shape to build if another profile ever needs a

@@ -83,8 +83,9 @@ if personal_profile; then
         check "Google/Vertex vars" "unset" "unset"
     fi
 else
-    # Work has two possible Claude paths. A non-Anthropic provider (enmaas here)
-    # is selected by ANTHROPIC_BASE_URL, which sandbox.sh captures for work
+    # Work has two possible Claude paths. A non-Anthropic provider (a private
+    # one on this host) is selected by ANTHROPIC_BASE_URL, which sandbox.sh
+    # captures for work
     # only; without it Claude Code would fall back to api.anthropic.com, which
     # the work policy blocks. Vertex is only the expectation when no provider
     # URL travelled, and ANTHROPIC_API_KEY is then expected to be absent
