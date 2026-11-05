@@ -106,6 +106,20 @@ grep -q 'ANTHROPIC_API_KEY' <<< "$work_env" \
 grep -q 'ANTHROPIC_API_KEY' <<< "$direct_env" \
     || { echo "FAIL: personal .env stopped capturing ANTHROPIC_API_KEY with no provider URL" >&2; fail=1; }
 
+# Review orchestrator: claude everywhere; work inherits the provider model from
+# settings.json, personal names Anthropic tiers.
+for profile_env in "$work_env" "$personal_env"; do
+    grep -q '^REVIEW_ORCHESTRATOR_HARNESS=claude$' <<< "$profile_env" \
+        || { echo "FAIL: .env does not set REVIEW_ORCHESTRATOR_HARNESS=claude" >&2; fail=1; }
+done
+if grep -q 'REVIEW_ORCHESTRATOR_MODEL_' <<< "$work_env"; then
+    echo "FAIL: work .env pins a review model — it must inherit the provider model" >&2
+    fail=1
+fi
+grep -q '^REVIEW_ORCHESTRATOR_MODEL_DEEP=sonnet$' <<< "$personal_env" \
+    && grep -q '^REVIEW_ORCHESTRATOR_MODEL_FOCUSED=haiku$' <<< "$personal_env" \
+    || { echo "FAIL: personal .env does not set sonnet/haiku review models" >&2; fail=1; }
+
 run_validate() {
     env -u ANTHROPIC_BASE_URL -u SANDBOX_PROMETHEUS_URL -u SANDBOX_LOKI_URL \
         -u OTEL_EXPORTER_OTLP_ENDPOINT -u CLAUDE_CODE_USE_VERTEX \

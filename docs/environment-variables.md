@@ -70,6 +70,7 @@ sandbox.sh literals + assembled OTEL identity ────┴──▶ /sandbox/
 | Host env capture | Only names in `ACTIVE_VARS`, and only if set on the host | `sandbox.sh:2812-2826` |
 | `config/site.env` | `OTEL_EXPORTER_OTLP_ENDPOINT` (from `OTEL_URL`), the Prometheus and Loki URLs, and explicit `PROVIDER_PROFILES_WORK`, `PROVIDER_PROFILES_PERSONAL`, `PROVIDER_PROFILES_HOME` publication allowlists | `resolve_provider_profiles()` in `scripts/sandbox.sh` |
 | Computed on the host | `SANDBOX_*`, `CLAUDE_DASHBOARD_HOST`, OTLP protocol, `OTEL_RESOURCE_ATTRIBUTES` | `sandbox.sh:1704-1785` |
+| Fixed per profile | `REVIEW_ORCHESTRATOR_HARNESS=claude` for every profile; `REVIEW_ORCHESTRATOR_MODEL_DEEP=sonnet` and `_FOCUSED=haiku` for personal and home. Work sets no model, so the review orchestrator's `claude -p` uses the provider model from the host `settings.json` | after `SANDBOX_PROFILE` in `scripts/sandbox.sh` |
 
 `ACTIVE_VARS` is profile-dependent (`sandbox.sh:2812-2816`): `personal` and
 `home` get `CLAUDE_VARS`, plus `ANTHROPIC_VARS` (`ANTHROPIC_API_KEY`) only when
