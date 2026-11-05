@@ -3039,6 +3039,17 @@ if [[ -n "$SANDBOX_PROFILE" ]]; then
     ENV_CONTENT+="$(printf 'SANDBOX_PROFILE=%q' "$SANDBOX_PROFILE")"$'\n'
 fi
 
+# jewzaam-reviews orchestrator: harness and model per review level. Work sets
+# no model, so `claude -p` uses the host settings.json `model` (strip_model
+# keeps it for work) — the provider's model travels with its provider and no
+# provider id lands in this repo. Personal and home have no settings.json
+# model; Anthropic tiers are named explicitly.
+ENV_CONTENT+="REVIEW_ORCHESTRATOR_HARNESS=claude"$'\n'
+if personal_profile "$SANDBOX_PROFILE"; then
+    ENV_CONTENT+="REVIEW_ORCHESTRATOR_MODEL_DEEP=sonnet"$'\n'
+    ENV_CONTENT+="REVIEW_ORCHESTRATOR_MODEL_FOCUSED=haiku"$'\n'
+fi
+
 # The OTEL identity, assembled from the values just written. Every attribute is
 # host knowledge and none of it is observable from inside the container:
 # `hostname` there is sandbox-sb-<hash>, and $(pwd) is /sandbox/source for every
