@@ -721,6 +721,9 @@ Two things break after a host reboot:
 
 ## Development Workflow
 
+- **Discover the entry points before writing a command.** `make help` lists the
+  build/test targets; `scripts/sandbox.sh --help` lists the sandbox modes. Use
+  those before reading `lib.sh` or reconstructing a mode in a new command.
 1. Edit files
 2. `make check` — shellcheck (warnings and up) + the `tests/` self-checks. Same
    two targets CI runs, so a green local run is a green PR.
@@ -731,6 +734,9 @@ Two things break after a host reboot:
 
 ## Standards
 
+- **Docs state behavior; every behavioral claim names the test that proves it.**
+  A behavior change updates code, test, and doc together. A claim with no test
+  is marked unverified, not stated as fact.
 - Shell scripts: `set -euo pipefail`, no semicolons for chaining (use `&&`)
 - CLI output: `~/source/standards/cli/conventions.md` § Output — sentence case,
   status at column 0, detail lines indented 4, `⊘` for skipped. openshell prints
