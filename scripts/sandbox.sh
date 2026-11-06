@@ -1268,6 +1268,23 @@ render_codex_config() {
         # dropped on the way through, and the END rule opens a table only when
         # the host had none.
         awk '
+            # developer_instructions is a multi-line basic string. The
+            # top-level filter below is per line, so copy it explicitly and
+            # keep printing until its closing """. Without this, refresh
+            # silently drops the global instruction slot and every sandbox
+            # session starts with the rules missing.
+            in_dev {
+                print
+                if ($0 ~ /"""[[:space:]]*$/) { in_dev = 0 }
+                next
+            }
+            !in_table && /^[[:space:]]*developer_instructions[[:space:]]*=/ {
+                print
+                # One """ is an opening delimiter; two is a complete
+                # single-line triple-quoted value.
+                if (gsub(/"""/, "&") == 1) { in_dev = 1 }
+                next
+            }
             /^[[:space:]]*\[/ {
                 in_table = 1
                 keep = ($0 ~ /^[[:space:]]*\[(tui|features|agents)[.\]]/)
