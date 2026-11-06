@@ -198,6 +198,46 @@ echo "$OUT" | grep -q "sandbox_permissions" \
 echo "$OUT" | grep -q '/home/me/source/jewzaam-reviews' \
     && { echo "FAIL: host marketplace path leaked into rendered config" >&2; fail=1; }
 
+# --- the global instruction slot travels whole ---
+# A sandbox refresh that drops developer_instructions starts every Codex
+# session without the user's global rules. The renderer must carry the
+# multi-line TOML string intact, not just the first line.
+DEV_CONFIG="${TMP}/dev-config.toml"
+cat > "$DEV_CONFIG" << 'EOF'
+developer_instructions = """
+Do what was asked and stop.
+
+Never swallow a failure.
+"""
+model = "host-model"
+[tui]
+auto_recap = false
+EOF
+OUT_DEV="$(render_codex_config "$DEV_CONFIG" "$OTEL_URL")"
+echo "$OUT_DEV" | grep -qx 'developer_instructions = """' \
+    || { echo "FAIL: developer_instructions header missing" >&2; fail=1; }
+echo "$OUT_DEV" | grep -qx 'Do what was asked and stop.' \
+    || { echo "FAIL: developer_instructions body missing" >&2; fail=1; }
+echo "$OUT_DEV" | grep -qx 'Never swallow a failure.' \
+    || { echo "FAIL: developer_instructions body truncated" >&2; fail=1; }
+echo "$OUT_DEV" | grep -qx '"""' \
+    || { echo "FAIL: developer_instructions closing delimiter missing" >&2; fail=1; }
+printf '%s\n' "$OUT_DEV" > "${TMP}/out-dev.toml"
+if ! python3 - "${TMP}/out-dev.toml" << 'PY'
+import sys, tomllib
+with open(sys.argv[1], "rb") as handle:
+    data = tomllib.load(handle)
+assert "Never swallow a failure." in data["developer_instructions"]
+PY
+then
+    echo "FAIL: rendered config with developer_instructions is not valid TOML" >&2
+    fail=1
+fi
+dev_line=$(echo "$OUT_DEV" | grep -n '^developer_instructions' | head -1 | cut -d: -f1)
+first_table=$(echo "$OUT_DEV" | grep -n '^\[' | head -1 | cut -d: -f1)
+[[ -n "$dev_line" && -n "$first_table" && "$dev_line" -lt "$first_table" ]] \
+    || { echo "FAIL: developer_instructions is not above the first table header" >&2; fail=1; }
+
 # --- host has no config.toml at all: sandbox defaults and otel still render ---
 OUT_NO_HOST="$(render_codex_config "${TMP}/does-not-exist.toml" "$OTEL_URL")"
 echo "$OUT_NO_HOST" | grep -qx 'model = "gpt-6-luna"' \

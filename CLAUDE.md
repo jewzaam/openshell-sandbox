@@ -698,6 +698,11 @@ Hard-won, and referenced by number from `sandbox.sh` and
 
 ## Other gotchas
 
+- **`render_codex_config()` copies top-level keys line by line.** A multi-line
+  string is therefore special-cased: `developer_instructions` is printed with
+  its whole body, not just the first line. Adding another multi-line top-level
+  key without the same branch silently truncates it. `tests/test-render-codex-config.sh`
+  asserts the instruction slot survives and the result is valid TOML.
 - **`yq` in the image is the kislyuk build (pip), not mikefarah/yq (Go).**
   Filters are jq syntax. The two share a name; the expression language differs.
 - **Bash `$()` strips trailing newlines.** Building `.env` content with
