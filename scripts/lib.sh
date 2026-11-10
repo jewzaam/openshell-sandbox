@@ -560,6 +560,24 @@ personal_profile() {
     [[ "$1" == personal || "$1" == home ]]
 }
 
+# Managed settings are read only from /etc/claude-code/managed-settings.json on
+# Linux, root-owned. `deniedModels` must therefore live in an image layer: a
+# runtime upload needs a writable destination, and anything the sandbox user can
+# write the agent can rewrite to unblock the models. So work runs a derived
+# image with the file baked in, and /etc is read_only in the policy, making it
+# unmodifiable from inside. Personal and home run the base image, which has no
+# managed settings at all.
+sandbox_image_for() {
+    local profile="$1"
+    local base="${SANDBOX_IMAGE_NAME:-openshell-sandbox}"
+    local tag="${SANDBOX_IMAGE_TAG:-latest}"
+    if personal_profile "$profile"; then
+        printf '%s:%s\n' "$base" "$tag"
+    else
+        printf '%s-work:%s\n' "$base" "$tag"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Repo visibility helpers
 # ---------------------------------------------------------------------------

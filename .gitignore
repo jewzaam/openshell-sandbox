@@ -3,7 +3,7 @@ policies/local.yaml
 config/site.env
 
 # Build artifacts
-.tmp-*/
+.tmp-*
 
 # Python
 __pycache__/
