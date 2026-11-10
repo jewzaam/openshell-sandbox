@@ -106,6 +106,7 @@ SANDBOX_NAME=""
 CONNECT_NAME=""
 HARNESS=""
 DELETE_NAME=""
+RENAME_TO=""
 LIST_MODE=false
 FETCH_SERVICE_MODE=false
 NO_CLONE=false
@@ -277,6 +278,10 @@ OPTIONS:
                       harness has its own dtach socket, so both can be live in
                       one sandbox.
     --delete [NAME]   Delete a sandbox and local state
+    --rename NEW      Rename the sandbox whose ~/sandboxes/<name>/ is the CWD:
+                      move the directory, then --recreate under NEW (asks
+                      first; a rename is a rebuild). With --no-connect, stop
+                      after the recreate.
 
     NAME is optional for commands marked [NAME] when CWD is under ~/sandboxes/<name>/.
     --no-clone        Skip repo cloning (create sandbox with env + config only)
@@ -2135,6 +2140,11 @@ while [[ $# -gt 0 ]]; do
                 shift
             fi
             ;;
+        --rename)
+            [[ $# -ge 2 && "$2" != -* ]] || { echo "Error: --rename requires NEW name" >&2; exit 1; }
+            RENAME_TO="$2"
+            shift 2
+            ;;
         --dryrun|--dry-run)
             DRYRUN=true
             shift
@@ -2526,6 +2536,57 @@ if [[ "$REAP_MODE" == true ]]; then
     done
     [[ "$reap_failed" == true ]] && exit 1
     exit 0
+fi
+
+# --- Rename: move ~/sandboxes/<old> to <new>, then recreate under <new> ---
+# The container keeps its sb-<hash>: it lives in manifest .openshell_name, and
+# --create reuses it. Everything else that carries the name — the
+# source.directory label, .env's OTEL project/sandbox.source, the in-sandbox
+# manifest — is written at build time, so a rename is a recreate. Telemetry
+# splits at the rename by design; sandbox.openshell_name spans it.
+#
+# recreate_pending goes on before anything moves: if the recreate below dies,
+# the next --connect/--ensure on the new name finishes it (apply_pending).
+# tasks.json is rewritten here because only --refresh renders it, and a stale
+# `--ensure <old>` on folder open would resolve a directory that is gone.
+if [[ -n "$RENAME_TO" ]]; then
+    RENAME_FROM="$(infer_sandbox_name)" || { echo "Error: --rename runs inside ~/sandboxes/<name>/" >&2; exit 1; }
+    RENAME_SRC="${SANDBOXES_DIR}/${RENAME_FROM}"
+    RENAME_DST="${SANDBOXES_DIR}/${RENAME_TO}"
+    [[ -f "${RENAME_SRC}/manifest.json" ]] || { echo "Error: no manifest.json in ${RENAME_SRC}" >&2; exit 1; }
+    [[ "$RENAME_TO" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+        || { echo "Error: invalid name '${RENAME_TO}' (letters, digits, . _ -)" >&2; exit 1; }
+    [[ ! -e "$RENAME_DST" ]] || { echo "Error: ${RENAME_DST} already exists" >&2; exit 1; }
+    RENAME_PROFILE=$(jq -r '.profile // empty' "${RENAME_SRC}/manifest.json")
+    [[ -n "$RENAME_PROFILE" ]] \
+        || { echo "Error: ${RENAME_FROM} has no profile in its manifest; recreate it with --profile first" >&2; exit 1; }
+
+    echo "Rename ${RENAME_FROM} -> ${RENAME_TO} recreates the sandbox:" >&2
+    echo "    repos and agent state are downloaded, the container is rebuilt," >&2
+    echo "    and every session running in it ends." >&2
+    rename_answer=""
+    read -r -p "Rename and recreate? [y/N] " rename_answer || true
+    [[ "$rename_answer" == [yY] ]] || { echo "⊘ Skipped rename" >&2; exit 0; }
+
+    RENAME_ARGS=(--recreate "$RENAME_TO" --profile "$RENAME_PROFILE")
+    [[ -n "$GATEWAY" ]] && RENAME_ARGS+=(--gateway "$GATEWAY")
+    [[ -n "$HARNESS" ]] && RENAME_ARGS+=(--harness "$HARNESS")
+    [[ "$NO_CONNECT" == true ]] && RENAME_ARGS+=(--no-connect)
+    [[ "$DEBUG" == true ]] && RENAME_ARGS+=(--debug)
+
+    if [[ "$DRYRUN" != true ]]; then
+        set_manifest_pending "$RENAME_SRC" recreate_pending
+        mv "$RENAME_SRC" "$RENAME_DST"
+        jq --arg n "$RENAME_TO" '.name = $n' "${RENAME_DST}/manifest.json" > "${RENAME_DST}/manifest.json.tmp" \
+            && mv "${RENAME_DST}/manifest.json.tmp" "${RENAME_DST}/manifest.json"
+        write_tasks_json "$RENAME_DST" \
+            "$(manifest_ensure_cmd "${SCRIPT_DIR}/sandbox.sh" "$RENAME_DST" "$RENAME_PROFILE")"
+        echo "Renamed ${RENAME_FROM} -> ${RENAME_TO}. Host directory is now ${RENAME_DST}" >&2
+    else
+        run mv "$RENAME_SRC" "$RENAME_DST"
+    fi
+    release_scratch
+    run exec "$0" "${RENAME_ARGS[@]}"
 fi
 
 if [[ "$LIST_MODE" == true ]]; then
@@ -3192,7 +3253,10 @@ if ! personal_profile "$SANDBOX_PROFILE"; then
     ensure_gws_creds
 fi
 
-OPENSHELL_NAME=$(short_name "$SANDBOX_NAME")
+# The manifest's name, not short_name: init_manifest above stores short_name for
+# a new sandbox, and a --rename keeps the old hash so --recreate's download and
+# delete, done under the new name, find the existing container.
+OPENSHELL_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
 
 CREATE_CMD=(openshell sandbox create "${GW_FLAG[@]}" --no-auto-providers --keep)
 
