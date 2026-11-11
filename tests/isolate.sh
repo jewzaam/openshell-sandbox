@@ -31,6 +31,27 @@ export PATH="${ISOLATE_BIN}:${PATH}"
 export HOME="${TMP}/isolate-home"
 export XDG_CONFIG_HOME="${HOME}/.config"
 
+# fake_openshell_list [NAME...]: model a gateway whose `sandbox list` holds
+# exactly these containers (none by default). Creating a sandbox asks the
+# gateway which openshell names are taken, so a test that mints one opts in;
+# every other openshell call still fails closed.
+fake_openshell_list() {
+    local bin="${TMP}/fake-openshell-list" names=""
+    mkdir -p "$bin"
+    (( $# )) && names="$(printf '{"name":"%s","phase":"Ready"},' "$@")"
+    cat > "${bin}/openshell" <<EOF
+#!/bin/bash
+if [[ "\$1 \$2" == "sandbox list" ]]; then
+    printf '{"sandboxes":[%s],"next_page_token":""}\n' '${names%,}'
+    exit 0
+fi
+echo "isolate.sh: real openshell blocked: \$*" >&2
+exit 1
+EOF
+    chmod +x "${bin}/openshell"
+    export PATH="${bin}:${PATH}"
+}
+
 # Existing-container fixtures represent an explicitly authorized empty set.
 seed_provider_bindings() {
     local sandbox_dir="$1" profile="$2" stage

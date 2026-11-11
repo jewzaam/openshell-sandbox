@@ -25,6 +25,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TMP="$(mktemp -d)"
 # shellcheck disable=SC1091 # tests/isolate.sh: fail-closed fakes, scratch HOME
 source "${SCRIPT_DIR}/isolate.sh"
+# Creates mint an openshell name, which asks the gateway what is taken.
+fake_openshell_list
 trap 'rm -rf "$TMP"' EXIT
 
 WORK="${TMP}/work"

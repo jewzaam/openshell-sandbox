@@ -42,7 +42,7 @@ subst() { sed -e 's|${OTEL_HOST}|x|g' -e 's|${OTEL_PORT}|4318|g' \
 
 # Stand in for a sandbox running a --policy-applied fetch-service policy.
 seed_applied() {
-    printf '{"name":"probe","profile":"personal","repos":{}}' > "${D}/manifest.json"
+    printf '{"name":"probe","openshell_name":"sb-000000000001","profile":"personal","repos":{}}' > "${D}/manifest.json"
     seed_provider_bindings "$D" personal
     subst "${WORK}/policies/fetch-service.yaml" > "${D}/openshell-policy.yaml"
 }
@@ -124,7 +124,7 @@ grep -q "no policy artifact in" <<<"$out" \
 
 # --create does apply a policy, so it installs one.
 rm -rf "$D" && mkdir -p "$D"
-printf '{"name":"probe","profile":"personal","repos":{}}' > "${D}/manifest.json"
+printf '{"name":"probe","openshell_name":"sb-000000000001","profile":"personal","repos":{}}' > "${D}/manifest.json"
 run_sandbox --create probe --profile personal --no-clone --no-connect --dryrun
 check "--create installs the policy it handed the enforcer" "$PERSONAL"
 

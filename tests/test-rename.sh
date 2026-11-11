@@ -20,6 +20,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TMP="$(mktemp -d)"
 # shellcheck disable=SC1091 # tests/isolate.sh: fail-closed fakes, scratch HOME
 source "$(dirname "${BASH_SOURCE[0]}")/isolate.sh"
+# Creates mint an openshell name, which asks the gateway what is taken.
+fake_openshell_list
 trap 'rm -rf "$TMP"' EXIT
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -100,5 +102,60 @@ grep -qF "Recreating sandbox new" <<<"$out" || fail "rename did not hand off to 
 out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --create new --profile personal \
     --no-clone --no-connect --dryrun 2>&1 || true)"
 grep -qF "(openshell: sb-kept)" <<<"$out" || fail "--create hashed the new name instead of reusing sb-kept"
+
+# --- reusing the old name: create foo, rename to bar, use foo again ---
+# old's container carries the name a name-derived scheme would give "old"
+# (md5, as sandboxes made before random names do), and a rename keeps it.
+# Nothing addressed as "old" may resolve to that container.
+# shellcheck disable=SC1091
+source "${WORK}/scripts/lib.sh"
+LEGACY="sb-$(printf '%s' old | md5sum | cut -c1-12)"
+reset
+jq --arg n "$LEGACY" '.openshell_name = $n' "${OLD}/manifest.json" > "${OLD}/m.tmp" \
+    && cat "${OLD}/m.tmp" > "${OLD}/manifest.json" && rm "${OLD}/m.tmp"
+rename_in "$OLD" y new --no-connect >/dev/null 2>&1 || true
+[[ "$(jq -r .openshell_name "${SB}/new/manifest.json")" == "$LEGACY" ]] \
+    || fail "rename did not keep the legacy name"
+
+# --create old: a fresh name, and .env carries the same one the container gets.
+out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --create old --profile personal \
+    --no-clone --no-connect --dryrun 2>&1 || true)"
+created="$(sed -n 's/.*(openshell: \(sb-[0-9a-f]*\)).*/\1/p' <<<"$out")"
+is_our_openshell_name "$created" || fail "--create old printed no openshell name: ${out}"
+[[ "$created" != "$LEGACY" ]] || fail "--create old reused the renamed sandbox's ${LEGACY}"
+grep -qF "SANDBOX_OPENSHELL_NAME=${created}" <<<"$out" \
+    || fail ".env SANDBOX_OPENSHELL_NAME does not match the created ${created}"
+rm -rf "${SB}/old"
+
+# --delete old, no directory: refuses rather than deleting bar's container.
+out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --delete old 2>&1)" \
+    && fail "--delete old succeeded with no sandbox named old: ${out}"
+grep -qF "old has no manifest" <<<"$out" || fail "--delete old did not say why: ${out}"
+grep -qF "openshell blocked: sandbox delete" <<<"$out" \
+    && fail "--delete old reached openshell delete: ${out}"
+
+# --ensure old, no directory, while bar's container is live: creates, never
+# connects to it.
+fake_openshell_list "$LEGACY"
+out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --ensure old \
+    --profile personal --no-clone --no-connect --dryrun 2>&1 || true)"
+grep -qF "exists" <<<"$out" && fail "--ensure old connected to the renamed sandbox: ${out}"
+ensured="$(sed -n 's/.*(openshell: \(sb-[0-9a-f]*\)).*/\1/p' <<<"$out")"
+[[ -n "$ensured" && "$ensured" != "$LEGACY" ]] \
+    || fail "--ensure old did not create under a fresh name: ${out}"
+
+# --- no .openshell_name: nothing to rename, nothing to delete ---
+reset
+jq 'del(.openshell_name)' "${OLD}/manifest.json" > "${OLD}/m.tmp" \
+    && cat "${OLD}/m.tmp" > "${OLD}/manifest.json" && rm "${OLD}/m.tmp"
+out="$(rename_in "$OLD" y new --no-connect)" \
+    && fail "rename of a manifest with no .openshell_name succeeded: ${out}"
+grep -qF "has no .openshell_name" <<<"$out" || fail "rename refusal did not say why: ${out}"
+[[ -d "$OLD" && ! -e "${SB}/new" ]] || fail "refused rename moved the directory"
+out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --delete old 2>&1)" \
+    && fail "--delete of a manifest with no .openshell_name succeeded: ${out}"
+grep -qF "openshell blocked: sandbox delete" <<<"$out" \
+    && fail "--delete with no .openshell_name reached openshell delete: ${out}"
+[[ -d "$OLD" ]] || fail "--delete with no .openshell_name removed the directory"
 
 echo "PASS: tests/test-rename.sh"

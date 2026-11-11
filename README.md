@@ -104,7 +104,7 @@ Common options below; `sandbox.sh --help` lists every one.
 | `--gateway NAME` | OpenShell gateway |
 | `--connect [NAME]` | Reconnect to existing sandbox (launches Claude) |
 | `--delete [NAME]` | Delete sandbox and local state |
-| `--rename NEW` | From inside `~/sandboxes/<name>/`: confirm, move the directory to `NEW`, recreate under it (`--no-connect` stops after). Keeps the `sb-<hash>`; OTEL `project`/`sandbox.source` change from then on. A failed recreate stays pending for the next connect (`tests/test-rename.sh`) |
+| `--rename NEW` | From inside `~/sandboxes/<name>/`: confirm, move the directory to `NEW`, recreate under it (`--no-connect` stops after). Keeps the `sb-<hash>`, and the old name is free to reuse: new sandboxes get a random openshell name; OTEL `project`/`sandbox.source` change from then on. A failed recreate stays pending for the next connect (`tests/test-rename.sh`) |
 | `--reap` | Pick idle sandboxes to delete in fzf, then confirm. Offers a stopped container with its directory, a directory with no container, and an `sb-<hash>` container with no directory. Columns show dirty repos, stashes and unpushed commits in the host copy |
 | `--older-than DAYS` | With `--reap`: idle threshold, default 30 |
 | `--no-clone` | Skip repo cloning |

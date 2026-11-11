@@ -277,13 +277,13 @@ HOME="$FAKE_HOME" bash "$SANDBOX_SH" --delete orphan >/dev/null 2>&1 \
     || { echo "FAIL: --delete of a directory with no container failed" >&2; fail=1; }
 [[ ! -d "${SB}/orphan" ]] || { echo "FAIL: --delete kept the directory" >&2; fail=1; }
 
-# --- the zombie pattern accepts what short_name() makes, and nothing longer ---
+# --- the zombie pattern accepts what new_openshell_name() makes, and nothing longer ---
 (
     # shellcheck disable=SC1091
     source "${WORK}/scripts/lib.sh"
-    is_our_short_name "$(short_name any-sandbox)" || { echo "FAIL: is_our_short_name rejects short_name output" >&2; exit 1; }
-    ! is_our_short_name "sb-0123456789abc" || { echo "FAIL: is_our_short_name accepts 13 hex digits" >&2; exit 1; }
-    ! is_our_short_name "handmade" || { echo "FAIL: is_our_short_name accepts a plain name" >&2; exit 1; }
+    is_our_openshell_name "$(new_openshell_name)" || { echo "FAIL: is_our_openshell_name rejects new_openshell_name output" >&2; exit 1; }
+    ! is_our_openshell_name "sb-0123456789abc" || { echo "FAIL: is_our_openshell_name accepts 13 hex digits" >&2; exit 1; }
+    ! is_our_openshell_name "handmade" || { echo "FAIL: is_our_openshell_name accepts a plain name" >&2; exit 1; }
 ) || fail=1
 
 # --- rejections ---

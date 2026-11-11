@@ -8,7 +8,9 @@
 #
 # Covers init_manifest() directly, scode (manifest written before `code` opens
 # the folder), and sandbox.sh --create (manifest written before the create
-# call). Runs against a scratch HOME with --dryrun, so no openshell calls.
+# call). Runs against a scratch HOME with --dryrun. Creates ask a modeled
+# gateway which openshell names are taken (fake_openshell_list in
+# tests/isolate.sh); any other openshell call fails closed.
 #
 # Run: tests/test-manifest-timing.sh
 
@@ -20,6 +22,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TMP="$(mktemp -d)"
 # shellcheck disable=SC1091 # tests/isolate.sh: fail-closed fakes, scratch HOME
 source "$(dirname "${BASH_SOURCE[0]}")/isolate.sh"
+# Creates mint an openshell name, which asks the gateway what is taken.
+fake_openshell_list
 trap 'rm -rf "$TMP"' EXIT
 
 WORK="${TMP}/work"
@@ -46,8 +50,96 @@ M="${D}/manifest.json"
 [[ -f "$M" ]] || { echo "FAIL: init_manifest wrote no manifest" >&2; fail=1; }
 [[ "$(jq -r '.name' "$M")" == "probe" ]] \
     || { echo "FAIL: .name not written" >&2; fail=1; }
-[[ "$(jq -r '.openshell_name' "$M")" == "$(short_name probe)" ]] \
-    || { echo "FAIL: .openshell_name does not match short_name" >&2; fail=1; }
+FIRST_OS="$(jq -r '.openshell_name' "$M")"
+is_our_openshell_name "$FIRST_OS" \
+    || { echo "FAIL: .openshell_name '${FIRST_OS}' is not sb-<12 hex>" >&2; fail=1; }
+# Random, not derived: the same name created twice gets two names.
+init_manifest "${TMP}/direct-again" "probe" "personal"
+[[ "$(jq -r '.openshell_name' "${TMP}/direct-again/manifest.json")" != "$FIRST_OS" ]] \
+    || { echo "FAIL: two creates of the same name share an openshell name" >&2; fail=1; }
+
+# A minted name some manifest already stores is rejected and drawn again; a
+# source that never produces a free name fails after the cap instead of
+# looping. new_openshell_name is swapped for a scripted sequence.
+COLL="${TMP}/collide"
+mkdir -p "${COLL}/existing"
+printf '{"name":"existing","openshell_name":"sb-aaaaaaaaaaaa","repos":{}}' \
+    > "${COLL}/existing/manifest.json"
+eval "real_$(declare -f new_openshell_name)"
+SEQ="${TMP}/mint-seq"
+new_openshell_name() {
+    local n; n=$(( $(cat "$SEQ") + 1 )); echo "$n" > "$SEQ"
+    if (( n == 1 )) || [[ "${MINT_STUCK:-}" == 1 ]]; then echo sb-aaaaaaaaaaaa; else echo sb-bbbbbbbbbbbb; fi
+}
+echo 0 > "$SEQ"
+init_manifest "${COLL}/fresh" "fresh" "personal" 2>/dev/null
+[[ "$(jq -r '.openshell_name' "${COLL}/fresh/manifest.json")" == sb-bbbbbbbbbbbb ]] \
+    || { echo "FAIL: init_manifest kept a name another manifest stores" >&2; fail=1; }
+[[ "$(cat "$SEQ")" == 2 ]] || { echo "FAIL: expected one retry, drew $(cat "$SEQ")" >&2; fail=1; }
+echo 0 > "$SEQ"
+if MINT_STUCK=1 init_manifest "${COLL}/stuck" "stuck" "personal" 2>/dev/null; then
+    echo "FAIL: init_manifest succeeded with every minted name taken" >&2; fail=1
+fi
+[[ "$(cat "$SEQ")" == "$OPENSHELL_NAME_ATTEMPTS" ]] \
+    || { echo "FAIL: stuck mint drew $(cat "$SEQ") times, cap is ${OPENSHELL_NAME_ATTEMPTS}" >&2; fail=1; }
+[[ ! -e "${COLL}/stuck" ]] \
+    || { echo "FAIL: a failed mint left ${COLL}/stuck behind" >&2; fail=1; }
+
+# A container the gateway has, with no manifest anywhere, is taken too.
+SAVED_PATH="$PATH"
+fake_openshell_list sb-aaaaaaaaaaaa
+# Only the gateway holds sb-aaaa now; drop the manifests that claimed both.
+rm -rf "${COLL}/existing" "${COLL}/fresh"
+echo 0 > "$SEQ"
+init_manifest "${COLL}/live" "live" "personal" 2>/dev/null
+[[ "$(jq -r '.openshell_name' "${COLL}/live/manifest.json")" == sb-bbbbbbbbbbbb ]] \
+    || { echo "FAIL: init_manifest kept a name the gateway already has" >&2; fail=1; }
+
+# No answer from the gateway is not "nothing taken": no name, no manifest.
+PATH="${ISOLATE_BIN}:${SAVED_PATH}"
+if init_manifest "${COLL}/blind" "blind" "personal" 2>/dev/null; then
+    echo "FAIL: init_manifest minted with no gateway list" >&2; fail=1
+fi
+[[ ! -e "${COLL}/blind" ]] \
+    || { echo "FAIL: a failed gateway list left ${COLL}/blind behind" >&2; fail=1; }
+PATH="$SAVED_PATH"
+# SAVED_PATH points at the same fake-openshell-list file that now lists
+# sb-aaaaaaaaaaaa; rewrite it so the rest of the test sees an empty gateway.
+fake_openshell_list
+eval "$(declare -f real_new_openshell_name | sed '1s/real_//')"
+
+# Nor is a paged gateway list: names past the first page would read as free.
+# Runs with the real new_openshell_name, so only the paged check can refuse.
+PAGED_BIN="${TMP}/fake-openshell-paged"
+mkdir -p "$PAGED_BIN"
+printf '#!/bin/bash\necho %s\n' \
+    "'{\"sandboxes\":[{\"name\":\"sb-cccccccccccc\",\"phase\":\"Ready\"}],\"next_page_token\":\"x\"}'" \
+    > "${PAGED_BIN}/openshell"
+chmod +x "${PAGED_BIN}/openshell"
+PATH="${PAGED_BIN}:${SAVED_PATH}"
+if init_manifest "${COLL}/paged" "paged" "personal" 2>/dev/null; then
+    echo "FAIL: init_manifest minted from a paged gateway list" >&2; fail=1
+fi
+[[ ! -f "${COLL}/paged/manifest.json" ]] \
+    || { echo "FAIL: a paged gateway list still wrote a manifest" >&2; fail=1; }
+PATH="$SAVED_PATH"
+
+# --dryrun creates nothing, so it does not ask the gateway: a dead one (the
+# fail-closed fake) still yields a name.
+PATH="${ISOLATE_BIN}:${SAVED_PATH}"
+DRYRUN=true init_manifest "${COLL}/dry" "dry" "personal" 2>/dev/null \
+    || { echo "FAIL: --dryrun minting asked the gateway" >&2; fail=1; }
+is_our_openshell_name "$(jq -r '.openshell_name' "${COLL}/dry/manifest.json" 2>/dev/null)" \
+    || { echo "FAIL: --dryrun minting wrote no sb-<12 hex> name" >&2; fail=1; }
+PATH="$SAVED_PATH"
+
+# A directory that already exists without a manifest still gets a fresh name;
+# nothing is derived from the sandbox name.
+mkdir -p "${COLL}/pre-dir"
+init_manifest "${COLL}/pre-dir" "pre-dir" "personal"
+is_our_openshell_name "$(jq -r '.openshell_name' "${COLL}/pre-dir/manifest.json")" \
+    || { echo "FAIL: a manifest-less directory got no minted name" >&2; fail=1; }
+
 [[ "$(profile_of "$M")" == "personal" ]] \
     || { echo "FAIL: .profile not written" >&2; fail=1; }
 [[ "$(jq -r '.repos | length' "$M")" == "0" ]] \
@@ -62,26 +154,37 @@ init_manifest "$D" "probe" "work"
 [[ "$(profile_of "$M")" == "work" ]] \
     || { echo "FAIL: init_manifest did not refresh .profile" >&2; fail=1; }
 
-# A manifest from before .openshell_name existed gains it on next use; a
-# stored value is never rewritten.
+# A stored .openshell_name is never rewritten, and a manifest without one is
+# not given one: nothing may be derived, and minting would point it at a
+# container it never had.
 L="${TMP}/legacy"
 mkdir -p "$L"
 printf '{"name":"legacy","profile":"personal","repos":{}}' > "${L}/manifest.json"
 init_manifest "$L" "legacy" "personal"
-[[ "$(jq -r '.openshell_name' "${L}/manifest.json")" == "$(short_name legacy)" ]] \
-    || { echo "FAIL: init_manifest did not backfill .openshell_name" >&2; fail=1; }
+[[ -z "$(jq -r '.openshell_name // empty' "${L}/manifest.json")" ]] \
+    || { echo "FAIL: init_manifest invented an .openshell_name for an existing manifest" >&2; fail=1; }
 jq '.openshell_name = "sb-kept"' "${L}/manifest.json" > "${L}/m.tmp" && cat "${L}/m.tmp" > "${L}/manifest.json"
 init_manifest "$L" "legacy" "personal"
 [[ "$(jq -r '.openshell_name' "${L}/manifest.json")" == "sb-kept" ]] \
     || { echo "FAIL: init_manifest overwrote a stored .openshell_name" >&2; fail=1; }
 
-# --- resolve_full_name(): names a sandbox whose manifest predates the field ---
+# --- resolve_openshell_name(): the manifest's .openshell_name or an error ---
+eval "$(sed -n '/^resolve_openshell_name()/,/^}/p' "${WORK}/scripts/sandbox.sh")"
 eval "$(sed -n '/^resolve_full_name()/,/^}/p' "${WORK}/scripts/sandbox.sh")"
 SANDBOXES_DIR="${TMP}/rfn"
-mkdir -p "${SANDBOXES_DIR}/old-one"
-printf '{"name":"old-one","repos":{}}' > "${SANDBOXES_DIR}/old-one/manifest.json"
-[[ "$(resolve_full_name "$(short_name old-one)")" == "old-one" ]] \
-    || { echo "FAIL: resolve_full_name missed a manifest with no .openshell_name" >&2; fail=1; }
+mkdir -p "${SANDBOXES_DIR}/no-field" "${SANDBOXES_DIR}/no-manifest" "${SANDBOXES_DIR}/ok"
+printf '{"name":"no-field","repos":{}}' > "${SANDBOXES_DIR}/no-field/manifest.json"
+printf '{"name":"ok","openshell_name":"sb-0000000000aa","repos":{}}' > "${SANDBOXES_DIR}/ok/manifest.json"
+[[ "$(resolve_openshell_name ok)" == sb-0000000000aa ]] \
+    || { echo "FAIL: resolve_openshell_name did not return the stored name" >&2; fail=1; }
+resolve_openshell_name no-field >/dev/null 2>&1 \
+    && { echo "FAIL: resolved a manifest with no .openshell_name" >&2; fail=1; }
+resolve_openshell_name no-manifest >/dev/null 2>&1 \
+    && { echo "FAIL: resolved a directory with no manifest" >&2; fail=1; }
+resolve_openshell_name absent >/dev/null 2>&1 \
+    && { echo "FAIL: resolved a name with no directory" >&2; fail=1; }
+[[ "$(resolve_full_name sb-0000000000aa)" == "ok" ]] \
+    || { echo "FAIL: resolve_full_name missed a stored name" >&2; fail=1; }
 [[ "$(resolve_full_name sb-unknown)" == "sb-unknown" ]] \
     || { echo "FAIL: resolve_full_name did not fall through for an unknown sandbox" >&2; fail=1; }
 
@@ -122,6 +225,21 @@ run_scode() {
 run_scode --profile personal --name probe-scode
 [[ "$(cat "$SEEN" 2>/dev/null)" == "personal" ]] \
     || { echo "FAIL: scode opened VS Code before writing the profile (saw: $(cat "$SEEN" 2>/dev/null))" >&2; fail=1; }
+
+# Jira mode writes the manifest — with a minted name, not one derived from the
+# key — before it touches the directory for anything else. With no Jira
+# credentials it stops at the fetch, which is after that point.
+JIRA_DIR="${FAKE_HOME}/sandboxes/abc-1"
+env -u JIRA_USERNAME -u JIRA_EMAIL -u JIRA_TOKEN -u JIRA_API_TOKEN \
+    HOME="$FAKE_HOME" PATH="${STUB}:${PATH}" SEEN_FILE="$SEEN" \
+    bash "${WORK}/scripts/scode" --profile personal \
+    "https://example.atlassian.net/browse/ABC-1" >/dev/null 2>&1 \
+    && { echo "FAIL: scode Jira mode succeeded with no Jira credentials" >&2; fail=1; }
+JIRA_OS="$(jq -r '.openshell_name // empty' "${JIRA_DIR}/manifest.json" 2>/dev/null || true)"
+is_our_openshell_name "$JIRA_OS" \
+    || { echo "FAIL: scode Jira mode wrote no manifest before the Jira fetch" >&2; fail=1; }
+[[ "$JIRA_OS" != "sb-$(printf '%s' abc-1 | md5sum | cut -c1-12)" ]] \
+    || { echo "FAIL: scode Jira mode named the container from the key" >&2; fail=1; }
 
 # An existing sandbox keeps the profile it was built with. scode must not
 # rewrite it from the command line — sandbox.sh --ensure is what refuses the

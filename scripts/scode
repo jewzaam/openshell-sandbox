@@ -138,7 +138,12 @@ if [[ "$1" =~ ^https://[^/]+/browse/([A-Za-z]+-[0-9]+)$ ]]; then
     sandbox_name="${jira_key,,}"
 
     sandbox_dir="${SANDBOXES_DIR}/${sandbox_name}"
-    mkdir -p "${sandbox_dir}"
+    # The manifest (and the openshell name it mints) before anything else
+    # lands in the directory: a directory without one names no container.
+    # It also creates the directory.
+    if [[ ! -f "${sandbox_dir}/manifest.json" ]]; then
+        init_manifest "$sandbox_dir" "$sandbox_name" "$SCODE_PROFILE" "$SCODE_HARNESS"
+    fi
 
     echo "Fetching Jira context for ${jira_key}..." >&2
     auth=$(jira_auth) || { echo "Error: JIRA_USERNAME/JIRA_TOKEN not set" >&2; exit 1; }
