@@ -786,9 +786,14 @@ upload_repo() {
     [[ "$DRYRUN" == true ]] || record_repo_timestamp "$sandbox_dir" "$repo_name" last_upload
 }
 
+# Record a repo in manifest.json. Called twice per clone: before it with SHA
+# empty, so a clone or checkout killed partway leaves a repo the manifest still
+# lists — --upload, --download and the next --ensure all key off that list, and
+# an unlisted directory is invisible to them — and after it with the SHA, which
+# adds sha and cloned_at.
 write_manifest() {
     local sandbox_dir="$1" sandbox_name="$2" repo_name="$3"
-    local url="$4" ref="$5" sha="$6"
+    local url="$4" ref="$5" sha="${6:-}"
     local manifest="${sandbox_dir}/manifest.json"
     local now
     now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -802,7 +807,8 @@ write_manifest() {
         --arg ref "$ref" \
         --arg sha "$sha" \
         --arg ts "$now" \
-        '.repos[$repo] = (.repos[$repo] // {}) + {url: $url, ref: $ref, sha: $sha, cloned_at: $ts}' \
+        '.repos[$repo] = (.repos[$repo] // {}) + {url: $url, ref: $ref}
+            + (if $sha == "" then {} else {sha: $sha, cloned_at: $ts} end)' \
         "$manifest" > "${manifest}.tmp"
     mv "${manifest}.tmp" "$manifest"
 }
@@ -2672,6 +2678,7 @@ if [[ "$ADD_REPO_MODE" == true ]]; then
         repo_name=$(basename "$repo" .git)
 
         echo "Adding ${repo_name} to sandbox ${SANDBOX_NAME}..." >&2
+        write_manifest "$SANDBOX_DIR" "$SANDBOX_NAME" "$repo_name" "$repo" "$ref"
         clone_repo_host "$repo" "$ref" "$SANDBOX_DIR"
 
         sha=$(git -C "${SANDBOX_DIR}/${repo_name}" rev-parse HEAD)
@@ -3389,6 +3396,7 @@ if [[ "$NO_CLONE" != true && ${#REPOS[@]} -gt 0 ]]; then
         repo_name=$(basename "$repo" .git)
 
         echo "    ${repo_name}${ref:+ (${ref})}" >&2
+        write_manifest "$SANDBOX_DIR" "$SANDBOX_NAME" "$repo_name" "$repo" "$ref"
         clone_repo_host "$repo" "$ref" "$SANDBOX_DIR"
 
         sha=$(git -C "${SANDBOX_DIR}/${repo_name}" rev-parse HEAD)

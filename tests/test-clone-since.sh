@@ -138,5 +138,29 @@ grep -q "cloning full history" <<<"$out" \
 [[ -d "${SBX}/upstream" ]] && [[ "$(commits)" == 3 ]] \
     || { echo "FAIL: empty-window fallback did not produce a full clone" >&2; fail=1; }
 
+# --- 6. the repo is in manifest.json before the clone runs ---
+# A clone or checkout that dies partway must leave a repo the manifest lists:
+# --upload, --download and --ensure only ever see listed repos. A `git` that
+# dies on clone stands in for the kill; the rerun with the real git finishes it.
+jq '.repos = {}' "${SBX}/manifest.json" > "${SBX}/m.tmp" && cat "${SBX}/m.tmp" > "${SBX}/manifest.json"
+KILL_BIN="${TMP}/kill-git"
+mkdir -p "$KILL_BIN"
+cat > "${KILL_BIN}/git" <<EOF
+#!/bin/bash
+[[ "\$1" == clone ]] && exit 137
+exec $(command -v git) "\$@"
+EOF
+chmod +x "${KILL_BIN}/git"
+rm -rf "${SBX}/upstream"
+( cd "$SBX" && PATH="${KILL_BIN}:${PATH}" "${WORK}/scripts/sandbox.sh" --add-repo probe --repo "$URL" ) \
+    >/dev/null 2>&1 && { echo "FAIL: --add-repo succeeded with clone killed" >&2; fail=1; }
+[[ "$(jq -r '.repos.upstream.url // empty' "${SBX}/manifest.json")" == "$URL" ]] \
+    || { echo "FAIL: a killed clone left the repo out of manifest.json" >&2; fail=1; }
+[[ -z "$(jq -r '.repos.upstream.sha // empty' "${SBX}/manifest.json")" ]] \
+    || { echo "FAIL: a killed clone recorded a sha" >&2; fail=1; }
+add_repo >/dev/null
+[[ "$(jq -r '.repos.upstream.sha // empty' "${SBX}/manifest.json")" == "$(git -C "${SBX}/upstream" rev-parse HEAD)" ]] \
+    || { echo "FAIL: rerun after a killed clone did not record the sha" >&2; fail=1; }
+
 [[ $fail -eq 0 ]] && echo "all clone-since checks passed"
 exit $fail
