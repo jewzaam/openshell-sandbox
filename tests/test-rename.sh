@@ -3,12 +3,11 @@
 #
 # Self-check for `sandbox.sh --rename NEW`: run from inside ~/sandboxes/<old>/,
 # it asks, moves the directory, rewrites .name and tasks.json, marks
-# recreate_pending, then recreates under NEW. The container keeps its
-# sb-<hash>, which only works because --create takes the openshell name from the
-# manifest instead of hashing the new name.
+# refresh_pending, then refreshes under NEW. No recreate: the container keeps
+# running under its sb-<hash>, which the manifest carries across the move.
 #
-# openshell and podman are isolate.sh's fail-closed fakes, so the recreate the
-# rename hands off to fails — which is the case recreate_pending exists for.
+# openshell and podman are isolate.sh's fail-closed fakes, so the refresh the
+# rename hands off to fails — which is the case refresh_pending exists for.
 #
 # Run: tests/test-rename.sh
 
@@ -53,10 +52,10 @@ rename_in() {
 # --- declining changes nothing ---
 reset
 out="$(rename_in "$OLD" n new)" || fail "declined rename exited non-zero: ${out}"
-grep -qF "recreates the sandbox" <<<"$out" || fail "prompt did not say a recreate follows"
+grep -qF "container keeps running" <<<"$out" || fail "prompt did not say the container is kept"
 [[ -d "$OLD" && ! -e "${SB}/new" ]] || fail "declined rename moved the directory"
-[[ "$(jq -r '.recreate_pending // false' "${OLD}/manifest.json")" == false ]] \
-    || fail "declined rename marked recreate_pending"
+[[ "$(jq -r '.refresh_pending // false' "${OLD}/manifest.json")" == false ]] \
+    || fail "declined rename marked refresh_pending"
 
 # EOF is a no too.
 reset
@@ -75,14 +74,15 @@ rename_in "$OLD" y ".hidden" >/dev/null && fail "rename accepted a leading dot"
 rename_in "$TMP" y new >/dev/null && fail "rename ran outside ~/sandboxes/<name>/"
 [[ -d "$OLD" ]] || fail "refused rename moved the directory"
 
-# --- --dryrun prints the move and the recreate, writes nothing ---
+# --- --dryrun prints the move and the refresh, writes nothing ---
 reset
 out="$(rename_in "$OLD" y new --dryrun)" || fail "dryrun rename failed: ${out}"
 grep -qF "[dryrun]: mv ${OLD} ${SB}/new" <<<"$out" || fail "dryrun did not print the move"
-grep -qF -- "--recreate new --profile personal" <<<"$out" || fail "dryrun did not print the recreate"
+grep -qF -- "--refresh new" <<<"$out" || fail "dryrun did not print the refresh"
+grep -qF -- "--recreate" <<<"$out" && fail "dryrun rename still recreates: ${out}"
 [[ -d "$OLD" && ! -e "${SB}/new" ]] || fail "dryrun moved the directory"
 
-# --- confirmed: moved, renamed, pending, tasks.json, recreate attempted ---
+# --- confirmed: moved, renamed, pending, tasks.json, refresh attempted ---
 reset
 out="$(rename_in "$OLD" y new --no-connect || true)"
 NEWM="${SB}/new/manifest.json"
@@ -90,13 +90,16 @@ NEWM="${SB}/new/manifest.json"
 [[ "$(jq -r .name "$NEWM")" == new ]] || fail ".name not rewritten"
 [[ "$(jq -r .openshell_name "$NEWM")" == sb-kept ]] || fail ".openshell_name changed"
 [[ "$(jq -r .profile "$NEWM")" == personal ]] || fail "rename lost .profile"
-# The fakes make the recreate fail, so the flag must still be there for the
-# next --connect/--ensure.
-[[ "$(jq -r '.recreate_pending // false' "$NEWM")" == true ]] \
-    || fail "recreate_pending not left for the next connect"
+# The fakes make the refresh fail, so the flag must still be there for the
+# next --connect/--ensure — and nothing queues a rebuild.
+[[ "$(jq -r '.refresh_pending // false' "$NEWM")" == true ]] \
+    || fail "refresh_pending not left for the next connect"
+[[ "$(jq -r '.recreate_pending // false' "$NEWM")" == false ]] \
+    || fail "rename queued a recreate"
 grep -qF -- "--ensure new --profile personal" "${SB}/new/.vscode/tasks.json" \
     || fail "tasks.json still ensures the old name"
-grep -qF "Recreating sandbox new" <<<"$out" || fail "rename did not hand off to --recreate: ${out}"
+grep -qF "refresh after rename failed" <<<"$out" || fail "rename did not report the failed refresh: ${out}"
+grep -qF "Recreating sandbox" <<<"$out" && fail "rename recreated the sandbox: ${out}"
 
 # --- --create names the container from the manifest, not a fresh hash ---
 out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --create new --profile personal \

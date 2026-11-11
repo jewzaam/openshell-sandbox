@@ -2547,16 +2547,21 @@ if [[ "$REAP_MODE" == true ]]; then
     exit 0
 fi
 
-# --- Rename: move ~/sandboxes/<old> to <new>, then recreate under <new> ---
-# The container keeps its sb-<hash>: it lives in manifest .openshell_name, and
-# --create reuses it. Everything else that carries the name — the
-# source.directory label, .env's OTEL project/sandbox.source, the in-sandbox
-# manifest — is written at build time, so a rename is a recreate. Telemetry
-# splits at the rename by design; sandbox.openshell_name spans it.
+# --- Rename: move ~/sandboxes/<old> to <new>, then refresh under <new> ---
+# No recreate: the container does not change. It keeps its sb-<hash>, which
+# lives in manifest .openshell_name. What carries the sandbox name is .env's
+# OTEL project/sandbox.source and the in-sandbox manifest copy, and --refresh
+# rewrites and re-uploads both. Running sessions keep the old telemetry name
+# until they restart; sandbox.openshell_name spans the rename.
 #
-# recreate_pending goes on before anything moves: if the recreate below dies,
-# the next --connect/--ensure on the new name finishes it (apply_pending).
-# tasks.json is rewritten here because only --refresh renders it, and a stale
+# The container's source.directory label is the one thing a rename cannot
+# change — openshell has no label update — so it keeps the old name forever.
+# Nothing here reads it, and claude-dashboard resolves directories by the
+# manifest's openshell_name first, so a stale label points at nothing.
+#
+# refresh_pending goes on before anything moves: if the refresh below dies, or
+# the sandbox is stopped, the next --connect/--ensure on the new name finishes
+# it (apply_pending). tasks.json is rewritten here because a stale
 # `--ensure <old>` on folder open would resolve a directory that is gone.
 if [[ -n "$RENAME_TO" ]]; then
     RENAME_FROM="$(infer_sandbox_name)" || { echo "Error: --rename runs inside ~/sandboxes/<name>/" >&2; exit 1; }
@@ -2571,25 +2576,26 @@ if [[ -n "$RENAME_TO" ]]; then
     [[ "$RENAME_TO" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
         || { echo "Error: invalid name '${RENAME_TO}' (letters, digits, . _ -)" >&2; exit 1; }
     [[ ! -e "$RENAME_DST" ]] || { echo "Error: ${RENAME_DST} already exists" >&2; exit 1; }
+    # tasks.json's --ensure carries the profile (gotcha 5), so it must be known.
     RENAME_PROFILE=$(jq -r '.profile // empty' "${RENAME_SRC}/manifest.json")
     [[ -n "$RENAME_PROFILE" ]] \
         || { echo "Error: ${RENAME_FROM} has no profile in its manifest; recreate it with --profile first" >&2; exit 1; }
 
-    echo "Rename ${RENAME_FROM} -> ${RENAME_TO} recreates the sandbox:" >&2
-    echo "    repos and agent state are downloaded, the container is rebuilt," >&2
-    echo "    and every session running in it ends." >&2
+    echo "Rename ${RENAME_FROM} -> ${RENAME_TO}:" >&2
+    echo "    moves the host directory and refreshes the sandbox's config;" >&2
+    echo "    the container keeps running, and sessions in it keep reporting" >&2
+    echo "    the old name until they restart." >&2
     rename_answer=""
-    read -r -p "Rename and recreate? [y/N] " rename_answer || true
+    read -r -p "Rename? [y/N] " rename_answer || true
     [[ "$rename_answer" == [yY] ]] || { echo "⊘ Skipped rename" >&2; exit 0; }
 
-    RENAME_ARGS=(--recreate "$RENAME_TO" --profile "$RENAME_PROFILE")
-    [[ -n "$GATEWAY" ]] && RENAME_ARGS+=(--gateway "$GATEWAY")
-    [[ -n "$HARNESS" ]] && RENAME_ARGS+=(--harness "$HARNESS")
-    [[ "$NO_CONNECT" == true ]] && RENAME_ARGS+=(--no-connect)
-    [[ "$DEBUG" == true ]] && RENAME_ARGS+=(--debug)
+    RENAME_COMMON=()
+    [[ -n "$GATEWAY" ]] && RENAME_COMMON+=(--gateway "$GATEWAY")
+    [[ "$DEBUG" == true ]] && RENAME_COMMON+=(--debug)
+    [[ "$DRYRUN" == true ]] && RENAME_COMMON+=(--dryrun)
 
     if [[ "$DRYRUN" != true ]]; then
-        set_manifest_pending "$RENAME_SRC" recreate_pending
+        set_manifest_pending "$RENAME_SRC" refresh_pending
         mv "$RENAME_SRC" "$RENAME_DST"
         jq --arg n "$RENAME_TO" '.name = $n' "${RENAME_DST}/manifest.json" > "${RENAME_DST}/manifest.json.tmp" \
             && mv "${RENAME_DST}/manifest.json.tmp" "${RENAME_DST}/manifest.json"
@@ -2600,7 +2606,12 @@ if [[ -n "$RENAME_TO" ]]; then
         run mv "$RENAME_SRC" "$RENAME_DST"
     fi
     release_scratch
-    run exec "$0" "${RENAME_ARGS[@]}"
+    if ! run "$0" --refresh "$RENAME_TO" "${RENAME_COMMON[@]}"; then
+        echo "Error: refresh after rename failed; it runs on the next connect to ${RENAME_TO}" >&2
+        exit 1
+    fi
+    [[ "$NO_CONNECT" == true ]] && exit 0
+    run exec "$0" --connect "$RENAME_TO" ${HARNESS:+--harness "$HARNESS"} "${RENAME_COMMON[@]}"
 fi
 
 if [[ "$LIST_MODE" == true ]]; then
