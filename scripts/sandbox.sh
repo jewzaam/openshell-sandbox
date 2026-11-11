@@ -540,23 +540,27 @@ reap_git() {
 }
 
 # ---------------------------------------------------------------------------
-# Name resolution (short_name lives in lib.sh — scode needs it too)
+# Name resolution (name minting and claim checks live in lib.sh — scode needs
+# them too)
 # ---------------------------------------------------------------------------
 
-# Resolve full name → openshell name from manifest
+# Resolve full name → openshell name. The manifest's .openshell_name is the
+# only source: no manifest, or one without the field, is an error. Nothing is
+# derived from the sandbox name — a derived name is how --ensure foo used to
+# connect into, and --delete foo delete, a sandbox renamed away from foo.
 resolve_openshell_name() {
     local name="$1"
-    local manifest="${SANDBOXES_DIR}/${name}/manifest.json"
-    if [[ -f "$manifest" ]]; then
-        local os_name
-        os_name=$(jq -r '.openshell_name // empty' "$manifest")
-        if [[ -n "$os_name" ]]; then
-            echo "$os_name"
-            return
-        fi
+    local manifest="${SANDBOXES_DIR}/${name}/manifest.json" os_name
+    if [[ ! -f "$manifest" ]]; then
+        echo "Error: ${name} has no manifest (${manifest}); its openshell name is unknown" >&2
+        return 1
     fi
-    # No manifest — fall back to short_name for pre-existing sandboxes
-    short_name "$name"
+    os_name=$(jq -r '.openshell_name // empty' "$manifest")
+    if [[ -z "$os_name" ]]; then
+        echo "Error: ${manifest} has no .openshell_name; its openshell name is unknown" >&2
+        return 1
+    fi
+    echo "$os_name"
 }
 
 # Resolve openshell name → full name by scanning manifests
@@ -567,9 +571,6 @@ resolve_full_name() {
         [[ -f "$manifest" ]] || continue
         local stored
         stored=$(jq -r '.openshell_name // empty' "$manifest")
-        # Manifests older than the field have none; init_manifest backfills
-        # it on next use, and until then the name is derivable the same way.
-        [[ -n "$stored" ]] || stored=$(short_name "$(basename "$(dirname "$manifest")")")
         if [[ "$stored" == "$os_name" ]]; then
             jq -r '.name' "$manifest"
             return
@@ -2431,7 +2432,9 @@ if [[ "$REAP_MODE" == true ]]; then
         [[ -f "$manifest" ]] || continue
         dir="$(dirname "$manifest")"
         name="$(basename "$dir")"
-        os_name="$(resolve_openshell_name "$name")"
+        # No .openshell_name: nothing ties the directory to a container, so it
+        # is not offered (resolve_openshell_name says why).
+        os_name="$(resolve_openshell_name "$name")" || continue
         phase="$(jq -r --arg o "$os_name" '.[] | select(.name == $o) | .phase' <<<"$REAP_LIVE")"
         if [[ -z "$phase" ]]; then
             kind=orphan-dir
@@ -2457,7 +2460,7 @@ if [[ "$REAP_MODE" == true ]]; then
     # it. Anything else may be a deliberate plain-openshell sandbox, the same
     # reason claude-dashboard never stops them.
     while IFS=$'\t' read -r os_name phase created; do
-        [[ -z "${reap_ours[$os_name]:-}" ]] && is_our_short_name "$os_name" || continue
+        [[ -z "${reap_ours[$os_name]:-}" ]] && is_our_openshell_name "$os_name" || continue
         if [[ "$phase" == Stopped || "$phase" == Error ]]; then
             since=$(reap_epoch "$(jq -r --arg n "$os_name" '.[$n] // empty' <<<"$REAP_FINISHED")") \
                 || since=$(reap_epoch "${created} UTC") || continue
@@ -2554,6 +2557,11 @@ if [[ -n "$RENAME_TO" ]]; then
     RENAME_SRC="${SANDBOXES_DIR}/${RENAME_FROM}"
     RENAME_DST="${SANDBOXES_DIR}/${RENAME_TO}"
     [[ -f "${RENAME_SRC}/manifest.json" ]] || { echo "Error: no manifest.json in ${RENAME_SRC}" >&2; exit 1; }
+    # The container keeps its name across the rename, and the manifest is the
+    # only record of it. Without one, the old name would no longer resolve to
+    # anything and nothing would stop it being reused.
+    [[ -n "$(jq -r '.openshell_name // empty' "${RENAME_SRC}/manifest.json")" ]] \
+        || { echo "Error: ${RENAME_SRC}/manifest.json has no .openshell_name; not renaming" >&2; exit 1; }
     [[ "$RENAME_TO" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
         || { echo "Error: invalid name '${RENAME_TO}' (letters, digits, . _ -)" >&2; exit 1; }
     [[ ! -e "$RENAME_DST" ]] || { echo "Error: ${RENAME_DST} already exists" >&2; exit 1; }
@@ -2601,11 +2609,13 @@ if [[ "$LIST_MODE" == true ]]; then
     done
     exit $?
 elif [[ -n "$DELETE_NAME" ]]; then
-    OS_NAME=$(resolve_openshell_name "$DELETE_NAME")
-    # A bare sb-<hash> with no directory is a container sandbox.sh named and
-    # lost the directory for; hashing it again names nothing.
-    if [[ ! -d "${SANDBOXES_DIR}/${DELETE_NAME}" ]] && is_our_short_name "$DELETE_NAME"; then
+    # A bare sb-<12 hex> with no directory is a container sandbox.sh named and
+    # lost the directory for. Anything else needs a manifest naming its
+    # container, or nothing is deleted.
+    if [[ ! -d "${SANDBOXES_DIR}/${DELETE_NAME}" ]] && is_our_openshell_name "$DELETE_NAME"; then
         OS_NAME="$DELETE_NAME"
+    else
+        OS_NAME=$(resolve_openshell_name "$DELETE_NAME")
     fi
     # openshell deletes with allow_missing, so an absent sandbox already exits
     # 0 and a non-zero exit is a real failure. Keep the directory then:
@@ -2823,7 +2833,12 @@ fi
 
 # --- Ensure (create-or-connect) ---
 if [[ "$ENSURE_MODE" == true ]]; then
-    OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
+    # No manifest means a new sandbox: fall through to create, which mints a
+    # name. A manifest that does not resolve (no .openshell_name) is an error.
+    OS_NAME=""
+    if [[ -f "${SANDBOXES_DIR}/${SANDBOX_NAME}/manifest.json" ]]; then
+        OS_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
+    fi
     # A failed list is not "missing": falling through to create against a
     # gateway that did not answer ends in "already exists" with the cause
     # hidden. JSON + jq, not table + `grep -q`: grep quitting on the first
@@ -2947,8 +2962,8 @@ fi
 
 # Everything past this point creates a sandbox. Reaching it without a name
 # means no mode flag matched. Without this guard the create path runs with an
-# empty name — short_name "" hashes to sb-d41d8cd98f00 — and installs the
-# policy into ~/sandboxes//, a directory no sandbox will ever look for.
+# empty name: it writes ~/sandboxes//manifest.json and installs the policy
+# into ~/sandboxes//, a directory no sandbox will ever look for.
 if [[ -z "$SANDBOX_NAME" ]]; then
     echo "Error: no sandbox name — nothing to do. See --help for modes." >&2
     exit 1
@@ -2996,6 +3011,16 @@ POLICY_FILE="$(render_policy "$POLICY_FILE")" || exit 1
 # ---------------------------------------------------------------------------
 # Generate /sandbox/.env content (runtime env vars)
 # ---------------------------------------------------------------------------
+
+# Create only (--refresh is the other mode that reaches here, and exits before
+# the create): host-side state dir + manifest first. The manifest is how the
+# host learns the profile, and everything below is slow — an OAuth prompt from
+# ensure_gws_creds, then the 120s create. It also mints the openshell name,
+# which SANDBOX_OPENSHELL_NAME below reads back: written any later, .env would
+# carry a name the container never gets. The repo loop fills in .repos later.
+if [[ "$REFRESH_MODE" != true ]]; then
+    init_manifest "${SANDBOXES_DIR}/${SANDBOX_NAME}" "$SANDBOX_NAME" "$SANDBOX_PROFILE" "$HARNESS"
+fi
 
 # Build active var list based on profile
 ACTIVE_VARS=()
@@ -3244,17 +3269,12 @@ fi
 # Create sandbox
 # ---------------------------------------------------------------------------
 
-# Host-side state dir + manifest first: the manifest is how the host learns the
-# profile, and everything below is slow — an OAuth prompt from
-# ensure_gws_creds, then the 120s create. The repo loop fills in .repos later.
-init_manifest "${SANDBOXES_DIR}/${SANDBOX_NAME}" "$SANDBOX_NAME" "$SANDBOX_PROFILE" "$HARNESS"
-
 if ! personal_profile "$SANDBOX_PROFILE"; then
     ensure_gws_creds
 fi
 
-# The manifest's name, not short_name: init_manifest above stores short_name for
-# a new sandbox, and a --rename keeps the old hash so --recreate's download and
+# The manifest's name: init_manifest (before the .env build) minted it for a
+# new sandbox, and a --rename keeps the old one so --recreate's download and
 # delete, done under the new name, find the existing container.
 OPENSHELL_NAME=$(resolve_openshell_name "$SANDBOX_NAME")
 

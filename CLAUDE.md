@@ -536,8 +536,19 @@ is no default. `research` and `fetch-service` are policies only —
 - **`.claude.json` and `.credentials.json` are both required** to preserve
   OAuth across `--recreate`. See
   [knowledgebase: oauth-tokens](https://github.com/jewzaam/knowledgebase/blob/main/claude-code/oauth-tokens.md).
-- **Sandbox names are hashed** because OpenShell enforces a 19-char limit (DNS
-  label: 19+2+19+2+19=61 < 63). `short_name()` produces `sb-<12-char-md5>`.
+- **OpenShell names are `sb-<12 hex>`, random, stored in `manifest.json`**,
+  because OpenShell enforces a 19-char limit (DNS label: 19+2+19+2+19=61 < 63).
+  Minted by `init_manifest()` / `mint_openshell_name()` (scripts/lib.sh), which
+  asks the gateway what is taken — so creating a sandbox, scode included,
+  needs the gateway up (`--dryrun` does not ask). Tests that create opt into
+  `fake_openshell_list` (`tests/isolate.sh`). The manifest's
+  `.openshell_name` is the only source: no manifest, or no field, is an
+  error everywhere (`resolve_openshell_name()`), never a fallback.
+  **Do not derive it from the sandbox name or any other key:** `--rename` keeps the
+  container's name, so a derived one made create foo → rename to bar →
+  create foo resolve to bar's container (`--ensure` connected into it,
+  `--delete foo` deleted it). `tests/test-rename.sh`,
+  `tests/test-manifest-timing.sh`.
 - **`--ref pr/N` checks out through `gh pr checkout`**, so the branch is the
   PR's own head ref with a real upstream — a `git fetch pull/N/head:pr-N`
   branch has none, and reads as local-only to anything watching the checkout.

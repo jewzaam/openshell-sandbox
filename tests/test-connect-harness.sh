@@ -28,6 +28,9 @@ cp -r "${REPO_ROOT}/scripts" "${REPO_ROOT}/config" "${REPO_ROOT}/policies" "$WOR
 
 FAKE_HOME="${TMP}/home"
 mkdir -p "${FAKE_HOME}/sandboxes/myapp"
+# --connect resolves the container from the manifest; nothing else names it.
+printf '{"name":"myapp","openshell_name":"sb-000000000abc","repos":{}}' \
+    > "${FAKE_HOME}/sandboxes/myapp/manifest.json"
 
 fail=0
 unset SANDBOX_PROFILE
@@ -79,6 +82,8 @@ check "the manifest survives a rebuilt container" "codex" \
 # A sandbox named "codex" is just a name now — no positional harness to collide
 # with. This is the shape --recreate re-execs.
 mkdir -p "${FAKE_HOME}/sandboxes/codex"
+printf '{"name":"codex","openshell_name":"sb-000000000c0d","repos":{}}' \
+    > "${FAKE_HOME}/sandboxes/codex/manifest.json"
 [[ -n "$(sandbox_arg codex)" ]] || { echo "FAIL: no sandbox resolved for name codex" >&2; fail=1; }
 check "a sandbox named codex forces no harness" "" "$(wrapper_arg codex)"
 

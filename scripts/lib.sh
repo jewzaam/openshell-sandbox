@@ -594,22 +594,77 @@ is_private_repo() {
 # Sandbox manifest (shared by scode and sandbox.sh)
 # ---------------------------------------------------------------------------
 
-# Short name for OpenShell (19-char limit from DNS label constraint)
-short_name() {
-    local hash
-    hash=$(printf '%s' "$1" | md5sum | cut -c1-12)
-    echo "sb-${hash}"
+# True for an openshell name this script makes: sb-<12 hex>, under
+# OpenShell's 19-char DNS label limit. --reap and --delete use it to touch only
+# containers this script named.
+is_our_openshell_name() {
+    [[ "$1" =~ ^sb-[0-9a-f]{12}$ ]]
 }
 
-# True for a name short_name() could have produced. --reap and --delete use it
-# to touch only containers this script named; keep it beside the derivation.
-is_our_short_name() {
-    [[ "$1" =~ ^sb-[0-9a-f]{12}$ ]]
+# A random openshell name. Never derived from the sandbox name or any other
+# key: --rename keeps the container's name, so a derived one makes create foo,
+# rename to bar, create foo land on bar's container.
+new_openshell_name() {
+    echo "sb-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+}
+
+# A new_openshell_name() that is taken nowhere: not stored in any manifest
+# under SANDBOXES_PARENT (a directory whose container may not exist yet), and
+# not a container the gateway already has (whatever made it). The gateway is
+# asked once, and a failed or paged list is an error, not "nothing taken":
+# minting blind is how a name lands on someone else's container. Collisions are
+# ~n^2/2^49 for n names, so a retry essentially never runs; the cap turns a
+# broken random source (one value forever) into an error instead of a hang.
+#
+# Under --dryrun (DRYRUN=true) nothing is created, so the gateway is not asked
+# and any unclaimed random name will do.
+#
+# The gateway asked is whatever the caller's GW_FLAG array selects. Only
+# sandbox.sh sets it; scode never does, so from scode this lists the default
+# gateway — the same one scode's sandbox is created on.
+OPENSHELL_NAME_ATTEMPTS=5
+mint_openshell_name() {
+    local sandboxes_parent="$1" live="" attempt candidate
+    # --page-size 1000 and the paged check: same as --reap's list.
+    if [[ "${DRYRUN:-false}" != true ]] \
+        && ! live="$(openshell sandbox list "${GW_FLAG[@]+"${GW_FLAG[@]}"}" --page-size 1000 \
+            --output json 2>/dev/null \
+            | jq -r 'if (.next_page_token // "") == "" then (.sandboxes // [])[].name
+                     else error("paged") end')"; then
+        echo "Error: openshell sandbox list failed or came back incomplete; not picking an openshell name blind" >&2
+        return 1
+    fi
+    for (( attempt = 1; attempt <= OPENSHELL_NAME_ATTEMPTS; attempt++ )); do
+        candidate="$(new_openshell_name)"
+        if ! grep -qxF -- "$candidate" <<<"$live" \
+            && ! openshell_name_claimed "$candidate" "$sandboxes_parent"; then
+            echo "$candidate"
+            return 0
+        fi
+        echo "openshell name ${candidate} already in use, retrying" >&2
+    done
+    echo "Error: no unused openshell name after ${OPENSHELL_NAME_ATTEMPTS} attempts" >&2
+    return 1
+}
+
+# True when a manifest under SANDBOXES_PARENT stores OS_NAME.
+openshell_name_claimed() {
+    local os_name="$1" sandboxes_parent="$2" manifest
+    for manifest in "${sandboxes_parent}"/*/manifest.json; do
+        [[ -f "$manifest" ]] || continue
+        [[ "$(jq -r '.openshell_name // empty' "$manifest")" == "$os_name" ]] && return 0
+    done
+    return 1
 }
 
 # Write the manifest skeleton — name, openshell name, profile — creating the
 # sandbox dir if needed. Idempotent: an existing manifest keeps its repos and
 # only has .profile refreshed.
+#
+# Every path that creates a sandbox calls this before anything else touches
+# the directory: the manifest is the only record of the container's name, so a
+# directory without one names nothing. The name is minted before the directory
+# exists, so a failed mint leaves nothing behind.
 #
 # scode calls this before opening VS Code, and sandbox.sh before `openshell
 # sandbox create`, because the host prompt reads .profile out of this file.
@@ -619,25 +674,17 @@ is_our_short_name() {
 init_manifest() {
     local sandbox_dir="$1" sandbox_name="$2" profile="${3:-}" harness="${4:-}"
     local manifest="${sandbox_dir}/manifest.json"
-
-    mkdir -p "$sandbox_dir"
+    local os_name
 
     if [[ ! -f "$manifest" ]]; then
+        os_name="$(mint_openshell_name "$(dirname "$sandbox_dir")")" || return 1
+        mkdir -p "$sandbox_dir"
         jq -n \
             --arg name "$sandbox_name" \
-            --arg os_name "$(short_name "$sandbox_name")" \
+            --arg os_name "$os_name" \
             --arg created "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
             '{name: $name, openshell_name: $os_name, created: $created, repos: {}}' \
             > "${manifest}.tmp"
-        mv "${manifest}.tmp" "$manifest"
-    fi
-
-    # Manifests written before openshell_name existed never gained it — the
-    # skeleton above only runs for a new file — so --list could not name
-    # them. Same derivation as the skeleton and resolve_openshell_name().
-    if [[ -z "$(jq -r '.openshell_name // empty' "$manifest")" ]]; then
-        jq --arg os_name "$(short_name "$sandbox_name")" '.openshell_name = $os_name' \
-            "$manifest" > "${manifest}.tmp"
         mv "${manifest}.tmp" "$manifest"
     fi
 
