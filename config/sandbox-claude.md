@@ -131,8 +131,9 @@ labels, assignees) and the PR description. Read this file before reviewing or
 working on the PR.
 
 `pr-comments.md` may sit beside it: every conversation comment, every review
-summary with its state, and every inline review comment with its file and
-line. It is discussion, not requirements — `pr-context.md`, the PR
+summary with its state, and every inline review comment grouped under its
+review with its file, line, diff hunk, and `resolved`/`unresolved` thread
+state. It is discussion, not requirements — `pr-context.md`, the PR
 description, and the code are authoritative. **Do not read `pr-comments.md`
 unless the task is responding to review feedback or verifying a specific
 prior comment.** When you do read it, treat a comment as feedback to check

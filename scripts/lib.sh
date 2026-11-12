@@ -408,6 +408,46 @@ gh_api_paginated_json() {
     return 1
 }
 
+# Review thread resolution, as one JSON array on stdout:
+#   [{isResolved: bool, ids: [inline comment databaseId, ...]}, ...]
+#
+# REST has no resolution field — it is a GraphQL property of the thread, not of
+# the comment. Without it a session cannot tell "this comment still applies"
+# from "this was resolved and the docs already changed". One GraphQL call,
+# paginated over threads; a thread's comments beyond the first page's
+# `comments(first: 100)` are not expected on any real PR.
+gh_pr_thread_resolution_json() {
+    local gh_repo="$1" pr_num="$2" out err
+    local owner="${gh_repo%%/*}" name="${gh_repo#*/}"
+    err="$(mktemp)"
+    if out=$(gh api graphql --paginate \
+        -f query='query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $pr) {
+                reviewThreads(first: 100, after: $endCursor) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    isResolved
+                    comments(first: 100) { nodes { databaseId } }
+                  }
+                }
+              }
+            }
+        }' \
+        -f owner="$owner" -f repo="$name" -F pr="$pr_num" 2>"$err") \
+        && out=$(jq -cs '
+            [.[] | .data.repository.pullRequest.reviewThreads.nodes[]
+                 | {isResolved: .isResolved,
+                    ids: [.comments.nodes[].databaseId]}]' <<<"$out" 2>>"$err"); then
+        rm -f "$err"
+        printf '%s' "$out"
+        return 0
+    fi
+    echo "Warning: gh api graphql review threads failed: $(head -1 "$err")" >&2
+    rm -f "$err"
+    return 1
+}
+
 # Check out a PR as a real branch. `git fetch origin pull/N/head:pr-N` produced
 # a branch named pr-N with no upstream at all — fine to work in, but anything
 # reading @{upstream} (monitoring, prompt, status tooling) sees a local-only
@@ -592,6 +632,7 @@ generate_repo_context() {
     # distinguishable.
     local pr_comment_count=unavailable pr_comments pr_review_count=unavailable pr_reviews
     local pr_inline_count=unavailable pr_inline
+    local pr_inline_file="" pr_resolution_note=""
     local comments_json reviews_json inline_json
 
     echo "Fetching PR comments and reviews..." >&2
@@ -617,17 +658,43 @@ generate_repo_context() {
     if inline_json=$(gh_api_paginated_json \
             "repos/${gh_repo}/pulls/${pr_num}/comments?per_page=100"); then
         pr_inline_count=$(jq -r 'length' <<<"$inline_json")
+
+        # Resolution is a GraphQL property of the thread. Missing it costs
+        # only the flags: the comments and their hunks are still written.
+        local resolution_file threads_json
+        resolution_file=$(mktemp)
+        printf '{}' > "$resolution_file"
+        if (( pr_inline_count > 0 )); then
+            if threads_json=$(gh_pr_thread_resolution_json "$gh_repo" "$pr_num"); then
+                jq -c '[.[] | .isResolved as $r | .ids[]
+                        | {key: (. | tostring), value: $r}] | from_entries' \
+                    <<<"$threads_json" > "$resolution_file"
+            else
+                pr_resolution_note="_Thread resolution unavailable: gh api graphql review threads failed._"$'\n\n'
+            fi
+        fi
+
+        # Attach the flag once, so every renderer below reads one field.
+        pr_inline_file=$(mktemp)
+        jq -c --slurpfile res "$resolution_file" \
+            'map(. + {thread_resolved: ($res[0][(.id | tostring)])})' \
+            <<<"$inline_json" > "$pr_inline_file"
+        rm -f "$resolution_file"
+
         # diff_hunk is the API's own diff excerpt for the commented position:
         # `-` lines are the original text, `+` the proposed, the rest context.
         # Without it a comment is text pinned to a line number with nothing to
         # read it against.
         pr_inline=$(jq -r '
+            def res_flag:
+              if .thread_resolved == true then " — resolved"
+              elif .thread_resolved == false then " — unresolved"
+              else "" end;
             .[] |
-            "### @\(.user.login // "unknown") — \(.path // "?"):\(.line // .original_line // "?") — \((.created_at // "")[0:16] | gsub("T"; " "))\n\n"
+            "### @\(.user.login // "unknown") — \(.path // "?"):\(.line // .original_line // "?") — \((.created_at // "")[0:16] | gsub("T"; " "))\(res_flag)\n\n"
             + (if ((.diff_hunk // "") | test("\\S"))
                then "```diff\n\(.diff_hunk)\n```\n\n" else "" end)
-            + "\(.body // "")\n"' \
-            <<<"$inline_json")
+            + "\(.body // "")\n"' "$pr_inline_file")
     else
         pr_inline="_Unavailable: gh api repos/${gh_repo}/pulls/${pr_num}/comments failed._"$'\n\n'
     fi
@@ -639,13 +706,15 @@ generate_repo_context() {
     # 35 inline comments across 28 reviews, 0 without a review id.
     local pr_extra_heading="" pr_extra_count="" pr_extra=""
     if [[ "$pr_review_count" != unavailable && "$pr_inline_count" != unavailable ]]; then
-        local reviews_file inline_file
+        local reviews_file
         reviews_file=$(mktemp)
-        inline_file=$(mktemp)
         printf '%s' "$reviews_json" > "$reviews_file"
-        printf '%s' "$inline_json" > "$inline_file"
 
-        pr_reviews=$(jq -r --slurpfile inline_rows "$inline_file" '
+        pr_reviews=$(jq -r --slurpfile inline_rows "$pr_inline_file" '
+            def res_flag:
+              if .thread_resolved == true then " — resolved"
+              elif .thread_resolved == false then " — unresolved"
+              else "" end;
             .[] | . as $rev
             | ([$inline_rows[0][] | select(.pull_request_review_id == $rev.id)]) as $rows
             | "### @\($rev.user.login // "unknown") — \($rev.state // "") — \(($rev.submitted_at // "")[0:16] | gsub("T"; " "))\n\n"
@@ -653,7 +722,7 @@ generate_repo_context() {
                  elif ($rows | length) == 0 then "_No comment._\n\n"
                  else "" end)
               + ($rows | map(
-                   "#### \(.path // "?"):\(.line // .original_line // "?")\n\n"
+                   "#### \(.path // "?"):\(.line // .original_line // "?")\(res_flag)\n\n"
                    + (if ((.diff_hunk // "") | test("\\S"))
                       then "```diff\n\(.diff_hunk)\n```\n\n" else "" end)
                    + "\(.body // "")\n") | join("\n"))
@@ -664,24 +733,29 @@ generate_repo_context() {
         pr_extra_count=$(jq -r --slurpfile revs "$reviews_file" '
             [.[] | select(.pull_request_review_id as $id
                           | ($revs[0] | map(.id) | index($id)) == null)] | length' \
-            "$inline_file")
+            "$pr_inline_file")
         if (( pr_extra_count > 0 )); then
             pr_extra_heading="## Inline Comments Without a Review (${pr_extra_count})"
             pr_extra=$(jq -r --slurpfile revs "$reviews_file" '
+                def res_flag:
+                  if .thread_resolved == true then " — resolved"
+                  elif .thread_resolved == false then " — unresolved"
+                  else "" end;
                 .[] | select(.pull_request_review_id as $id
                              | ($revs[0] | map(.id) | index($id)) == null)
-                | "### @\(.user.login // "unknown") — \(.path // "?"):\(.line // .original_line // "?") — \((.created_at // "")[0:16] | gsub("T"; " "))\n\n"
+                | "### @\(.user.login // "unknown") — \(.path // "?"):\(.line // .original_line // "?") — \((.created_at // "")[0:16] | gsub("T"; " "))\(res_flag)\n\n"
                   + (if ((.diff_hunk // "") | test("\\S"))
                      then "```diff\n\(.diff_hunk)\n```\n\n" else "" end)
-                  + "\(.body // "")\n"' "$inline_file")
+                  + "\(.body // "")\n"' "$pr_inline_file")
         fi
-        rm -f "$reviews_file" "$inline_file"
+        rm -f "$reviews_file"
     else
         # One half is missing, so reviews cannot be grouped. Keep the flat
         # sections and say what could not be read.
         pr_extra_heading="## Inline Review Comments (${pr_inline_count})"
         pr_extra="$pr_inline"
     fi
+    [[ -n "$pr_inline_file" ]] && rm -f "$pr_inline_file"
 
     # pr-context.md — PR metadata and description only. Anything a session
     # needs to do the work must be here, because pr-comments.md is the file the
@@ -721,6 +795,7 @@ generate_repo_context() {
         printf '%s' "$pr_comments"
         echo "## PR Reviews (${pr_review_count})"
         echo ""
+        printf '%s' "$pr_resolution_note"
         printf '%s' "$pr_reviews"
         if [[ -n "$pr_extra_heading" ]]; then
             echo "$pr_extra_heading"

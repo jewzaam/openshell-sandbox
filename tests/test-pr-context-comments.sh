@@ -49,6 +49,12 @@ case "$1 $2" in
     *)
         if [[ "$1" == "api" ]]; then
             [[ -n "${GH_API_BROKEN:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
+            # Resolution is GraphQL-only. Carol's thread is open, Dave's is
+            # resolved, so both flags are exercised.
+            if [[ "$2" == "graphql" ]]; then
+                echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":false,"comments":{"nodes":[{"databaseId":1}]}},{"isResolved":true,"comments":{"nodes":[{"databaseId":2}]}}]}}}}}'
+                exit 0
+            fi
             path=""
             for api_arg in "$@"; do path="$api_arg"; done
             case "$path" in
@@ -134,7 +140,9 @@ expect '```suggestion'
 expect '### @erin — COMMENTED — 2026-11-02 11:00'
 # The review has no summary; its text is the inline comment directly under
 # it. Grouping is what gives the comment its context.
-expect '#### a.sh:4'
+# Thread state is GraphQL-only; REST has no such field. Without it a session
+# cannot tell an open comment from one already resolved.
+expect '#### a.sh:4 — unresolved'
 expect 'inline one'
 erin_line=$(grep -n '^### @erin' "$DISCUSSION" | cut -d: -f1)
 inline_line=$(grep -n '^#### a\.sh:4' "$DISCUSSION" | cut -d: -f1)
@@ -144,7 +152,7 @@ inline_line=$(grep -n '^#### a\.sh:4' "$DISCUSSION" | cut -d: -f1)
 # A comment no review claims is still emitted. Dropping it would be the
 # silent-data-loss case this section exists to prevent.
 expect '## Inline Comments Without a Review (1)'
-expect '### @dave — b.sh:9 — 2026-11-04 12:30'
+expect '### @dave — b.sh:9 — 2026-11-04 12:30 — resolved'
 expect 'inline two'
 grep -qF '_No summary — comments are inline._' "$DISCUSSION" \
     && { echo "FAIL: placeholder survived instead of grouping" >&2; fail=1; }
