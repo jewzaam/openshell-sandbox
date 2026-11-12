@@ -153,6 +153,14 @@ if [[ "$1" =~ ^https://[^/]+/browse/([A-Za-z]+-[0-9]+)$ ]]; then
         fetch_jira_context "$jira_key" "$auth"
     } > "${sandbox_dir}/jira-context.md"
     echo "    wrote ${sandbox_dir}/jira-context.md" >&2
+    # Separate file: a session doing the work is told not to read discussion.
+    {
+        jira_comments_header
+        echo ""
+        echo "Fetching Jira comments for ${jira_key}..." >&2
+        fetch_jira_comments "$jira_key" "$auth"
+    } > "${sandbox_dir}/jira-comments.md"
+    echo "    wrote ${sandbox_dir}/jira-comments.md" >&2
 
     write_tasks_and_open "${sandbox_dir}" "${SANDBOX_SH} --ensure ${sandbox_name}${PROFILE_FLAG}${HARNESS_FLAG}"
     exit 0

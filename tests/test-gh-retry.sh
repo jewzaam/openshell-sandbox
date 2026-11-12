@@ -110,7 +110,9 @@ jq -n '{name:"probe",repos:{myrepo:{url:"git@github.com:org/myrepo.git"}}}' > "$
 
 seed_context() {
     echo "# PR #5: existing" > "${REPO}/pr-context.md"
+    echo "# PR #5: existing — Discussion" > "${REPO}/pr-comments.md"
     echo "# Jira Context" > "${REPO}/jira-context.md"
+    echo "# Jira Discussion" > "${REPO}/jira-comments.md"
     echo '{"prs":[{"number":9}]}' > "${REPO}/open-prs.json"
     touch -d '2 hours ago' "${REPO}/open-prs.json"
     rm -f "$TMP_FLAG"
@@ -121,7 +123,8 @@ calls() { grep -c "$1" "$GH_LOG" 2>/dev/null || true; }
 # --- a 502 keeps existing context and does not claim the PR is gone ---
 seed_context
 GH_MODE=transient generate_repo_context "$SBX" myrepo personal >/dev/null 2>&1 || true
-[[ -f "${REPO}/pr-context.md" && -f "${REPO}/jira-context.md" ]] \
+[[ -f "${REPO}/pr-context.md" && -f "${REPO}/pr-comments.md" \
+   && -f "${REPO}/jira-context.md" && -f "${REPO}/jira-comments.md" ]] \
     || { echo "FAIL: a transient gh failure deleted the PR context" >&2; fail=1; }
 [[ "$(jq -r '.prs[0].number' "${REPO}/open-prs.json" 2>/dev/null)" == "9" ]] \
     || { echo "FAIL: a transient gh failure clobbered open-prs.json" >&2; fail=1; }
@@ -135,7 +138,8 @@ GH_MODE=transient generate_repo_context "$SBX" myrepo personal >/dev/null 2>&1 |
 # --- "no such PR" is a real answer: delete stale context, and do not retry ---
 seed_context
 GH_MODE=nopr generate_repo_context "$SBX" myrepo personal >/dev/null 2>&1 || true
-[[ ! -f "${REPO}/pr-context.md" && ! -f "${REPO}/jira-context.md" ]] \
+[[ ! -f "${REPO}/pr-context.md" && ! -f "${REPO}/pr-comments.md" \
+   && ! -f "${REPO}/jira-context.md" && ! -f "${REPO}/jira-comments.md" ]] \
     || { echo "FAIL: stale context survived a definitive 'no pull requests found'" >&2; fail=1; }
 [[ "$(calls 'pr view')" == "1" ]] \
     || { echo "FAIL: retried a definitive answer $(calls 'pr view')x — that cost is paid per non-PR repo" >&2; fail=1; }
