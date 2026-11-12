@@ -34,6 +34,14 @@ cat > "${TMP}/bin/curl" <<'CURL'
 for arg in "$@"; do :; done
 case "$arg" in
     */rest/api/3/field) echo '[]' ;;
+    # The comment path must come before the issue pattern, which matches it too.
+    # Two pages, so the pagination loop is exercised: a fetch that stopped
+    # after the first would report one comment and drop the second.
+    */rest/api/3/issue/*/comment*)
+        case "$arg" in
+            *startAt=0*) echo '{"startAt":0,"maxResults":50,"total":2,"comments":[{"author":{"displayName":"Alice"},"created":"2026-11-01T09:05:00.000+0000","body":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"jira discussion"}]}]}}]}' ;;
+            *) echo '{"startAt":1,"maxResults":50,"total":2,"comments":[{"author":{"displayName":"Bob"},"created":"2026-11-02T10:15:00.000+0000","body":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"second page"}]}]}}]}' ;;
+        esac ;;
     */rest/api/3/issue/*) echo '{"fields":{"summary":"Canned","status":{"name":"New"},"issuetype":{"name":"Story"},"description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"line one"},{"type":"hardBreak"},{"type":"text","text":"line two"}]}]}}}' ;;
     *) ;;
 esac
@@ -58,6 +66,21 @@ done
 # own — dropping it runs the lines either side together.
 grep -q '^line two$' "${D}/jira-context.md" 2>/dev/null \
     || { echo "FAIL: hardBreak did not survive rendering" >&2; fail=1; }
+
+# Comments belong in their own file, so a session can be told not to read
+# them. They must not appear in the authoritative one.
+grep -q 'Discussion only. Not authoritative.' "${D}/jira-comments.md" 2>/dev/null \
+    || { echo "FAIL: jira-comments.md missing its authority banner" >&2; fail=1; }
+grep -q '^## AAA-1 (2 comments)$' "${D}/jira-comments.md" 2>/dev/null \
+    || { echo "FAIL: AAA-1 comments missing from jira-comments.md" >&2; fail=1; }
+grep -q '^### Alice — 2026-11-01 09:05$' "${D}/jira-comments.md" 2>/dev/null \
+    || { echo "FAIL: comment author or timestamp not rendered" >&2; fail=1; }
+grep -q '^jira discussion$' "${D}/jira-comments.md" 2>/dev/null \
+    || { echo "FAIL: comment body missing from jira-comments.md" >&2; fail=1; }
+grep -q '^second page$' "${D}/jira-comments.md" 2>/dev/null \
+    || { echo "FAIL: pagination dropped the second comment page" >&2; fail=1; }
+grep -q 'jira discussion' "${D}/jira-context.md" 2>/dev/null \
+    && { echo "FAIL: a Jira comment leaked into jira-context.md" >&2; fail=1; }
 
 # Outside a sandbox directory there is nowhere to write.
 if (cd "$TMP" && HOME="$FAKE_HOME" JIRA_USERNAME=u JIRA_TOKEN=t \

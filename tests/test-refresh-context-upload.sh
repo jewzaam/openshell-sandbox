@@ -43,14 +43,14 @@ mkdir -p "${D}/myrepo"
 printf '{"name":"probe","openshell_name":"sb-probe","profile":"personal","repos":{"myrepo":{"url":"git@github.com:x/myrepo.git"}}}' \
     > "${D}/manifest.json"
 seed_provider_bindings "$D" personal
-for f in pr-context.md jira-context.md open-prs.json; do
+for f in pr-context.md pr-comments.md jira-context.md jira-comments.md open-prs.json; do
     echo "seeded" > "${D}/myrepo/${f}"
 done
 
 out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --refresh probe --dryrun 2>&1 || true)"
 
 fail=0
-for f in pr-context.md jira-context.md open-prs.json; do
+for f in pr-context.md pr-comments.md jira-context.md jira-comments.md open-prs.json; do
     line="$(grep -F "myrepo/${f}" <<<"$out" | grep -F 'sandbox upload' || true)"
     if [[ -z "$line" ]]; then
         echo "FAIL: --refresh did not upload ${f}" >&2
@@ -66,7 +66,7 @@ done
 # --force is an upload/download flag; --refresh has no repos to change-check,
 # so it must regenerate and upload context either way.
 force_out="$(HOME="$FAKE_HOME" bash "$SANDBOX_SH" --refresh probe --force --dryrun 2>&1 || true)"
-for f in pr-context.md jira-context.md open-prs.json; do
+for f in pr-context.md pr-comments.md jira-context.md jira-comments.md open-prs.json; do
     grep -F "myrepo/${f}" <<<"$force_out" | grep -qF 'sandbox upload' \
         || { echo "FAIL: --refresh --force did not upload ${f}" >&2; fail=1; }
 done

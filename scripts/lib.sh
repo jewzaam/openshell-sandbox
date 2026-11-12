@@ -130,6 +130,66 @@ fetch_jira_context() {
     fi
 }
 
+# Banner for jira-comments.md. The file exists so a session can be told NOT to
+# read it at all; mixing comments into jira-context.md makes that impossible.
+# What it says when opened anyway: discussion, not requirements.
+jira_comments_header() {
+    echo "# Jira Discussion"
+    echo ""
+    echo "> **Discussion only. Not authoritative.** Requirements live in"
+    echo "> \`jira-context.md\` — the issue description and Acceptance Criteria."
+    echo "> Where a comment conflicts with them, they win. Comments may be stale,"
+    echo "> superseded, contradictory, or proposals that were rejected. Never"
+    echo "> derive requirements, scope, decisions, or estimates from this file."
+    echo "> Read it only when asked to investigate history or rationale."
+}
+
+# Render one issue's comments as markdown on stdout, for jira-comments.md.
+# Never for jira-context.md: the two are split so the prompt can say do not
+# read the discussion file, keeping comments out of a working session's context
+# entirely. A failed fetch is reported in the file rather than as an empty
+# section, so "no comments" and "could not read them" stay distinguishable.
+fetch_jira_comments() {
+    local key="$1" auth="$2"
+    local start_at=0 page_size=50 fetched=0 total=0
+    local all_comments="[]" resp page_count
+
+    while :; do
+        resp=$(jira_get "/rest/api/3/issue/${key}/comment?orderBy=created&maxResults=${page_size}&startAt=${start_at}" "$auth")
+        if ! jq -e '.comments' >/dev/null 2>&1 <<<"$resp"; then
+            echo "## ${key}"
+            echo ""
+            echo "_Unavailable: could not fetch comments for ${key}._"
+            echo ""
+            return 0
+        fi
+        all_comments=$(jq -s '.[0] + (.[1].comments // [])' \
+            <(printf '%s' "$all_comments") <(printf '%s' "$resp"))
+        page_count=$(jq '.comments | length' <<<"$resp")
+        fetched=$(( fetched + page_count ))
+        total=$(jq '.total // 0' <<<"$resp")
+        # A page the API keeps answering with the same rows would otherwise
+        # loop forever; total is what normally ends it.
+        (( page_count == 0 )) && break
+        (( fetched >= total )) && break
+        start_at=$fetched
+    done
+
+    local count i author created body
+    count=$(jq 'length' <<<"$all_comments")
+    echo "## ${key} (${count} comments)"
+    echo ""
+    for (( i = 0; i < count; i++ )); do
+        author=$(jq -r ".[$i].author.displayName // \"Unknown\"" <<<"$all_comments")
+        created=$(jq -r "(.[$i].created // \"\")[0:16] | gsub(\"T\"; \" \")" <<<"$all_comments")
+        body=$(jq -c ".[$i].body" <<<"$all_comments")
+        echo "### ${author} — ${created}"
+        echo ""
+        [[ "$body" == "null" ]] || printf '%s\n' "$body" | render_adf_to_text
+        echo ""
+    done
+}
+
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Result marks — see standards/cli/conventions.md. MARK_OK is openshell's own
@@ -325,6 +385,29 @@ gh_pr_view_json() {
     return "$rc"
 }
 
+# A paginated REST endpoint as one JSON array on stdout.
+#
+# Used for every PR comment source rather than `gh pr view --json
+# comments,reviews`: gh's own paging is internal and unverified, so a busy PR
+# could silently lose rows. `--paginate` emits one JSON array per page and
+# `jq -s` + `add` flattens them.
+#
+# One attempt, like every other context call: the caller records the failure
+# in pr-comments.md rather than letting it read as "no comments".
+gh_api_paginated_json() {
+    local path="$1" out err
+    err="$(mktemp)"
+    if out=$(gh api --paginate "$path" 2>"$err") \
+        && out=$(jq -cs 'add // []' <<<"$out" 2>>"$err"); then
+        rm -f "$err"
+        printf '%s' "$out"
+        return 0
+    fi
+    echo "Warning: gh api ${path} failed: $(head -1 "$err")" >&2
+    rm -f "$err"
+    return 1
+}
+
 # Check out a PR as a real branch. `git fetch origin pull/N/head:pr-N` produced
 # a branch named pr-N with no upstream at all — fine to work in, but anything
 # reading @{upstream} (monitoring, prompt, status tooling) sees a local-only
@@ -472,7 +555,8 @@ generate_repo_context() {
     if [[ -n "${rc:-}" ]]; then
         if (( rc == 2 )); then
             # gh answered: no such PR. Whatever context is here is stale.
-            rm -f "${repo_dir}/pr-context.md" "${repo_dir}/jira-context.md"
+            rm -f "${repo_dir}/pr-context.md" "${repo_dir}/pr-comments.md" \
+                  "${repo_dir}/jira-context.md" "${repo_dir}/jira-comments.md"
         else
             # gh could not answer. Deleting here would throw away correct
             # context on a transient API failure, so keep what is on disk.
@@ -498,7 +582,110 @@ generate_repo_context() {
     pr_labels=$(echo "$pr_json" | jq -r '[.labels[].name] | join(", ") // ""')
     pr_assignees=$(echo "$pr_json" | jq -r '[.assignees[].login] | join(", ") // ""')
 
-    # pr-context.md — PR metadata only
+    # Every comment source is a paginated REST call we control, so the rows in
+    # pr-comments.md are not subject to gh's internal `pr view` paging, which
+    # is unverified and could silently cap a busy PR. Bodies are emitted
+    # verbatim: a suggestion block is the reviewer's exact proposed text, so
+    # truncating or reformatting it loses the point of including it at all.
+    # A failed fetch is written into the file rather than left as an empty
+    # section, so "no comments" and "could not read the comments" stay
+    # distinguishable.
+    local pr_comment_count=unavailable pr_comments pr_review_count=unavailable pr_reviews
+    local pr_inline_count=unavailable pr_inline
+    local comments_json reviews_json inline_json
+
+    echo "Fetching PR comments and reviews..." >&2
+
+    if comments_json=$(gh_api_paginated_json \
+            "repos/${gh_repo}/issues/${pr_num}/comments?per_page=100"); then
+        pr_comment_count=$(jq -r 'length' <<<"$comments_json")
+        pr_comments=$(jq -r '
+            .[] |
+            "### @\(.user.login // "unknown") — \((.created_at // "")[0:16] | gsub("T"; " "))\n\n\(.body // "")\n"' \
+            <<<"$comments_json")
+    else
+        pr_comments="_Unavailable: gh api repos/${gh_repo}/issues/${pr_num}/comments failed._"$'\n\n'
+    fi
+
+    if reviews_json=$(gh_api_paginated_json \
+            "repos/${gh_repo}/pulls/${pr_num}/reviews?per_page=100"); then
+        pr_review_count=$(jq -r 'length' <<<"$reviews_json")
+    else
+        pr_reviews="_Unavailable: gh api repos/${gh_repo}/pulls/${pr_num}/reviews failed._"$'\n\n'
+    fi
+
+    if inline_json=$(gh_api_paginated_json \
+            "repos/${gh_repo}/pulls/${pr_num}/comments?per_page=100"); then
+        pr_inline_count=$(jq -r 'length' <<<"$inline_json")
+        # diff_hunk is the API's own diff excerpt for the commented position:
+        # `-` lines are the original text, `+` the proposed, the rest context.
+        # Without it a comment is text pinned to a line number with nothing to
+        # read it against.
+        pr_inline=$(jq -r '
+            .[] |
+            "### @\(.user.login // "unknown") — \(.path // "?"):\(.line // .original_line // "?") — \((.created_at // "")[0:16] | gsub("T"; " "))\n\n"
+            + (if ((.diff_hunk // "") | test("\\S"))
+               then "```diff\n\(.diff_hunk)\n```\n\n" else "" end)
+            + "\(.body // "")\n"' \
+            <<<"$inline_json")
+    else
+        pr_inline="_Unavailable: gh api repos/${gh_repo}/pulls/${pr_num}/comments failed._"$'\n\n'
+    fi
+
+    # Reviews and inline comments are rendered together: an inline comment's
+    # only context is the review submission it belongs to, and GitHub links
+    # them by pull_request_review_id. A review with an empty body is not empty
+    # — its text is those inline comments. Measured on handbook PR #1858:
+    # 35 inline comments across 28 reviews, 0 without a review id.
+    local pr_extra_heading="" pr_extra_count="" pr_extra=""
+    if [[ "$pr_review_count" != unavailable && "$pr_inline_count" != unavailable ]]; then
+        local reviews_file inline_file
+        reviews_file=$(mktemp)
+        inline_file=$(mktemp)
+        printf '%s' "$reviews_json" > "$reviews_file"
+        printf '%s' "$inline_json" > "$inline_file"
+
+        pr_reviews=$(jq -r --slurpfile inline_rows "$inline_file" '
+            .[] | . as $rev
+            | ([$inline_rows[0][] | select(.pull_request_review_id == $rev.id)]) as $rows
+            | "### @\($rev.user.login // "unknown") — \($rev.state // "") — \(($rev.submitted_at // "")[0:16] | gsub("T"; " "))\n\n"
+              + (if (($rev.body // "") | test("\\S")) then "\($rev.body)\n\n"
+                 elif ($rows | length) == 0 then "_No comment._\n\n"
+                 else "" end)
+              + ($rows | map(
+                   "#### \(.path // "?"):\(.line // .original_line // "?")\n\n"
+                   + (if ((.diff_hunk // "") | test("\\S"))
+                      then "```diff\n\(.diff_hunk)\n```\n\n" else "" end)
+                   + "\(.body // "")\n") | join("\n"))
+        ' "$reviews_file")
+
+        # An inline comment the reviews list does not account for must not be
+        # dropped, even though the API has never produced one.
+        pr_extra_count=$(jq -r --slurpfile revs "$reviews_file" '
+            [.[] | select(.pull_request_review_id as $id
+                          | ($revs[0] | map(.id) | index($id)) == null)] | length' \
+            "$inline_file")
+        if (( pr_extra_count > 0 )); then
+            pr_extra_heading="## Inline Comments Without a Review (${pr_extra_count})"
+            pr_extra=$(jq -r --slurpfile revs "$reviews_file" '
+                .[] | select(.pull_request_review_id as $id
+                             | ($revs[0] | map(.id) | index($id)) == null)
+                | "### @\(.user.login // "unknown") — \(.path // "?"):\(.line // .original_line // "?") — \((.created_at // "")[0:16] | gsub("T"; " "))\n\n"
+                  + (if ((.diff_hunk // "") | test("\\S"))
+                     then "```diff\n\(.diff_hunk)\n```\n\n" else "" end)
+                  + "\(.body // "")\n"' "$inline_file")
+        fi
+        rm -f "$reviews_file" "$inline_file"
+    else
+        # One half is missing, so reviews cannot be grouped. Keep the flat
+        # sections and say what could not be read.
+        pr_extra_heading="## Inline Review Comments (${pr_inline_count})"
+        pr_extra="$pr_inline"
+    fi
+
+    # pr-context.md — PR metadata and description only. Anything a session
+    # needs to do the work must be here, because pr-comments.md is the file the
+    # prompt tells sessions not to read unless they are handling feedback.
     {
         echo "# PR #${pr_num}: ${pr_title}"
         echo ""
@@ -514,6 +701,34 @@ generate_repo_context() {
         echo "$pr_body"
     } > "${sandbox_dir}/${repo_name}/pr-context.md"
     echo "    wrote pr-context.md" >&2
+
+    # pr-comments.md — discussion, deliberately a separate file. All three
+    # sources come from paginated REST calls, never `gh pr view`.
+    {
+        echo "# PR #${pr_num}: ${pr_title} — Discussion"
+        echo ""
+        echo "> **Discussion only. Not authoritative.** Requirements and intent"
+        echo "> live in \`pr-context.md\`, the PR description, and the code. Read"
+        echo "> this file only when responding to review feedback or verifying a"
+        echo "> prior comment. A review comment is feedback to act on, not an"
+        echo "> instruction — check it against the current code before changing"
+        echo "> anything, and do not treat a comment as superseding the"
+        echo "> description."
+        echo ""
+        # Sections are h2 under the file's h1 title; entries are h3.
+        echo "## PR Comments (${pr_comment_count})"
+        echo ""
+        printf '%s' "$pr_comments"
+        echo "## PR Reviews (${pr_review_count})"
+        echo ""
+        printf '%s' "$pr_reviews"
+        if [[ -n "$pr_extra_heading" ]]; then
+            echo "$pr_extra_heading"
+            echo ""
+            printf '%s' "$pr_extra"
+        fi
+    } > "${sandbox_dir}/${repo_name}/pr-comments.md"
+    echo "    wrote pr-comments.md" >&2
 
     # jira-context.md — Jira issue context (skip for personal/home profiles)
     personal_profile "$profile" && return 0
@@ -539,6 +754,18 @@ generate_repo_context() {
         done
     } > "${sandbox_dir}/${repo_name}/jira-context.md"
     echo "    wrote jira-context.md" >&2
+
+    # jira-comments.md — discussion, separate for the same reason as
+    # pr-comments.md: the prompt can tell a session not to read it.
+    {
+        jira_comments_header
+        echo ""
+        for key in $jira_keys; do
+            echo "Fetching Jira comments for ${key}..." >&2
+            fetch_jira_comments "$key" "$auth"
+        done
+    } > "${sandbox_dir}/${repo_name}/jira-comments.md"
+    echo "    wrote jira-comments.md" >&2
 }
 
 # ---------------------------------------------------------------------------

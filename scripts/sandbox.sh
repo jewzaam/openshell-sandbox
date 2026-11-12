@@ -2707,8 +2707,9 @@ fi
 
 # --- Fetch Jira issues into the sandbox directory ---
 #
-# Writes only. --create and --refresh already upload jira-context.md when the
-# file is there, which is how it reaches the sandbox.
+# Writes only. --create and --refresh already upload jira-context.md and
+# jira-comments.md when the files are there, which is how they reach the
+# sandbox.
 #
 # The keys given are the whole file — scode's Jira mode and pr-context.md both
 # regenerate, and appending has no way to drop an issue or refresh a stale one.
@@ -2733,8 +2734,18 @@ if [[ ${#JIRA_KEYS[@]} -gt 0 ]]; then
             fetch_jira_context "$jira_key" "$JIRA_AUTH"
         done
     } > "${SANDBOX_DIR}/jira-context.md"
+    # Separate file: a session doing the work is told not to read discussion.
+    {
+        jira_comments_header
+        echo ""
+        for jira_key in "${JIRA_KEYS[@]}"; do
+            echo "Fetching Jira comments for ${jira_key}..." >&2
+            fetch_jira_comments "$jira_key" "$JIRA_AUTH"
+        done
+    } > "${SANDBOX_DIR}/jira-comments.md"
     echo "${MARK_OK} Jira context — ${JIRA_KEYS[*]}" >&2
     echo "    wrote ${SANDBOX_DIR}/jira-context.md" >&2
+    echo "    wrote ${SANDBOX_DIR}/jira-comments.md" >&2
     exit 0
 fi
 
@@ -3253,7 +3264,7 @@ if [[ "$REFRESH_MODE" == true ]]; then
     if [[ -f "${SANDBOX_DIR}/manifest.json" ]]; then
         for repo_name in $(jq -r '.repos | keys[]' "${SANDBOX_DIR}/manifest.json"); do
             generate_repo_context "$SANDBOX_DIR" "$repo_name" "${SANDBOX_PROFILE:-}"
-            for ctx_file in pr-context.md jira-context.md open-prs.json; do
+            for ctx_file in pr-context.md pr-comments.md jira-context.md jira-comments.md open-prs.json; do
                 if [[ -f "${SANDBOX_DIR}/${repo_name}/${ctx_file}" ]]; then
                     echo "Uploading ${ctx_file} for ${repo_name}..." >&2
                     # Trailing slash is load-bearing: `sandbox upload` treats a
@@ -3274,6 +3285,9 @@ if [[ "$REFRESH_MODE" == true ]]; then
         JIRA_TMP="$(mktemp -d)"
         mkdir -p "${JIRA_TMP}/source"
         cp "${SANDBOX_DIR}/jira-context.md" "${JIRA_TMP}/source/jira-context.md"
+        if [[ -f "${SANDBOX_DIR}/jira-comments.md" ]]; then
+            cp "${SANDBOX_DIR}/jira-comments.md" "${JIRA_TMP}/source/jira-comments.md"
+        fi
         run openshell sandbox upload "$OS_NAME" "${GW_FLAG[@]}" \
             "${JIRA_TMP}/source" /sandbox
         rm -rf "$JIRA_TMP"
@@ -3435,6 +3449,9 @@ if [[ -f "${SANDBOX_DIR}/jira-context.md" ]]; then
     JIRA_TMP="$(mktemp -d)"
     mkdir -p "${JIRA_TMP}/source"
     cp "${SANDBOX_DIR}/jira-context.md" "${JIRA_TMP}/source/jira-context.md"
+    if [[ -f "${SANDBOX_DIR}/jira-comments.md" ]]; then
+        cp "${SANDBOX_DIR}/jira-comments.md" "${JIRA_TMP}/source/jira-comments.md"
+    fi
     run openshell sandbox upload "$SANDBOX_TARGET" "${GW_FLAG[@]}" \
         "${JIRA_TMP}/source" /sandbox
     rm -rf "$JIRA_TMP"
