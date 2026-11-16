@@ -39,7 +39,8 @@ check() {
 }
 
 FAKE_HOME="${TMP}/home"
-mkdir -p "${FAKE_HOME}/.config/opencode" "${FAKE_HOME}/.local/share/opencode"
+mkdir -p "${FAKE_HOME}/.config/opencode" "${FAKE_HOME}/.local/share/opencode" \
+    "${FAKE_HOME}/.local/state/opencode"
 cat > "${FAKE_HOME}/.config/opencode/opencode.json" <<JSON
 {
   "model": "provider/model-a",
@@ -52,9 +53,32 @@ cat > "${FAKE_HOME}/.config/opencode/opencode.json" <<JSON
 JSON
 cp "${FAKE_HOME}/.config/opencode/opencode.json" "${TMP}/host-config-before"
 
+# Theme and keybinds come from cli.json, in the config directory but not in
+# opencode.json. A host path here proves the rewrite reaches it too.
+cat > "${FAKE_HOME}/.config/opencode/cli.json" <<JSON
+{
+  "\$schema": "https://opencode.ai/v2/cli.json",
+  "theme": { "mode": "system", "name": "synthwave84" },
+  "keybinds": { "editor": "${FAKE_HOME}/bin/editor" }
+}
+JSON
+cp "${FAKE_HOME}/.config/opencode/cli.json" "${TMP}/host-cli-before"
+
+# The selected model lives in the state directory, not the config one. This is
+# the file whose absence started every sandbox on the default model.
+cat > "${FAKE_HOME}/.local/state/opencode/model.json" <<JSON
+{
+  "recent": [{ "providerID": "enmaas", "modelID": "vendor/model-b" }],
+  "favorite": [],
+  "variant": { "enmaas/vendor/model-b": "high" }
+}
+JSON
+cp "${FAKE_HOME}/.local/state/opencode/model.json" "${TMP}/host-model-before"
+
 STAGE="${TMP}/stage"
 HOME="$FAKE_HOME" XDG_CONFIG_HOME="${FAKE_HOME}/.config" \
     XDG_DATA_HOME="${FAKE_HOME}/.local/share" \
+    XDG_STATE_HOME="${FAKE_HOME}/.local/state" \
     stage_opencode_config "$STAGE" \
     || { echo "FAIL: staging reported nothing shipped" >&2; fail=1; }
 
@@ -76,6 +100,75 @@ cmp -s "$CONFIG" "${FAKE_HOME}/.config/opencode/opencode.json" \
     && { echo "FAIL: staged config is the host file unchanged (jq never ran?)" >&2; fail=1; }
 cmp -s "${TMP}/host-config-before" "${FAKE_HOME}/.config/opencode/opencode.json" \
     || { echo "FAIL: staging modified the host's opencode.json" >&2; fail=1; }
+
+present() { if [[ ! -f "$1" ]]; then echo "FAIL: expected $1" >&2; fail=1; fi; }
+absent() { if [[ -e "$1" ]]; then echo "FAIL: unexpected $1" >&2; fail=1; fi; }
+
+# Theme and keybinds travel, from the config directory.
+CLI="${STAGE}/.config/opencode/cli.json"
+present "$CLI"
+check "theme travels" "synthwave84" "$(jq -r '.theme.name' "$CLI")"
+check "cli home path rewritten" "/sandbox/bin/editor" "$(jq -r '.keybinds.editor' "$CLI")"
+cmp -s "${TMP}/host-cli-before" "${FAKE_HOME}/.config/opencode/cli.json" \
+    || { echo "FAIL: staging modified the host's cli.json" >&2; fail=1; }
+
+# The selected model travels, in the state tree the sandbox reads it from.
+MODEL="${STAGE}/.local/state/opencode/model.json"
+present "$MODEL"
+check "selected model travels" "vendor/model-b" "$(jq -r '.recent[0].modelID' "$MODEL")"
+check "model variant travels" "high" "$(jq -r '.variant["enmaas/vendor/model-b"]' "$MODEL")"
+cmp -s "${TMP}/host-model-before" "${FAKE_HOME}/.local/state/opencode/model.json" \
+    || { echo "FAIL: staging modified the host's model.json" >&2; fail=1; }
+
+# A pre-V2 host has no cli.json; its theme lives in the legacy pair, and the
+# sandbox's first launch migrates them. Both halves must arrive.
+LEGACY_HOME="${TMP}/legacy-home"
+mkdir -p "${LEGACY_HOME}/.config/opencode" "${LEGACY_HOME}/.local/state/opencode"
+echo '{"theme":{"name":"legacy"}}' > "${LEGACY_HOME}/.config/opencode/tui.json"
+echo '{"editor":"vim"}' > "${LEGACY_HOME}/.local/state/opencode/kv.json"
+HOME="$LEGACY_HOME" XDG_CONFIG_HOME="${LEGACY_HOME}/.config" \
+    XDG_STATE_HOME="${LEGACY_HOME}/.local/state" \
+    stage_opencode_config "${TMP}/legacy-stage" \
+    || { echo "FAIL: legacy preferences were not shipped" >&2; fail=1; }
+present "${TMP}/legacy-stage/.config/opencode/tui.json"
+present "${TMP}/legacy-stage/.local/state/opencode/kv.json"
+check "legacy theme travels" "legacy" \
+    "$(jq -r '.theme.name' "${TMP}/legacy-stage/.config/opencode/tui.json")"
+
+# cli.json wins: shipping the legacy pair beside it would let the sandbox's
+# migration rewrite the newer file from the older ones.
+PREC_HOME="${TMP}/prec-home"
+mkdir -p "${PREC_HOME}/.config/opencode" "${PREC_HOME}/.local/state/opencode"
+echo '{"theme":{"name":"new"}}' > "${PREC_HOME}/.config/opencode/cli.json"
+echo '{"theme":{"name":"old"}}' > "${PREC_HOME}/.config/opencode/tui.json"
+echo '{"theme":{"name":"older"}}' > "${PREC_HOME}/.local/state/opencode/kv.json"
+HOME="$PREC_HOME" XDG_CONFIG_HOME="${PREC_HOME}/.config" \
+    XDG_STATE_HOME="${PREC_HOME}/.local/state" \
+    stage_opencode_config "${TMP}/prec-stage" \
+    || { echo "FAIL: staging reported nothing shipped" >&2; fail=1; }
+check "newer preference file wins" "new" \
+    "$(jq -r '.theme.name' "${TMP}/prec-stage/.config/opencode/cli.json")"
+absent "${TMP}/prec-stage/.config/opencode/tui.json"
+absent "${TMP}/prec-stage/.local/state/opencode/kv.json"
+
+# A broken preferences or model file is the same error as a broken config: the
+# sandbox must not launch on defaults believing it got the host's choices.
+for broken in cli.json model.json; do
+    BROKEN_PREFS_HOME="${TMP}/broken-prefs-${broken}"
+    mkdir -p "${BROKEN_PREFS_HOME}/.config/opencode" \
+        "${BROKEN_PREFS_HOME}/.local/state/opencode"
+    if [[ "$broken" == "cli.json" ]]; then
+        echo '{ not json' > "${BROKEN_PREFS_HOME}/.config/opencode/cli.json"
+    else
+        echo '{ not json' > "${BROKEN_PREFS_HOME}/.local/state/opencode/model.json"
+    fi
+    status=0
+    HOME="$BROKEN_PREFS_HOME" XDG_CONFIG_HOME="${BROKEN_PREFS_HOME}/.config" \
+        XDG_STATE_HOME="${BROKEN_PREFS_HOME}/.local/state" \
+        stage_opencode_config "${TMP}/broken-prefs-stage-${broken}" 2>/dev/null \
+        || status=$?
+    check "unparseable ${broken} is a distinct error" "2" "$status"
+done
 
 # Nothing on the host is not a success — the caller then uploads nothing
 # instead of an empty config that would replace a working one.

@@ -229,7 +229,10 @@ and `.profile` in the sandbox's `manifest.json`.
 ├── .env                    # Runtime env vars (generated at create time)
 ├── .claude/                # Uploaded from host (symlinks resolved)
 ├── .config/
-│   └── gcloud/             # Uploaded from host (Vertex AI creds)
+│   ├── gcloud/             # Uploaded from host (Vertex AI creds)
+│   └── opencode/           # Host config + theme; host boundaries dropped
+├── .local/
+│   └── state/opencode/     # Host's selected model (model.json)
 ├── bin/                    # User scripts (from repo bin/)
 └── source/                 # Cloned on host, uploaded at create time
     ├── CLAUDE.md           # System prompt (from config/sandbox-claude.md)
