@@ -543,8 +543,18 @@ is no default. `research` and `fetch-service` are policies only —
 25. **OpenCode uploads the host's live config, minus the boundaries, on
     `work` only.** The rest of the file travels because it is the only source
     for the host's model, provider, agents, and instructions choices; the
-    dropped keys are host boundaries that would be wrong in here. The
-    `harness-guards.js` plugin is not uploaded: it shells out to
+    dropped keys are host boundaries that would be wrong in here.
+    **The theme and the selected model are not in `opencode.json`**, which is
+    why a sandbox used to launch on the default theme and default model:
+    V2 keeps theme and keybinds in `<config>/cli.json` and the selected model,
+    its variants and its recents in `<state>/model.json`. Both are staged from
+    the same function and uploaded with the config, the model through a second
+    `.local` upload (gotcha 20 makes it a merge). Pre-V2 hosts have `tui.json`
+    plus `kv.json` instead, and those ship only when `cli.json` is absent — the
+    sandbox's own migration rewrites `cli.json` from them, so shipping both
+    would let the older file win. A preferences or model file that cannot be
+    parsed is exit 2 like the config, never "nothing to ship".
+    The `harness-guards.js` plugin is not uploaded: it shells out to
     `harness_guards`, a host pip dependency installed nowhere in the image, and
     fails closed when it cannot run. The `plugins` array is dropped with it
     because those entries fetch packages, and a scoped npm install cannot

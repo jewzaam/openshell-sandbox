@@ -1698,11 +1698,22 @@ seed_claude_json() {
 # none, so the caller uploads nothing, and 2 when the host has one that cannot
 # be parsed, so the caller fails instead of launching on defaults.
 #
+# Four files, from two XDG roots, because OpenCode splits them:
+#   <config>/opencode.json   model shape, providers, agents, instructions
+#   <config>/cli.json        theme and keybinds (V2)
+#   <state>/model.json       the selected model, its variants, and recents
+#   <config>/tui.json + <state>/kv.json   the same preferences before V2
+# Without the last three the sandbox launches on the default theme and the
+# default model, which looks like a fresh install rather than a copy of the
+# host. `cli.json` and the legacy pair are mutually exclusive: V2's migration
+# rewrites `cli.json` from `tui.json`/`kv.json` whenever they are present, so
+# shipping both would let the older file overwrite the newer one in there.
+#
 # The host's permissions, policies, and plugins are dropped: those encode host
 # boundaries, while the OpenShell policy is this container's. The plugin
 # directory is never copied for the same reason (see upload_config()).
 # Everything else travels because the live file is the only source for the
-# host's model, provider, agents, and instructions choices.
+# host's model, provider, theme, agents, and instructions choices.
 #
 # The filter drops only `permissions`, `policies`, and `plugins`, so it does not
 # redact inline secrets. Provider keys are expected from the environment: the
@@ -1714,20 +1725,82 @@ seed_claude_json() {
 # database, which the state functions preserve across --recreate.
 stage_opencode_config() {
     local destination_root="$1"
-    local config="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode/opencode.json"
-    local staged="${destination_root}/.config/opencode/opencode.json"
-    [[ -f "$config" ]] || return 1
-    mkdir -p "${destination_root}/.config/opencode"
-    # A JSONC config or a broken file is an error, not "nothing to ship": the
-    # caller must not quietly launch a sandbox on defaults.
-    if ! jq 'del(.permissions, .policies, .plugins)' "$config" \
-        | sed "s|${HOME}|/sandbox|g" > "${staged}.tmp"
-    then
-        rm -f "${staged}.tmp"
-        echo "Error: cannot parse ${config}; OpenCode config was not uploaded" >&2
-        return 2
+    local config_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
+    local state_dir="${XDG_STATE_HOME:-${HOME}/.local/state}/opencode"
+    local staged_config="${destination_root}/.config/opencode"
+    local staged_state="${destination_root}/.local/state/opencode"
+    local source staged name shipped=1
+
+    # Main config: filtered, because it carries the host boundaries.
+    source="${config_dir}/opencode.json"
+    staged="${staged_config}/opencode.json"
+    if [[ -f "$source" ]]; then
+        mkdir -p "$staged_config"
+        # A JSONC config or a broken file is an error, not "nothing to ship":
+        # the caller must not quietly launch a sandbox on defaults.
+        if ! jq 'del(.permissions, .policies, .plugins)' "$source" \
+            | sed "s|${HOME}|/sandbox|g" > "${staged}.tmp"
+        then
+            rm -f "${staged}.tmp"
+            echo "Error: cannot parse ${source}; OpenCode config was not uploaded" >&2
+            return 2
+        fi
+        mv "${staged}.tmp" "$staged"
+        shipped=0
     fi
-    mv "${staged}.tmp" "$staged"
+
+    # CLI preferences. A file OpenCode owns and rewrites, so it is copied
+    # rather than filtered; only the home path needs fixing.
+    if [[ -f "${config_dir}/cli.json" ]]; then
+        mkdir -p "$staged_config"
+        if ! jq . "${config_dir}/cli.json" \
+            | sed "s|${HOME}|/sandbox|g" > "${staged_config}/cli.json.tmp"
+        then
+            rm -f "${staged_config}/cli.json.tmp"
+            echo "Error: cannot parse ${config_dir}/cli.json; OpenCode config was not uploaded" >&2
+            return 2
+        fi
+        mv "${staged_config}/cli.json.tmp" "${staged_config}/cli.json"
+        shipped=0
+    else
+        # Pre-V2 hosts keep the theme in tui.json (config) and/or kv.json
+        # (state); the sandbox's first launch migrates them into cli.json.
+        for name in tui.json kv.json; do
+            case "$name" in
+                tui.json) source="${config_dir}/${name}"; staged="${staged_config}/${name}" ;;
+                *) source="${state_dir}/${name}"; staged="${staged_state}/${name}" ;;
+            esac
+            [[ -f "$source" ]] || continue
+            mkdir -p "$(dirname "$staged")"
+            if ! jq . "$source" \
+                | sed "s|${HOME}|/sandbox|g" > "${staged}.tmp"
+            then
+                rm -f "${staged}.tmp"
+                echo "Error: cannot parse ${source}; OpenCode config was not uploaded" >&2
+                return 2
+            fi
+            mv "${staged}.tmp" "$staged"
+            shipped=0
+        done
+    fi
+
+    # Selected model, its per-model variants, and the recents list. State, not
+    # config: the host's opencode.json usually carries no `model` key at all,
+    # which is why a sandbox without this file started on the default model.
+    source="${state_dir}/model.json"
+    staged="${staged_state}/model.json"
+    if [[ -f "$source" ]]; then
+        mkdir -p "$staged_state"
+        if ! jq . "$source" > "${staged}.tmp"; then
+            rm -f "${staged}.tmp"
+            echo "Error: cannot parse ${source}; OpenCode config was not uploaded" >&2
+            return 2
+        fi
+        mv "${staged}.tmp" "$staged"
+        shipped=0
+    fi
+
+    return "$shipped"
 }
 
 upload_config() {
@@ -1930,10 +2003,10 @@ upload_config() {
     # either; the config's `plugins` array would try to fetch packages, and
     # scoped npm installs cannot work in a sandbox (Containerfile).
     #
-    # Everything else travels, because the live file is the only source for the
-    # host's model, provider, agents, and instructions choices. AGENTS.md is
-    # NOT uploaded: harness-wrapper.sh symlinks the sandbox system prompt over
-    # it on every launch, exactly as it does for Codex.
+    # Everything else travels, because the live files are the only source for
+    # the host's model, provider, theme, agents, and instructions choices.
+    # AGENTS.md is NOT uploaded: harness-wrapper.sh symlinks the sandbox system
+    # prompt over it on every launch, exactly as it does for Codex.
     if ! personal_profile "$SANDBOX_PROFILE"; then
         OPENCODE_TMP="$(mktemp -d)"
         opencode_status=0
@@ -1945,6 +2018,14 @@ upload_config() {
         if (( opencode_status == 0 )); then
             run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
                 "${OPENCODE_TMP}/.config" /sandbox
+            # The theme lives under .config but the selected model does not:
+            # V2 keeps it in $XDG_STATE_HOME/opencode/model.json. Upload merges
+            # (gotcha 20), so this adds the state directory without touching
+            # the data directory beside it.
+            if [[ -d "${OPENCODE_TMP}/.local" ]]; then
+                run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+                    "${OPENCODE_TMP}/.local" /sandbox
+            fi
         fi
         rm -rf "$OPENCODE_TMP"
     fi
