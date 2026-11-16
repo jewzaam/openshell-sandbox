@@ -36,7 +36,6 @@ NETWORK="${FETCHSVC_NETWORK:-sandbox-net}"
 SUBNET="${FETCHSVC_SUBNET:-172.30.0.0/24}"
 IP="${FETCHSVC_IP:-172.30.0.21}"
 PORT="${FETCHSVC_PORT:-8090}"
-LOGDIR="${FETCHSVC_LOGDIR:-${SCRIPT_DIR}/.tmp-fetchsvc}"
 
 case "${1:-}" in
     build)
@@ -72,7 +71,6 @@ case "${1:-}" in
             echo "already exists — run '$0 down' first" >&2
             exit 1
         fi
-        mkdir -p "$LOGDIR"
         podman run -d --name "$NAME" \
             --network "${NETWORK}:ip=${IP}" \
             -p "127.0.0.1:${PORT}:${PORT}" \
@@ -128,7 +126,8 @@ case "${1:-}" in
         echo "(expect 200, 200, 403)"
         ;;
     *)
-        sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' \
+            "${BASH_SOURCE[0]}"
         exit 1
         ;;
 esac

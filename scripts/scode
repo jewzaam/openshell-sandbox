@@ -20,11 +20,11 @@ if [[ " $* " == *" --help "* ]] || [[ " $* " == *" -h "* ]]; then
     cat << 'EOF'
 Usage: scode [OPTIONS] [JIRA_URL | GITHUB_URL... | SANDBOX_DIR | --name NAME | SOURCE_PATH [REF|LABEL]]
 
-Open a directory in VS Code backed by an OpenShell sandbox running Claude.
+Open a directory in VS Code backed by an OpenShell sandbox running an agent.
 
 Options:
-  --harness NAME   Agent to launch: claude or codex. Optional; remembered in
-                   manifest.json and reused on later connects.
+  --harness NAME   Agent to launch: claude, codex, or opencode. Optional;
+                   remembered in manifest.json and reused on later connects.
   --profile NAME   Credential profile: work, personal, home, or codex. Required on
                    every invocation, including reopening an existing sandbox.
                    Passed to sandbox.sh.
@@ -61,9 +61,9 @@ EOF
 fi
 
 # scode's OWN lib.sh, not $SANDBOX_SH's. They are usually the same checkout,
-# but SANDBOX_SH defaults to a fixed absolute path — so `./scripts/scode` out
-# of a second checkout or a worktree used to run this script against the other
-# copy's library, and picked up whatever functions that one happened to have.
+# but SANDBOX_SH can name another checkout — and this script validates its
+# arguments before $SANDBOX_SH is ever invoked, so it loads the library from
+# its own directory rather than whichever copy the target would use.
 #
 # Sourced before arg parsing: the --harness case below calls valid_harness(),
 # defined in here.
@@ -76,8 +76,8 @@ POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --harness)
-            [[ $# -ge 2 ]] || { echo "Error: --harness requires claude or codex" >&2; exit 1; }
-            valid_harness "$2" || { echo "Error: unknown harness '$2' (valid: claude, codex)" >&2; exit 1; }
+            [[ $# -ge 2 ]] || { echo "Error: --harness requires claude, codex, or opencode" >&2; exit 1; }
+            valid_harness "$2" || { echo "Error: unknown harness '$2' (valid: claude, codex, opencode)" >&2; exit 1; }
             SCODE_HARNESS="$2"
             shift 2
             ;;

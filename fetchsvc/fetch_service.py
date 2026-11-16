@@ -10,7 +10,8 @@
 #
 #     GET /fetch?url=https%3A%2F%2Fexample.com%2Fpage
 #
-# The sandbox's policy names one host:port — this service — and nothing else.
+# The sandbox's policy names this service alongside the profile's other
+# endpoints; it is the only entry that can reach arbitrary public hosts.
 #
 # This process runs on the host with unrestricted network access, so the URL it
 # is handed is attacker-controlled input from the sandbox's point of view.
@@ -107,7 +108,7 @@ class Handler(BaseHTTPRequestHandler):
         sys.stdout.write("%s - %s\n" % (self.address_string(), fmt % args))
         sys.stdout.flush()
 
-    def _respond(self, status, body, content_type="text/plain; charset=utf-8"):
+    def _respond(self, status, body, *, content_type="text/plain; charset=utf-8"):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -141,8 +142,9 @@ class Handler(BaseHTTPRequestHandler):
 
         self.log_message('FETCH "%s" -> %s %s %d bytes',
                          target, final_url, status, len(body))
-        self._respond(status, body,
-                      headers.get("Content-Type", "application/octet-stream"))
+        self._respond(
+            status, body,
+            content_type=headers.get("Content-Type", "application/octet-stream"))
 
     def _reject_method(self):
         self._respond(405, b"GET only\n")
@@ -181,6 +183,10 @@ def selfcheck():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    # 0.0.0.0 is the address inside the container's network namespace, not a
+    # host-exposed socket: fetchsvc.sh publishes the port on the host as
+    # 127.0.0.1 only, and other containers on the dedicated Podman network
+    # must be able to reach this one.
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument("--selfcheck", action="store_true")

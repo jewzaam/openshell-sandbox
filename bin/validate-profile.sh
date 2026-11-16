@@ -51,8 +51,8 @@ PROFILE="${SANDBOX_PROFILE:-work}"
 # so the two are one case here.
 personal_profile() { [[ "$PROFILE" == personal || "$PROFILE" == home ]]; }
 
-# Profiles that may reach OpenAI. Only work, which is the only profile that
-# runs Codex. Kept as a named predicate because it answers a different question
+# Profiles that may reach OpenAI. Only work, which runs both Codex and OpenCode.
+# Kept as a named predicate because it answers a different question
 # from personal_profile(): which API this sandbox is supposed to reach, not
 # which credentials it carries.
 openai_profile() { [[ "$PROFILE" == work ]]; }
@@ -213,8 +213,8 @@ if command -v curl &>/dev/null; then
     # Telemetry query endpoints are site-specific and arrive via /sandbox/.env.
     # A missing URL fails rather than skips: a skipped check reads the same as
     # a passing one, so an endpoint that is actually reachable would go unseen.
-    # The one axis where personal parts company with home and codex: those two
-    # may read the telemetry back, personal may only push it.
+    # The one axis where personal parts company with home: home may read the
+    # telemetry back, personal may only push it.
     [[ "$PROFILE" == "personal" ]] && query_expect="blocked" || query_expect="reachable"
     if isset SANDBOX_PROMETHEUS_URL; then
         actual=$(net_check "$SANDBOX_PROMETHEUS_URL")

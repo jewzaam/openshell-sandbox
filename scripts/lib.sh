@@ -313,20 +313,9 @@ repo_changed_since_upload() {
     echo "newer than ${last_upload}${tail}" >&2
 }
 
-format_open_prs() {
-    python3 "${_LIB_DIR}/format-open-prs.py" "$@"
-}
-
-# Fetch into a file rather than redirecting the whole retry loop: `>` truncates
-# per attempt, so a partial write from a failed attempt cannot end up prepended
-# to a good one.
-fetch_open_prs() {
-    local gh_repo="$1" dest="$2"
-    format_open_prs "$gh_repo" > "$dest"
-}
-
 # ---------------------------------------------------------------------------
-# PR checkout + per-repo context generation (pr-context.md + jira-context.md)
+# PR checkout + per-repo context generation (pr-context.md, jira-context.md,
+# pr-comments.md, jira-comments.md, open-prs.json)
 # ---------------------------------------------------------------------------
 
 # Retry budget for the ONE gh call worth waiting on: `gh pr checkout`, which
@@ -358,7 +347,7 @@ gh_retry() {
 #   0 — JSON on stdout
 #   2 — gh answered, and there is no such PR (final; do not retry, do not
 #       treat as an outage)
-#   1 — gh could not answer after retries; the caller knows nothing new
+#   1 — gh could not answer; the caller knows nothing new
 #
 # The split matters because `gh pr view` exits 1 for both, and the caller
 # deletes stale context files on "no PR". Conflating them means a 502 during
@@ -515,7 +504,7 @@ generate_repo_context() {
 
     if (( open_prs_age < OPEN_PRS_TTL_MINUTES )); then
         echo "${MARK_SKIP} PR list fetch skipped — open-prs.json is ${open_prs_age}m old (< ${OPEN_PRS_TTL_MINUTES}m)" >&2
-    elif fetch_open_prs "$gh_repo" "${open_prs}.tmp"; then
+    elif python3 "${_LIB_DIR}/format-open-prs.py" "$gh_repo" > "${open_prs}.tmp"; then
         # A repo with no open PRs gets `{"prs": []}`, not a missing file: the
         # absence of the file used to mean "none", "gh failed", and "not a
         # GitHub repo" all at once, and a session cannot tell those apart.
@@ -634,6 +623,17 @@ generate_repo_context() {
     local pr_inline_count=unavailable pr_inline
     local pr_inline_file="" pr_resolution_note=""
     local comments_json reviews_json inline_json
+    # Shared jq prelude for the three comment renderers below: the resolution
+    # flag and the diff-hunk block are identical in each, so they are defined
+    # once and prepended to every program.
+    local pr_comment_jq='
+def res_flag:
+  if .thread_resolved == true then " — resolved"
+  elif .thread_resolved == false then " — unresolved"
+  else "" end;
+def diff_block:
+  if ((.diff_hunk // "") | test("\\S"))
+  then "```diff\n\(.diff_hunk)\n```\n\n" else "" end;'
 
     echo "Fetching PR comments and reviews..." >&2
 
@@ -685,15 +685,10 @@ generate_repo_context() {
         # `-` lines are the original text, `+` the proposed, the rest context.
         # Without it a comment is text pinned to a line number with nothing to
         # read it against.
-        pr_inline=$(jq -r '
-            def res_flag:
-              if .thread_resolved == true then " — resolved"
-              elif .thread_resolved == false then " — unresolved"
-              else "" end;
+        pr_inline=$(jq -r "${pr_comment_jq}"'
             .[] |
             "### @\(.user.login // "unknown") — \(.path // "?"):\(.line // .original_line // "?") — \((.created_at // "")[0:16] | gsub("T"; " "))\(res_flag)\n\n"
-            + (if ((.diff_hunk // "") | test("\\S"))
-               then "```diff\n\(.diff_hunk)\n```\n\n" else "" end)
+            + diff_block
             + "\(.body // "")\n"' "$pr_inline_file")
     else
         pr_inline="_Unavailable: gh api repos/${gh_repo}/pulls/${pr_num}/comments failed._"$'\n\n'
@@ -710,11 +705,7 @@ generate_repo_context() {
         reviews_file=$(mktemp)
         printf '%s' "$reviews_json" > "$reviews_file"
 
-        pr_reviews=$(jq -r --slurpfile inline_rows "$pr_inline_file" '
-            def res_flag:
-              if .thread_resolved == true then " — resolved"
-              elif .thread_resolved == false then " — unresolved"
-              else "" end;
+        pr_reviews=$(jq -r --slurpfile inline_rows "$pr_inline_file" "${pr_comment_jq}"'
             .[] | . as $rev
             | ([$inline_rows[0][] | select(.pull_request_review_id == $rev.id)]) as $rows
             | "### @\($rev.user.login // "unknown") — \($rev.state // "") — \(($rev.submitted_at // "")[0:16] | gsub("T"; " "))\n\n"
@@ -723,8 +714,7 @@ generate_repo_context() {
                  else "" end)
               + ($rows | map(
                    "#### \(.path // "?"):\(.line // .original_line // "?")\(res_flag)\n\n"
-                   + (if ((.diff_hunk // "") | test("\\S"))
-                      then "```diff\n\(.diff_hunk)\n```\n\n" else "" end)
+                   + diff_block
                    + "\(.body // "")\n") | join("\n"))
         ' "$reviews_file")
 
@@ -736,16 +726,11 @@ generate_repo_context() {
             "$pr_inline_file")
         if (( pr_extra_count > 0 )); then
             pr_extra_heading="## Inline Comments Without a Review (${pr_extra_count})"
-            pr_extra=$(jq -r --slurpfile revs "$reviews_file" '
-                def res_flag:
-                  if .thread_resolved == true then " — resolved"
-                  elif .thread_resolved == false then " — unresolved"
-                  else "" end;
+            pr_extra=$(jq -r --slurpfile revs "$reviews_file" "${pr_comment_jq}"'
                 .[] | select(.pull_request_review_id as $id
                              | ($revs[0] | map(.id) | index($id)) == null)
                 | "### @\(.user.login // "unknown") — \(.path // "?"):\(.line // .original_line // "?") — \((.created_at // "")[0:16] | gsub("T"; " "))\(res_flag)\n\n"
-                  + (if ((.diff_hunk // "") | test("\\S"))
-                     then "```diff\n\(.diff_hunk)\n```\n\n" else "" end)
+                  + diff_block
                   + "\(.body // "")\n"' "$pr_inline_file")
         fi
         rm -f "$reviews_file"
@@ -970,9 +955,6 @@ openshell_name_claimed() {
 #
 # scode calls this before opening VS Code, and sandbox.sh before `openshell
 # sandbox create`, because the host prompt reads .profile out of this file.
-# Written only by the repo loop, it appears minutes late — after create, the
-# credential uploads, and the host clone — and until then every shell in that
-# directory shows no profile at all.
 init_manifest() {
     local sandbox_dir="$1" sandbox_name="$2" profile="${3:-}" harness="${4:-}"
     local manifest="${sandbox_dir}/manifest.json"
@@ -1078,7 +1060,7 @@ clear_manifest_pending() {
 }
 
 valid_harness() {
-    [[ "$1" == claude || "$1" == codex ]]
+    [[ "$1" == claude || "$1" == codex || "$1" == opencode ]]
 }
 
 # Warn and confirm if a personal/home profile is adding a private repo

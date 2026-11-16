@@ -17,4 +17,7 @@ EXPOSE 8090
 
 # Standard library only — no pip install, nothing to pin, nothing to audit.
 ENTRYPOINT ["python3", "/usr/local/bin/fetch_service.py"]
+# 0.0.0.0 is the container-network address, not a host-exposed socket:
+# fetchsvc.sh publishes this port on the host as 127.0.0.1 only, and other
+# containers on the dedicated Podman network must be able to reach this one.
 CMD ["--host", "0.0.0.0", "--port", "8090"]

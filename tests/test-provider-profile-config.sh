@@ -12,6 +12,8 @@ HELPERS="${TMP}/helpers.sh"
 sed -n '/^resolve_provider_profiles()/,/^}/p;/^stage_provider_profile_config()/,/^}/p;/^check_provider_profile_bindings()/,/^}/p;/^render_policy()/,/^}/p;/^codex_marketplace_data()/,/^}/p;/^render_codex_config()/,/^}/p' \
     "${REPO_ROOT}/scripts/sandbox.sh" > "$HELPERS"
 sed -n '/^provider_profiles_bound()/,/^}/p' "${REPO_ROOT}/scripts/sandbox.sh" >> "$HELPERS"
+# resolve_provider_profiles() calls valid_profile(), which lives in lib.sh.
+sed -n '/^valid_profile()/,/^}/p' "${REPO_ROOT}/scripts/lib.sh" >> "$HELPERS"
 # shellcheck disable=SC1090
 source "$HELPERS"
 SCRIPT_DIR="${REPO_ROOT}/scripts"

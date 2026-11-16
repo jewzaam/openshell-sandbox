@@ -70,7 +70,7 @@ resolve_provider_profiles() {
     PROVIDER_PROFILE_VARS=()
     PROVIDER_URLS=""
     PROVIDER_PROFILE_STAGE="$(mktemp -d)" || return 1
-    if [[ "$SANDBOX_PROFILE" == work || "$SANDBOX_PROFILE" == personal || "$SANDBOX_PROFILE" == home ]]
+    if valid_profile "$SANDBOX_PROFILE"
     then
         binding_var="PROVIDER_PROFILES_${SANDBOX_PROFILE^^}"
         profiles="${!binding_var:-}"
@@ -230,7 +230,7 @@ infer_sandbox_name() {
 
 usage() {
     cat >&2 <<EOF
-Usage: $(basename "$0") [OPTIONS] [-- CLAUDE_ARGS...]
+Usage: $(basename "$0") [OPTIONS]
 
 Create an OpenShell sandbox running Claude Code in auto mode.
 
@@ -262,7 +262,7 @@ OPTIONS:
     --recreate [NAME] Download, delete sandbox container, recreate with new image, re-upload repos
     --all             With --refresh/--recreate: apply to every sandbox in ~/sandboxes/
                       instead of one NAME. --recreate --all never connects.
-                      With --reap: delete every candidate without the picker.
+                      With --reap: delete every candidate without the picker or a confirmation.
     --reap            Pick sandboxes to delete in fzf, then confirm. Candidates are idle past
                       --older-than: a stopped or errored container with its
                       ~/sandboxes/<name>/, a ~/sandboxes/<name>/ with no
@@ -271,17 +271,17 @@ OPTIONS:
                       unpushed commits) on the host copy only.
     --older-than DAYS With --reap: idle threshold in days (default 30)
     --connect [NAME]  Reconnect to an existing sandbox
-    --harness NAME    Agent to launch: claude or codex. Recorded in
+    --harness NAME    Agent to launch: claude, codex, or opencode. Recorded in
                       manifest.json and reused by later --connect/--recreate.
                       Valid with --create, --connect and --recreate. Omitted,
                       the wrapper prompts with the remembered value; each
-                      harness has its own dtach socket, so both can be live in
-                      one sandbox.
+                      harness has its own dtach socket, so several can be live
+                      in one sandbox.
     --delete [NAME]   Delete a sandbox and local state
     --rename NEW      Rename the sandbox whose ~/sandboxes/<name>/ is the CWD:
-                      move the directory, then --recreate under NEW (asks
-                      first; a rename is a rebuild). With --no-connect, stop
-                      after the recreate.
+                      move the directory, then --refresh under NEW (asks
+                      first; the container keeps running). With --no-connect,
+                      stop after the refresh.
 
     NAME is optional for commands marked [NAME] when CWD is under ~/sandboxes/<name>/.
     --no-clone        Skip repo cloning (create sandbox with env + config only)
@@ -342,10 +342,6 @@ ensure_gws_creds() {
         GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$gws_dir" gws auth login --scopes "$GWS_SANDBOX_SCOPES"
     fi
 }
-
-# ---------------------------------------------------------------------------
-# Generate PR + Jira context for sandbox repos
-# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Connect to sandbox via exec
@@ -1385,7 +1381,7 @@ provider_profiles_bound() {
 # authorization therefore needs a new container, not a best-effort deletion.
 check_provider_profile_bindings() {
     local sandbox_dir="$1"
-    if [[ "$SANDBOX_PROFILE" != work && "$SANDBOX_PROFILE" != personal && "$SANDBOX_PROFILE" != home ]]
+    if ! valid_profile "$SANDBOX_PROFILE"
     then
         echo "Error: cannot publish Codex config without a sandbox profile" >&2
         return 1
@@ -1403,6 +1399,10 @@ check_provider_profile_bindings() {
 # that keep them elsewhere.
 codex_otel_source_dir() {
     local candidate="${CODEX_OTEL_SOURCE_DIR:-${HOME}/.codex}"
+    # A host without Codex hook files is still allowed to create a sandbox;
+    # native Codex metrics can operate without lifecycle hooks. Return a
+    # distinct status so callers can warn without confusing this with a stale
+    # installation.
     [[ -f "${candidate}/hooks.json" && -f "${candidate}/observe-hook.py" ]] || return 2
     if ! grep -q 'observed_timestamp' "${candidate}/observe-hook.py" \
        || ! grep -q 'OTEL_RESOURCE_ATTRIBUTES' "${candidate}/observe-hook.py"; then
@@ -1411,14 +1411,9 @@ codex_otel_source_dir() {
     fi
     printf '%s\n' "$candidate"
     return 0
-    # A host without Codex hook files is still allowed to create a sandbox;
-    # native Codex metrics can operate without lifecycle hooks. Return a
-    # distinct status so callers can warn without confusing this with a stale
-    # installation.
-    return 2
 }
 
-upload_codex_marketplaces() {
+upload_codex_config() {
     local sandbox_target="$1"
     local sandbox_dir="$2"
     local tmp
@@ -1444,13 +1439,27 @@ upload_codex_marketplaces() {
     rm -rf "$tmp"
 }
 
-download_codex_state() {
-    local sandbox_name="$1" sandbox_dir="$2"
-    local codex_dir="${sandbox_dir}/codex"
-    local dl_tmp
+# Download one agent's state directory and filter it into the host-side sandbox
+# directory, shared by the Codex and OpenCode pairs below. $3 is the host-side
+# subdirectory, $4 the sandbox path, $5 the staging directory under the temp
+# root, $6 the filter function, $7 a label for the status line. Any remaining
+# arguments are older-client layout candidates accepted after the download: a
+# leading slash means relative to the temp root, anything else relative to the
+# staging directory.
+download_agent_state() {
+    local sandbox_name="$1" sandbox_dir="$2" host_subdir="$3"
+    local remote_path="$4" stage_subdir="$5" filter_fn="$6" label="$7"
+    shift 7
+    local dest_dir="${sandbox_dir}/${host_subdir}"
+    local dl_tmp src candidate
+    # A dryrun download is a no-op, so filtering the empty staging tree would
+    # let opencode_state_filter delete the host's previously preserved
+    # databases: that filter removes the destination databases before deciding
+    # what to copy. Claude's copy-if-present path has no such hazard.
+    [[ "$DRYRUN" == true ]] && return 0
     dl_tmp="$(mktemp -d)"
 
-    if remote_path_exists "$sandbox_name" /sandbox/.codex; then
+    if remote_path_exists "$sandbox_name" "$remote_path"; then
         :
     elif [[ $? -eq 1 ]]; then
         rm -rf "$dl_tmp"
@@ -1462,49 +1471,121 @@ download_codex_state() {
     # OpenShell downloads a directory's contents into the destination; it does
     # not add the source directory basename. Use a named staging directory so
     # the expected layout is explicit and cannot collide with the temp root.
-    mkdir -p "${dl_tmp}/codex"
+    mkdir -p "${dl_tmp}/${stage_subdir}"
     transfer_quiet "" run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
-        "/sandbox/.codex" "${dl_tmp}/codex"
+        "$remote_path" "${dl_tmp}/${stage_subdir}"
 
-    local src="${dl_tmp}/codex"
+    src="${dl_tmp}/${stage_subdir}"
     # Accept both layouts for compatibility with older OpenShell clients that
     # placed the source basename below the destination.
-    [[ -d "${src}/.codex" ]] && src="${src}/.codex"
-    [[ -d "${dl_tmp}/.codex" ]] && src="${dl_tmp}/.codex"
+    for candidate in "$@"; do
+        if [[ "$candidate" == /* ]]; then
+            [[ -d "${dl_tmp}${candidate}" ]] && src="${dl_tmp}${candidate}"
+        else
+            [[ -d "${src}/${candidate}" ]] && src="${src}/${candidate}"
+        fi
+    done
     if [[ ! -d "$src" ]]; then
         rm -rf "$dl_tmp"
         return 0
     fi
 
     local kept=false
-    codex_state_filter "$src" "$codex_dir" && kept=true
+    "$filter_fn" "$src" "$dest_dir" && kept=true
 
     rm -rf "$dl_tmp"
     [[ "$kept" == true && "$DRYRUN" != true ]] \
-        && echo "    preserved Codex session state" >&2
+        && echo "    preserved ${label} session state" >&2
     return 0
+}
+
+download_codex_state() {
+    local sandbox_name="$1" sandbox_dir="$2"
+    download_agent_state "$sandbox_name" "$sandbox_dir" codex /sandbox/.codex \
+        codex codex_state_filter Codex .codex /.codex
+}
+
+# Upload a filtered state directory back into a rebuilt sandbox. $3 is the
+# host-side subdirectory, $4 the path under the upload stage, $5 the stage root
+# to upload, $6 a label for the status line.
+upload_agent_state() {
+    local sandbox_name="$1" sandbox_dir="$2" host_subdir="$3"
+    local stage_path="$4" upload_path="$5" label="$6"
+    local host_dir="${sandbox_dir}/${host_subdir}"
+    [[ -d "$host_dir" ]] || return 0
+
+    local stage
+    stage="$(mktemp -d)"
+    mkdir -p "${stage}/${stage_path}"
+    # Whatever download_agent_state() kept, verbatim. It already filtered.
+    if ! cp -r "${host_dir}/." "${stage}/${stage_path}/" 2>/dev/null \
+       || [[ -z "$(ls -A "${stage}/${stage_path}" 2>/dev/null)" ]]; then
+        rm -rf "$stage"
+        return 0
+    fi
+    echo "Restoring ${label} session state..." >&2
+    # Merges, so this cannot delete what upload_config() just placed (gotcha
+    # 20).
+    run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
+        "${stage}/${upload_path}" /sandbox
+    rm -rf "$stage"
 }
 
 upload_codex_state() {
     local sandbox_name="$1" sandbox_dir="$2"
-    local codex_dir="${sandbox_dir}/codex"
-    [[ -d "$codex_dir" ]] || return 0
+    upload_agent_state "$sandbox_name" "$sandbox_dir" codex .codex .codex Codex
+}
 
-    local stage
-    stage="$(mktemp -d)"
-    mkdir -p "${stage}/.codex"
-    # Whatever download_codex_state() kept, verbatim. It already filtered.
-    if ! cp -r "${codex_dir}/." "${stage}/.codex/" 2>/dev/null \
-       || [[ -z "$(ls -A "${stage}/.codex" 2>/dev/null)" ]]; then
-        rm -rf "$stage"
-        return 0
-    fi
-    echo "Restoring Codex session state..." >&2
-    # Merges, so this cannot delete the auth.json upload_config() just placed
-    # (gotcha 20).
-    run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
-        "${stage}/.codex" /sandbox
-    rm -rf "$stage"
+# OpenCode conversation history, preserved across --recreate the way the Codex
+# pair above preserves Codex's.
+#
+# OpenCode V2 keeps sessions in SQLite databases under its XDG data directory
+# ($XDG_DATA_HOME/opencode, /sandbox/.local/share/opencode here), so one
+# download of that directory and a host-side filter is the same shape as the
+# Codex download. The database name is not stable across releases
+# (`opencode.db`, `opencode-next.db`), so the filter takes every `*.db` rather
+# than a name. A database travels with its `-wal` and never with its `-shm`:
+# SQLite rebuilds the shared-memory index from the WAL and says not to move it
+# between machines.
+#
+# Everything else in that directory stays behind: log/, repos/, artifacts/,
+# snapshots and worktrees are per-container working data. `auth.json` is
+# dropped as well. V2 keeps `opencode auth login` credentials in the database,
+# but in `@opencode/cli-linux-x64@2.3.0` `~/.local/share/opencode/auth.json` is
+# also a live credential store for GitLab: a reader resolves GitLab API/OAuth
+# credentials from it and the refresh path writes tokens back. Dropping the
+# file therefore means an in-sandbox GitLab login does not survive
+# `--recreate`, while credentials and history stored in the database
+# deliberately travel with it. The host itself authenticates through an env
+# var named by its provider config.
+OPENCODE_DATA_PATH=/sandbox/.local/share/opencode
+
+opencode_state_filter() {
+    local src="$1" dst="$2" kept=1 item
+    mkdir -p "$dst"
+    # Replace, never merge: a WAL left from the previous download alongside a
+    # database that has since been checkpointed is exactly the pairing SQLite
+    # warns against.
+    rm -f "${dst}"/*.db "${dst}"/*.db-wal "${dst}/auth.json"
+    for item in "${src}"/*.db "${src}"/*.db-wal; do
+        [[ -f "$item" ]] || continue
+        cp "$item" "${dst}/"
+        kept=0
+    done
+    return $kept
+}
+
+download_opencode_state() {
+    local sandbox_name="$1" sandbox_dir="$2"
+    download_agent_state "$sandbox_name" "$sandbox_dir" opencode-data \
+        "$OPENCODE_DATA_PATH" opencode opencode_state_filter OpenCode \
+        .local/share/opencode opencode
+}
+
+upload_opencode_state() {
+    local sandbox_name="$1" sandbox_dir="$2"
+    upload_agent_state "$sandbox_name" "$sandbox_dir" opencode-data \
+        .local/share/opencode .local OpenCode
 }
 
 upload_claude_state() {
@@ -1610,6 +1691,43 @@ seed_claude_json() {
              mv /sandbox/.claude-seed.json "$f"
          fi'
     rm -rf "$stage"
+}
+
+# Stage the OpenCode config the sandbox should receive into a directory laid
+# out for `openshell sandbox upload <dir> /sandbox`. Returns 1 when the host has
+# none, so the caller uploads nothing, and 2 when the host has one that cannot
+# be parsed, so the caller fails instead of launching on defaults.
+#
+# The host's permissions, policies, and plugins are dropped: those encode host
+# boundaries, while the OpenShell policy is this container's. The plugin
+# directory is never copied for the same reason (see upload_config()).
+# Everything else travels because the live file is the only source for the
+# host's model, provider, agents, and instructions choices.
+#
+# The filter drops only `permissions`, `policies`, and `plugins`, so it does not
+# redact inline secrets. Provider keys are expected from the environment: the
+# host's provider config names an env var, and work's `.env` already carries the
+# captured keys. A credential kept inline in `opencode.json` would be copied
+# into the sandbox; extend the filter if that path needs closing. V2 keeps
+# `opencode auth login` credentials in the database instead, so the legacy
+# `auth.json` is not a path the host uses; an in-sandbox login lands in the
+# database, which the state functions preserve across --recreate.
+stage_opencode_config() {
+    local destination_root="$1"
+    local config="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode/opencode.json"
+    local staged="${destination_root}/.config/opencode/opencode.json"
+    [[ -f "$config" ]] || return 1
+    mkdir -p "${destination_root}/.config/opencode"
+    # A JSONC config or a broken file is an error, not "nothing to ship": the
+    # caller must not quietly launch a sandbox on defaults.
+    if ! jq 'del(.permissions, .policies, .plugins)' "$config" \
+        | sed "s|${HOME}|/sandbox|g" > "${staged}.tmp"
+    then
+        rm -f "${staged}.tmp"
+        echo "Error: cannot parse ${config}; OpenCode config was not uploaded" >&2
+        return 2
+    fi
+    mv "${staged}.tmp" "$staged"
 }
 
 upload_config() {
@@ -1751,16 +1869,13 @@ upload_config() {
         # bypassed on purpose. Same `# KEEP` rule as settings.json.
         CODEX_TMP="$(mktemp -d)"
         mkdir -p "${CODEX_TMP}/.codex"
-        codex_shipped=0
         codex_marketplace_data stage "${HOME}/.codex/config.toml" \
             "${CODEX_TMP}/.codex/.tmp/marketplaces"
-        codex_shipped=1
         if CODEX_OTEL_SOURCE="$(codex_otel_source_dir)"; then
             cp "${CODEX_OTEL_SOURCE}/hooks.json" "${CODEX_TMP}/.codex/hooks.json"
             python3 "${SCRIPT_DIR}/strip-settings.py" \
                 "${CODEX_TMP}/.codex/hooks.json" "${HOME}" "${SANDBOX_PROFILE}"
             cp "${CODEX_OTEL_SOURCE}/observe-hook.py" "${CODEX_TMP}/.codex/observe-hook.py"
-            codex_shipped=1
         else
             source_status=$?
             if (( source_status == 1 )); then
@@ -1775,7 +1890,6 @@ upload_config() {
         # friction, and work sandboxes already carry work credentials.
         if [[ -f "${HOME}/.codex/auth.json" ]]; then
             cp "${HOME}/.codex/auth.json" "${CODEX_TMP}/.codex/auth.json"
-            codex_shipped=1
         fi
 
         # config.toml: rendered, never the host's file. See gotcha 21 and
@@ -1783,7 +1897,6 @@ upload_config() {
         render_codex_config "${HOME}/.codex/config.toml" "$OTEL_URL" \
             > "${CODEX_TMP}/.codex/config.toml"
         stage_provider_profile_config "$CODEX_TMP"
-        codex_shipped=1
 
         # Resolve symlinks so links into a host checkout remain usable in the
         # sandbox instead of pointing back at an unavailable host path.
@@ -1795,15 +1908,45 @@ upload_config() {
                     --exclude=.git \
                     "${HOME}/.codex/${codex_dir}/" \
                     "${CODEX_TMP}/.codex/${codex_dir}/"
-                codex_shipped=1
             fi
         done
 
-        if (( codex_shipped )); then
-            run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
-                "${CODEX_TMP}/.codex" /sandbox
-        fi
+        run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+            "${CODEX_TMP}/.codex" /sandbox
         rm -rf "$CODEX_TMP"
+    fi
+
+    # OpenCode config, work profile only, matching the Codex block above. This
+    # is a profile decision, not a provider-reachability one: OpenCode is
+    # provider-agnostic, so what its config reaches depends on the host's own
+    # opencode.json rather than on a fixed host the profile blocks.
+    #
+    # The host's permissions, policies, and plugins are dropped on the way in.
+    # Those encode host boundaries — the guard plugin shells out to
+    # harness_guards, which is a host pip dependency installed nowhere in here,
+    # and fails closed when it cannot run. The OpenShell policy is this
+    # container's boundary, so an uploaded host boundary would only refuse
+    # actions the profile already permits. The plugin directory is not uploaded
+    # either; the config's `plugins` array would try to fetch packages, and
+    # scoped npm installs cannot work in a sandbox (Containerfile).
+    #
+    # Everything else travels, because the live file is the only source for the
+    # host's model, provider, agents, and instructions choices. AGENTS.md is
+    # NOT uploaded: harness-wrapper.sh symlinks the sandbox system prompt over
+    # it on every launch, exactly as it does for Codex.
+    if ! personal_profile "$SANDBOX_PROFILE"; then
+        OPENCODE_TMP="$(mktemp -d)"
+        opencode_status=0
+        stage_opencode_config "$OPENCODE_TMP" || opencode_status=$?
+        if (( opencode_status == 2 )); then
+            rm -rf "$OPENCODE_TMP"
+            return 1
+        fi
+        if (( opencode_status == 0 )); then
+            run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+                "${OPENCODE_TMP}/.config" /sandbox
+        fi
+        rm -rf "$OPENCODE_TMP"
     fi
 
     if personal_profile "$SANDBOX_PROFILE" && provider_profiles_bound
@@ -1830,10 +1973,6 @@ upload_config() {
 
     upload_static "$sandbox_target" "$sandbox_dir"
 }
-
-# ---------------------------------------------------------------------------
-# Resolve policy file from bare name or path
-# ---------------------------------------------------------------------------
 
 fetch_service_teardown() {
     # Stop the service first, then decide the policy: with the service down the
@@ -1912,6 +2051,25 @@ install_policy() {
     mv "$rendered" "${sandbox_dir}/openshell-policy.yaml"
 }
 
+# Upload the top-level jira-context.md (and jira-comments.md when present) for
+# a Jira-seeded sandbox, which has no repos to carry the files. Returns
+# non-zero when there is no jira-context.md to upload.
+upload_jira_context() {
+    local sandbox_target="$1" sandbox_dir="$2"
+    local jira_tmp
+    [[ -f "${sandbox_dir}/jira-context.md" ]] || return 1
+    echo "Uploading jira-context.md..." >&2
+    jira_tmp="$(mktemp -d)"
+    mkdir -p "${jira_tmp}/source"
+    cp "${sandbox_dir}/jira-context.md" "${jira_tmp}/source/jira-context.md"
+    if [[ -f "${sandbox_dir}/jira-comments.md" ]]; then
+        cp "${sandbox_dir}/jira-comments.md" "${jira_tmp}/source/jira-comments.md"
+    fi
+    run openshell sandbox upload "$sandbox_target" "${GW_FLAG[@]}" \
+        "${jira_tmp}/source" /sandbox
+    rm -rf "$jira_tmp"
+}
+
 upload_static() {
     # Everything in /sandbox/source that is host-owned and not a repo: the
     # system prompt, manifest.json (sandbox name, repo list), and
@@ -1985,6 +2143,10 @@ upload_static() {
             "${tmp}/source" /sandbox
     rm -rf "$tmp"
 }
+
+# ---------------------------------------------------------------------------
+# Resolve policy file from bare name or path
+# ---------------------------------------------------------------------------
 
 resolve_policy() {
     local input="$1"
@@ -2127,8 +2289,8 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --harness)
-            [[ $# -ge 2 ]] || { echo "Error: --harness requires claude or codex" >&2; exit 1; }
-            valid_harness "$2" || { echo "Error: unknown harness '$2' (valid: claude, codex)" >&2; exit 1; }
+            [[ $# -ge 2 ]] || { echo "Error: --harness requires claude, codex, or opencode" >&2; exit 1; }
+            valid_harness "$2" || { echo "Error: unknown harness '$2' (valid: claude, codex, opencode)" >&2; exit 1; }
             HARNESS="$2"; shift 2
             ;;
         --connect)
@@ -2838,6 +3000,7 @@ if [[ "$RECREATE_MODE" == true ]]; then
     "$0" --download "$SANDBOX_NAME" --force "${COMMON_ARGS[@]}"
     download_claude_state "$OS_NAME" "$SANDBOX_DIR"
     download_codex_state "$OS_NAME" "$SANDBOX_DIR"
+    download_opencode_state "$OS_NAME" "$SANDBOX_DIR"
 
     # 2. Delete remote sandbox only (preserve local dir)
     run openshell sandbox delete "$OS_NAME" "${GW_FLAG[@]}" || true
@@ -2903,7 +3066,7 @@ if [[ "$ENSURE_MODE" == true ]]; then
         if [[ -z "$SANDBOX_PROFILE" && -f "${SANDBOX_DIR}/manifest.json" ]]; then
             SANDBOX_PROFILE=$(jq -r '.profile // empty' "${SANDBOX_DIR}/manifest.json" 2>/dev/null || true)
         fi
-        upload_codex_marketplaces "$OS_NAME" "$SANDBOX_DIR"
+        upload_codex_config "$OS_NAME" "$SANDBOX_DIR"
         if [[ "$NO_CONNECT" == true ]]; then
             echo "Sandbox '${SANDBOX_NAME}' refreshed; not connecting (--no-connect used)." >&2
             exit 0
@@ -3281,16 +3444,7 @@ if [[ "$REFRESH_MODE" == true ]]; then
     fi
     # Upload top-level jira-context.md (Jira-seeded sandboxes, no repos)
     if [[ -f "${SANDBOX_DIR}/jira-context.md" ]]; then
-        echo "Uploading jira-context.md..." >&2
-        JIRA_TMP="$(mktemp -d)"
-        mkdir -p "${JIRA_TMP}/source"
-        cp "${SANDBOX_DIR}/jira-context.md" "${JIRA_TMP}/source/jira-context.md"
-        if [[ -f "${SANDBOX_DIR}/jira-comments.md" ]]; then
-            cp "${SANDBOX_DIR}/jira-comments.md" "${JIRA_TMP}/source/jira-comments.md"
-        fi
-        run openshell sandbox upload "$OS_NAME" "${GW_FLAG[@]}" \
-            "${JIRA_TMP}/source" /sandbox
-        rm -rf "$JIRA_TMP"
+        upload_jira_context "$OS_NAME" "$SANDBOX_DIR"
     fi
     [[ "$DRYRUN" == true ]] || clear_manifest_pending "$SANDBOX_DIR" refresh_pending
     echo "Done. Reconnect to apply (sandbox.sh --connect)" >&2
@@ -3396,6 +3550,7 @@ elif [[ -d "${SANDBOXES_DIR}/${SANDBOX_NAME}/codex" ]]
 then
     echo "    skipped Codex state restore: previous profile bindings differ or are unknown (host copy kept)" >&2
 fi
+upload_opencode_state "$SANDBOX_TARGET" "${SANDBOXES_DIR}/${SANDBOX_NAME}"
 
 # ---------------------------------------------------------------------------
 # Clone repos on host and upload to sandbox
@@ -3445,16 +3600,7 @@ fi
 # Upload jira-context.md if present (generated by scode for Jira-seeded sandboxes)
 SANDBOX_DIR="${SANDBOXES_DIR}/${SANDBOX_NAME}"
 if [[ -f "${SANDBOX_DIR}/jira-context.md" ]]; then
-    echo "Uploading jira-context.md..." >&2
-    JIRA_TMP="$(mktemp -d)"
-    mkdir -p "${JIRA_TMP}/source"
-    cp "${SANDBOX_DIR}/jira-context.md" "${JIRA_TMP}/source/jira-context.md"
-    if [[ -f "${SANDBOX_DIR}/jira-comments.md" ]]; then
-        cp "${SANDBOX_DIR}/jira-comments.md" "${JIRA_TMP}/source/jira-comments.md"
-    fi
-    run openshell sandbox upload "$SANDBOX_TARGET" "${GW_FLAG[@]}" \
-        "${JIRA_TMP}/source" /sandbox
-    rm -rf "$JIRA_TMP"
+    upload_jira_context "$SANDBOX_TARGET" "$SANDBOX_DIR"
     WORKDIR="/sandbox/source/"
 fi
 
