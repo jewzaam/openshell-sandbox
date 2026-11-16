@@ -323,7 +323,7 @@ EOF
 
 ensure_gws_creds() {
     command -v gws &>/dev/null || return 0
-    local gws_dir="${HOME}/.config/gws-sandbox"
+    local gws_dir="${HOME}/.config/gws/sandbox"
     if [[ -f "${gws_dir}/credentials.enc" ]]; then
         local valid
         valid=$(GOOGLE_WORKSPACE_CLI_CONFIG_DIR="$gws_dir" gws auth status 2>/dev/null | jq -r '.token_valid // false')
@@ -1715,7 +1715,7 @@ upload_config() {
 
     # Upload gws (Google Workspace CLI) readonly credentials (work profile only)
     if ! personal_profile "$SANDBOX_PROFILE"; then
-        GWS_SANDBOX_DIR="${HOME}/.config/gws-sandbox"
+        GWS_SANDBOX_DIR="${HOME}/.config/gws/sandbox"
         if [[ -d "$GWS_SANDBOX_DIR" ]]; then
             GWS_TMP="$(mktemp -d)"
             mkdir -p "${GWS_TMP}/.config"
