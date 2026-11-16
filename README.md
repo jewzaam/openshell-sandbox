@@ -1,7 +1,16 @@
 # openshell-sandbox
 
+[![Test](https://github.com/jewzaam/openshell-sandbox/actions/workflows/test.yml/badge.svg)](https://github.com/jewzaam/openshell-sandbox/actions/workflows/test.yml) [![Quality](https://github.com/jewzaam/openshell-sandbox/actions/workflows/quality.yml/badge.svg)](https://github.com/jewzaam/openshell-sandbox/actions/workflows/quality.yml)
+
 OpenShell sandbox configuration for running Claude Code in auto mode with full
 SDLC skill access. Podman-based, rootless.
+
+## Documentation
+
+- **[Environment variables](docs/environment-variables.md)** — how a variable reaches a sandbox process
+- **[Fetch service](docs/fetch-service.md)** — outbound fetch service for sessions inside a sandbox
+- **[Troubleshooting](docs/troubleshooting.md)** — known issues, triage steps, policy reference
+- **[Configuration model (draft)](docs/configuration-model.md)** — proposal only; not implemented
 
 ## Overview
 
@@ -9,15 +18,16 @@ SDLC skill access. Podman-based, rootless.
   Claude's permission system (`--dangerously-skip-permissions`)
 - Three profiles: **work** (Vertex AI + Jira), **personal** (Anthropic direct,
   telemetry push-only), **home** (personal plus Prometheus/Loki reads)
-- `--harness claude|codex` picks the agent. Claude is the default everywhere;
-  Codex runs on **work**, which carries OpenAI alongside Vertex. The profile
-  never picks the agent. Extra provider profiles (Codex-format,
-  also how Claude reaches `ANTHROPIC_BASE_URL`) must be explicitly bound to
-  sandbox profiles with `PROVIDER_PROFILES_WORK`, `PROVIDER_PROFILES_PERSONAL`,
-  or `PROVIDER_PROFILES_HOME` in gitignored `config/site.env`. Only each sandbox's
-  authorized provider definitions, profile configs, model catalogs, keys, and
-  endpoints are published. Unbound profiles never ship. Changed bindings require
-  recreation, and old Codex session state is not restored across that boundary.
+- `--harness claude|codex|opencode` picks the agent. Claude is the default
+  everywhere; Codex and OpenCode run on **work**, which carries OpenAI
+  alongside Vertex. The profile never picks the agent. Extra provider profiles
+  (Codex-format, also how Claude reaches `ANTHROPIC_BASE_URL`) must be
+  explicitly bound to sandbox profiles with `PROVIDER_PROFILES_WORK`,
+  `PROVIDER_PROFILES_PERSONAL`, or `PROVIDER_PROFILES_HOME` in gitignored
+  `config/site.env`. Only each sandbox's authorized provider definitions,
+  profile configs, model catalogs, keys, and endpoints are published. Unbound
+  profiles never ship. Changed bindings require recreation, and old Codex
+  session state is not restored across that boundary.
 - `--profile` is required on `scode` and on `sandbox.sh --create/--recreate`
 - Clones repos on host (SSH works), uploads to sandbox for private repo support
 - Uploads `~/.claude/` config with symlinks resolved (skills, plugins, settings)
@@ -31,12 +41,33 @@ cd openshell-sandbox
 make build
 ```
 
+### Site configuration
+
+`config/site.env` is per-machine and gitignored. Create it from the template
+and fill in the telemetry endpoints for this host:
+
+```bash
+cp config/site.env.example config/site.env
+```
+
+`OTEL_URL`, `PROMETHEUS_URL`, and `LOKI_URL` are all required — there are no
+defaults — and `sandbox.sh` refuses to run without them. The file is never
+created automatically: the template's values are one site's, and adopting them
+silently would point a sandbox at a collector that may not exist here. See the
+comments in `config/site.env.example` for the expected forms and the optional
+settings.
+
 ### Prerequisites
 
 1. Podman 5.x with rootless support and cgroups v2
 2. OpenShell CLI installed
 3. OpenShell gateway running: `openshell gateway start --driver podman`
 4. fzf, for the `--reap` picker (`--reap --all` runs without it)
+5. A `claude-otel-stack` checkout for `OTEL_STACK_BIN` (default
+   `~/source/claude-otel-stack/bin`); `make build` copies its `claude` and
+   `codex` shims
+6. The host managed-settings file for `MANAGED_SETTINGS_SRC` (default
+   `/etc/claude-code/managed-settings.json`); the work image bakes it in
 
 ## Usage
 
@@ -67,7 +98,7 @@ sandbox.sh --download myapp
 # Upload rebased code back into sandbox
 sandbox.sh --upload myapp --repo myapp
 
-# Reconnect to existing sandbox (launches Claude)
+# Reconnect to existing sandbox (launches the selected harness)
 sandbox.sh --connect myapp
 
 # List / delete
@@ -102,7 +133,7 @@ Common options below; `sandbox.sh --help` lists every one.
 | `--profile NAME` | `work`, `personal`, or `home`. Required with `--create` and `--recreate` |
 | `--policy FILE` | Override policy file (default: the profile's own) |
 | `--gateway NAME` | OpenShell gateway |
-| `--connect [NAME]` | Reconnect to existing sandbox (launches Claude) |
+| `--connect [NAME]` | Reconnect to existing sandbox (launches the selected harness) |
 | `--delete [NAME]` | Delete sandbox and local state |
 | `--rename NEW` | From inside `~/sandboxes/<name>/`: confirm, move the directory to `NEW`, then `--refresh` it and connect (`--no-connect` stops after the refresh). No recreate: the container keeps running under its `sb-<hash>`, and the old name is free to reuse, since new sandboxes get a random openshell name. OTEL `project`/`sandbox.source` change for sessions started after the rename. A failed refresh stays pending for the next connect (`tests/test-rename.sh`) |
 | `--reap` | Pick idle sandboxes to delete in fzf, then confirm. Offers a stopped container with its directory, a directory with no container, and an `sb-<hash>` container with no directory. Columns show dirty repos, stashes and unpushed commits in the host copy |
@@ -138,8 +169,8 @@ and bash terminals, then opens VS Code.
 
 | Profile | Auth | Network Access |
 |---------|------|----------------|
-| `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`) or a Claude provider via `ANTHROPIC_BASE_URL` (a private provider on this host), plus OpenAI for `--harness codex` (`/sandbox/.codex/auth.json`) and explicitly bound Codex providers | Google APIs, Jira, OpenAI, bound Codex providers, npm, PyPI, OTEL push, Prometheus + Loki reads |
-| `personal` | Anthropic direct (API key or OAuth) | Anthropic API, npm, PyPI, Debian, OTEL push only |
+| `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`) or a Claude provider via `ANTHROPIC_BASE_URL` (a private provider on this host), plus OpenAI for `--harness codex` (`/sandbox/.codex/auth.json`), OpenCode's host config with provider keys from `.env`, and explicitly bound Codex providers | Google APIs, Jira, OpenAI, bound Codex providers, npm, PyPI, Debian, Go modules, OTEL push, Prometheus + Loki reads |
+| `personal` | Anthropic direct (API key or OAuth) | Anthropic API, npm, PyPI, Debian, Go modules, OTEL push only |
 | `home` | Anthropic direct (API key or OAuth) | as `personal`, plus Prometheus + Loki reads |
 
 `personal` and `home` may also receive explicitly bound custom Codex providers.
@@ -158,24 +189,36 @@ and `.profile` in the sandbox's `manifest.json`.
 ```
 .
 ├── Containerfile           # Sandbox image
-├── Makefile                # build, clean
+├── Containerfile.work      # Work image, with managed-settings deny list baked in
+├── Makefile                # build, check/test, clean
 ├── bin/                    # Scripts copied to /sandbox/bin/ (on PATH)
 ├── config/
 │   ├── bashrc              # Base .bashrc (baked into image)
 │   ├── sandbox-claude.md   # System prompt, every profile
-│   └── sandbox-claude.d/   # Per-profile additions, appended to the above
+│   ├── sandbox-claude.d/   # Per-profile additions, appended to the above
+│   └── site.env.example    # Per-machine telemetry endpoints (copy to site.env)
+├── fetchsvc/
+│   ├── Containerfile       # Fetch-service image
+│   ├── fetch_service.py    # Outbound fetch service
+│   └── fetchsvc.sh         # Build/start/stop the container
 ├── policies/
 │   ├── work.yaml           # Vertex AI + Jira
 │   ├── personal.yaml       # Anthropic direct, telemetry push-only
-│   └── home.yaml           # personal + Prometheus/Loki reads
+│   ├── home.yaml           # personal + Prometheus/Loki reads
+│   ├── research.yaml       # research policy, used with --policy
+│   └── fetch-service.yaml  # personal + outbound fetch service
 ├── scripts/
 │   ├── sandbox.sh              # Create/manage sandboxes
 │   ├── scode                   # VS Code launcher for sandboxes
 │   ├── mint-sandbox-token.py   # Re-mint a single sandbox JWT
 │   ├── mint-sandbox-tokens.sh  # Re-mint all errored sandbox JWTs
 │   └── reset-rootless-netns.sh # Reset rootless podman networking
+├── tests/                  # Shell self-checks (make test-unit)
 └── docs/
-    └── troubleshooting.md  # Known issues and fixes
+    ├── configuration-model.md  # Draft proposal, not implemented
+    ├── environment-variables.md # How a variable reaches a sandbox process
+    ├── fetch-service.md      # Fetch service, for sessions inside a sandbox
+    └── troubleshooting.md    # Known issues and fixes
 ```
 
 ### Sandbox filesystem
@@ -244,18 +287,16 @@ scripts/reset-rootless-netns.sh
 
 ### 2. Re-mint sandbox JWTs
 
-Sandbox tokens expire after 1 hour (gateway-configured TTL). After a gateway
-restart, existing sandboxes have stale tokens.
+The gateway mints sandbox tokens with no expiry (`exp=0`), so new sandboxes
+need nothing after a reboot or gateway restart. Sandboxes created before that
+behavior may still hold a stale token; re-mint those.
 
 ```bash
 # All errored sandboxes (waits for gateway, then re-mints + restarts)
 scripts/mint-sandbox-tokens.sh
 
-# Single sandbox
-python3 scripts/mint-sandbox-token.py <sandbox-name>
-podman stop openshell-sandbox-<name> && podman start openshell-sandbox-<name>
+# Single sandbox — pass the openshell name (sb-<12 hex>), not the human
+# sandbox name. The script stops the container, replaces the token, and
+# starts it again.
+python3 scripts/mint-sandbox-token.py "$(jq -r .openshell_name ~/sandboxes/<name>/manifest.json)"
 ```
-
-## Documentation
-
-- **[Troubleshooting](docs/troubleshooting.md)** — known issues, triage steps, policy reference

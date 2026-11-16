@@ -12,10 +12,22 @@ SHELLCHECK ?= shellcheck
 MANAGED_SETTINGS_SRC ?= /etc/claude-code/managed-settings.json
 MANAGED_SETTINGS_STAGE = .tmp-managed-settings.json
 
-# scode has no extension; everything else is *.sh. config/bashrc and
-# bin/claude.env are sourced fragments, not scripts, and are left out.
+# scode has no extension; everything else is *.sh. config/bashrc is a
+# sourced fragment, not a script, and is left out.
 SHELL_SOURCES ?= $(wildcard bin/*.sh fetchsvc/*.sh scripts/*.sh scripts/explore/*.sh tests/*.sh) scripts/scode
 TEST_SCRIPTS ?= $(wildcard tests/test-*.sh)
+
+# The claude/codex PATH shims come from claude-otel-stack, the one source for
+# host and sandbox. Copied into the build context because COPY cannot reach
+# outside it; .tmp-* is gitignored. bin/claude's host telemetry block is skipped
+# when /sandbox/.env exists, so the sandbox keeps config/bashrc + /sandbox/.env.
+OTEL_STACK_BIN ?= $(HOME)/source/claude-otel-stack/bin
+WRAPPER_STAGE_DIR = .tmp-otel-stack-bin
+
+# Only warnings and errors gate. The info/style notes (SC2016 in test fixtures,
+# SC1091 for sourced files that are gitignored or resolved at runtime) are
+# noise here; run `make test-lint SHELLCHECK_SEVERITY=style` to see them.
+SHELLCHECK_SEVERITY ?= warning
 
 .PHONY: build build-fetcher build-force check clean help stage-managed-settings stage-wrappers test-lint test-unit
 
@@ -44,13 +56,6 @@ build-force: clean stage-wrappers stage-managed-settings  ## Rebuild the images 
 	$(CONTAINER_TOOL) build --no-cache -t $(WORK_IMAGE_REF) -f Containerfile.work \
 	    --build-arg BASE_IMAGE=$(IMAGE_REF) .
 
-# The claude/codex PATH shims come from claude-otel-stack, the one source for
-# host and sandbox. Copied into the build context because COPY cannot reach
-# outside it; .tmp-* is gitignored. bin/claude's host telemetry block is skipped
-# when /sandbox/.env exists, so the sandbox keeps config/bashrc + /sandbox/.env.
-OTEL_STACK_BIN ?= $(HOME)/source/claude-otel-stack/bin
-WRAPPER_STAGE_DIR = .tmp-otel-stack-bin
-
 stage-wrappers:  ## Copy claude/codex shims from OTEL_STACK_BIN into the build context
 	@test -x $(OTEL_STACK_BIN)/claude && test -x $(OTEL_STACK_BIN)/codex || { \
 	    echo "error: no executable claude and codex in $(OTEL_STACK_BIN) — set OTEL_STACK_BIN=<claude-otel-stack>/bin" >&2; \
@@ -71,11 +76,6 @@ stage-managed-settings:  ## Copy the host's managed settings into the build cont
 
 clean:  ## Remove built images
 	$(CONTAINER_TOOL) rmi $(IMAGE_REF) $(WORK_IMAGE_REF) 2>/dev/null || true
-
-# Only warnings and errors gate. The info/style notes (SC2016 in test fixtures,
-# SC1091 for sourced files that are gitignored or resolved at runtime) are
-# noise here; run `make test-lint SHELLCHECK_SEVERITY=style` to see them.
-SHELLCHECK_SEVERITY ?= warning
 
 test-lint:  ## Lint shell sources with shellcheck
 	@command -v $(SHELLCHECK) >/dev/null 2>&1 || { \

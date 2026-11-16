@@ -32,8 +32,10 @@ grep -q 'codex_state_filter' "$HELPERS" \
 # Directory downloads contain the source directory's contents directly in the
 # destination. Keep this assertion next to the filter test because a nested
 # destination assumption makes the real recreate path preserve nothing.
-grep -q '"/sandbox/.codex" "\${dl_tmp}/codex"' "$SANDBOX_SH" \
-    || { echo "FAIL: Codex download does not use an explicit content destination" >&2; exit 1; }
+grep -q '"\$remote_path" "\${dl_tmp}/\${stage_subdir}"' "$SANDBOX_SH" \
+    || { echo "FAIL: state download does not use an explicit content destination" >&2; exit 1; }
+grep -q 'codex /sandbox/\.codex' "$SANDBOX_SH" \
+    || { echo "FAIL: Codex download does not target /sandbox/.codex" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "$HELPERS"
 

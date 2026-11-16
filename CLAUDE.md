@@ -238,13 +238,14 @@ is no default. `research` and `fetch-service` are policies only —
     `tests/test-scode-naming.sh` needs `GIT_CONFIG_GLOBAL=/dev/null` for the
     same reason every other committing test does.
 
-19. **Codex runs on `work`, and there is no `codex` profile.** There was one —
-    `home.yaml` with `anthropic-api` swapped for `openai-api` — and it was
-    removed because it split "which agent" across two mechanisms. `--harness`
-    (gotcha 22) is now the only one. A profile decides which credentials leave
-    the host; the harness decides which agent spends them. Do not reintroduce a
-    profile per agent: `work` already carries `openai-api` alongside
-    `vertex-ai-inference` precisely so one sandbox runs both.
+19. **Codex and OpenCode run on `work`, and there is no `codex` or `opencode`
+    profile.** There was one — `home.yaml` with `anthropic-api` swapped for
+    `openai-api` — and it was removed because it split "which agent" across
+    two mechanisms. `--harness` (gotcha 22) is now the only one. A profile
+    decides which credentials leave the host; the harness decides which agent
+    spends them. Do not reintroduce a profile per agent: `work` already
+    carries `openai-api` alongside `vertex-ai-inference` precisely so one
+    sandbox runs all of them.
     Three things the Codex path deliberately does **not** do, all of which look
     like oversights:
     - **`auth.json` is uploaded but never preserved.** `upload_config()` ships
@@ -400,12 +401,12 @@ is no default. `research` and `fetch-service` are policies only —
       `tests/test-profile-required.sh` assert the membership for work, home
       and personal in both directions.
 
-22. **`--harness claude|codex` picks the agent, one dtach socket each.**
-    Valid with `--create`, `--connect` and `--recreate`, and on `scode`.
-    `connect_sandbox()` passes the harness to `/sandbox/bin/harness-wrapper.sh`
-    as `$1`; the wrapper derives `SOCKET=/sandbox/.dtach-${HARNESS}`, so Claude
-    and Codex can both be live in one sandbox and each `--connect` reattaches
-    to its own.
+22. **`--harness claude|codex|opencode` picks the agent, one dtach socket
+    each.** Valid with `--create`, `--connect` and `--recreate`, and on
+    `scode`. `connect_sandbox()` passes the harness to
+    `/sandbox/bin/harness-wrapper.sh` as `$1`; the wrapper derives
+    `SOCKET=/sandbox/.dtach-${HARNESS}`, so all three can be live in one
+    sandbox and each `--connect` reattaches to its own.
     - **`--connect` uploads `bin/` unconditionally.** `connect_sandbox()` execs
       the wrapper by absolute path, so a sandbox whose copy is older than the
       script either fails with a bare `No such file or directory` or ignores an
@@ -439,8 +440,8 @@ is no default. `research` and `fetch-service` are policies only —
     - **The profile is not an input to the default at all.** In precedence:
       exactly one live dtach socket (reattaching to the running session is the
       reason to ask at all), then `$HARNESS_DEFAULT`, then `HARNESS_FALLBACK`
-      (claude). Two live sockets is not a signal — both agents are up and
-      neither is the better guess. `work` used to answer "codex" as a third
+      (claude). More than one live socket is not a signal — several agents are
+      up and none is the better guess. `work` used to answer "codex" as a third
       branch; it was removed once Claude reached a provider from in here and
       the profile's own rule — it decides credentials and policy, not the
       agent (gotcha 19) — was the simpler description. A work sandbox with
@@ -465,10 +466,23 @@ is no default. `research` and `fetch-service` are policies only —
       hook to catch and only costs a prompt on the observe-hook that reports
       state to claude-dashboard. There is **no `--yolo`** in codex 0.152.0 —
       the long flags are the flags, and the test asserts it has not crept in.
+    - **OpenCode launches with `--auto`, no `--continue`.** `--auto` is its
+      documented "auto-approve permissions that are not explicitly denied"
+      flag: the OpenShell policy is the boundary, the same bargain as Claude's
+      `--dangerously-skip-permissions` and Codex's bypass. Explicit denies
+      still apply, which is why `upload_config()` drops the host's
+      `permissions` and `policies` on the way in — those encode host
+      boundaries, not this container's. `--continue` is deliberately absent:
+      its behavior with no resumable session in a fresh database is
+      unverified, and the TUI can resume without it.
     - **The `AGENTS.md` symlink is keyed on the harness, not the profile.**
-      There is no profile that means "Codex" (gotcha 19), so any profile test
-      here is the wrong question and leaves a work sandbox's Codex without the
-      system prompt.
+      There is no profile that means "Codex" or "OpenCode" (gotcha 19), so any
+      profile test here is the wrong question and leaves a work sandbox's agent
+      without the system prompt. Codex reads `$CODEX_HOME/AGENTS.md`; OpenCode
+      reads `<XDG_CONFIG_HOME>/opencode/AGENTS.md`, which is
+      `/sandbox/.config/opencode/AGENTS.md` here. OpenCode does not read
+      `CLAUDE.md` at any scope, so without the symlink it gets no sandbox
+      prompt at all.
 
 23. **Codex conversation history survives `--recreate`.**
     `download_codex_state()` / `upload_codex_state()` mirror the Claude pair.
@@ -525,6 +539,30 @@ is no default. `research` and `fetch-service` are policies only —
       Hence two rules in `git_ignored_excludes()`: tracked files always ship,
       and an ignored path that is a symlink still ships.
       `tests/test-refresh-staging.sh` carries both traps in its fixture.
+
+25. **OpenCode uploads the host's live config, minus the boundaries, on
+    `work` only.** The rest of the file travels because it is the only source
+    for the host's model, provider, agents, and instructions choices; the
+    dropped keys are host boundaries that would be wrong in here. The
+    `harness-guards.js` plugin is not uploaded: it shells out to
+    `harness_guards`, a host pip dependency installed nowhere in the image, and
+    fails closed when it cannot run. The `plugins` array is dropped with it
+    because those entries fetch packages, and a scoped npm install cannot
+    complete in a sandbox (Containerfile). `AGENTS.md` is not uploaded;
+    `harness-wrapper.sh` symlinks the sandbox system prompt over it.
+    **No credential file is uploaded, but the filter is narrow.** It drops the
+    host's permissions, policies, and plugins but does not redact inline
+    secrets, so one in the host's `opencode.json` would travel. Provider keys
+    are expected from the environment: the host's provider config names an env
+    var and work's `.env` already carries the captured key. Session
+    credentials and history stored in OpenCode's database survive `--recreate`
+    through `download_opencode_state()` / `upload_opencode_state()`. GitLab
+    `auth.json` does not: V2 keeps `opencode auth login` credentials in the
+    database, but `@opencode/cli-linux-x64@2.3.0` also reads and refreshes
+    GitLab credentials from `~/.local/share/opencode/auth.json`, and the state
+    filter drops that file, so an in-sandbox GitLab login is lost on recreate.
+    `tests/test-opencode-config.sh` covers the config filter;
+    `tests/test-opencode-state.sh` covers the state filter.
 
 ## Settled, do not re-evaluate
 

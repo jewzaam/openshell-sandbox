@@ -73,18 +73,19 @@ apply_advisor() {
 # manifest back — gotcha 6 — so a pick made at the prompt below applies to this
 # launch only; `--harness` changes the memory.
 HARNESS_DEFAULT="${HARNESS_DEFAULT:-}"
-valid_harness() { [[ "$1" == claude || "$1" == codex ]]; }
+valid_harness() { [[ "$1" == claude || "$1" == codex || "$1" == opencode ]]; }
 valid_harness "$HARNESS_DEFAULT" || HARNESS_DEFAULT=""
 
-# Used when the manifest has no harness recorded yet and the profile is not work.
+# Used when nothing is running and nothing is remembered, regardless of profile.
 HARNESS_FALLBACK=claude
 
 # What to offer when nothing was named on the command line. In precedence:
 #
 # 1. A live dtach socket. Reattaching to the session already running is the
 #    intent nearly every time, and it is the only signal here that reflects
-#    what this sandbox is doing right now. Two live sockets is not a signal —
-#    both agents are up and neither is the better guess — so it falls through.
+#    what this sandbox is doing right now. More than one live socket is not a
+#    signal — several agents are up and none is the better guess — so it falls
+#    through.
 # 2. Whatever was launched here last.
 # 3. HARNESS_FALLBACK.
 #
@@ -98,7 +99,7 @@ HARNESS_FALLBACK=claude
 # separately drifts from the chooser — it reports a value the chooser rejected.
 default_harness() {
     local live=() h
-    for h in claude codex; do
+    for h in claude codex opencode; do
         [[ -S "$(socket_for "$h")" ]] && live+=("$h")
     done
     if [[ ${#live[@]} -eq 1 ]]; then
@@ -110,8 +111,8 @@ default_harness() {
     fi
 }
 
-# $1 comes from `sandbox.sh --connect NAME <harness>`. Naming one is a decision
-# already made, so it skips the prompt outright.
+# $1 is the `--harness` value forwarded as argv by sandbox.sh. Naming one is a
+# decision already made, so it skips the prompt outright.
 HARNESS="${1:-}"
 if [[ -z "$HARNESS" ]]; then
     read -r default default_reason < <(default_harness)
@@ -123,24 +124,33 @@ if [[ -z "$HARNESS" ]]; then
     echo ""
 fi
 case "$HARNESS" in
-    claude|codex) ;;
-    *) echo "Unknown harness '${HARNESS}' (expected claude or codex)" >&2; exit 1 ;;
+    claude|codex|opencode) ;;
+    *) echo "Unknown harness '${HARNESS}' (expected claude, codex, or opencode)" >&2; exit 1 ;;
 esac
 
-# One socket per harness, so Claude and Codex can both be live in the same
-# sandbox and each --connect reattaches to its own. Claude keeps the original
-# path: a session running when this landed stays reachable.
+# One socket per harness, so several agents can be live in the same sandbox
+# and each --connect reattaches to its own. Claude keeps the original path: a
+# session running when this landed stays reachable.
 SOCKET="$(socket_for "$HARNESS")"
 
 # The system prompt upload_static() ships lands at /sandbox/source/CLAUDE.md,
-# which Codex does not read. $CODEX_HOME/AGENTS.md is loaded unconditionally,
-# whatever the cwd, so one symlink is the whole mechanism — nothing to add to
-# the upload, and no second copy to drift. Relinked on every launch because the
-# target is rewritten by every `sandbox.sh --refresh`. Keyed on the harness, not
-# the profile: any profile can run Codex now.
-if [[ "$HARNESS" == "codex" && -f /sandbox/source/CLAUDE.md ]]; then
-    mkdir -p /sandbox/.codex
-    ln -sfn /sandbox/source/CLAUDE.md /sandbox/.codex/AGENTS.md
+# which neither Codex nor OpenCode reads. Each harness's global AGENTS.md is
+# loaded unconditionally, whatever the cwd, so one symlink is the whole
+# mechanism — nothing to add to the upload, and no second copy to drift.
+# Relinked on every launch because the target is rewritten by every
+# `sandbox.sh --refresh`. Keyed on the harness, not the profile: any profile
+# can run any harness.
+if [[ -f /sandbox/source/CLAUDE.md ]]; then
+    case "$HARNESS" in
+        codex)
+            mkdir -p /sandbox/.codex
+            ln -sfn /sandbox/source/CLAUDE.md /sandbox/.codex/AGENTS.md
+            ;;
+        opencode)
+            mkdir -p /sandbox/.config/opencode
+            ln -sfn /sandbox/source/CLAUDE.md /sandbox/.config/opencode/AGENTS.md
+            ;;
+    esac
 fi
 
 # Default command reflects current state
@@ -161,6 +171,19 @@ elif [[ "$HARNESS" == "codex" ]]; then
     # are none, so branching on `-d /sandbox/.codex/sessions` bought nothing.
     # There is no --yolo in codex 0.152.0; the long flags are the flags.
     cmd="dtach -c $SOCKET /sandbox/bin/codex-error-wrapper.sh codex resume --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
+elif [[ "$HARNESS" == "opencode" ]]; then
+    # --auto is the documented long flag: "Auto-approve permissions that are
+    # not explicitly denied". The sandbox policy is the security boundary, so
+    # permission prompts are redundant confinement here, the same bargain as
+    # --dangerously-skip-permissions and Codex's bypass above. Explicit denies
+    # still apply; upload_config() drops the host's permission and policy
+    # fragments on the way in because those encode host boundaries, not this
+    # container's.
+    #
+    # No --continue: its behavior with no resumable session in a fresh database
+    # is unverified, so the default launch is left to the TUI, which can resume
+    # a session without the flag.
+    cmd="dtach -c $SOCKET opencode --auto"
 else
     claude_cmd="claude"
     # $SANDBOX_PROFILE comes from /sandbox/.env, written and uploaded on the

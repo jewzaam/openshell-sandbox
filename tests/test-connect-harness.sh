@@ -64,6 +64,7 @@ check() {
 check "--connect NAME forces nothing on its own" "" "$(wrapper_arg myapp)"
 check "--harness codex is forced, as argv" "codex" "$(wrapper_arg myapp --harness codex)"
 check "--harness claude is forced, as argv" "claude" "$(wrapper_arg myapp --harness claude)"
+check "--harness opencode is forced, as argv" "opencode" "$(wrapper_arg myapp --harness opencode)"
 
 # An explicit --harness is what writes the memory; the wrapper's prompt is not.
 HOME="$FAKE_HOME" bash "${WORK}/scripts/sandbox.sh" --connect myapp --harness codex --dryrun >/dev/null 2>&1
@@ -98,6 +99,12 @@ grep -q 'codex resume --dangerously-bypass-approvals-and-sandbox' "$W" \
     || { echo "FAIL: wrapper does not launch codex resume with the bypass flag" >&2; fail=1; }
 grep -q 'codex-error-wrapper.sh codex resume' "$W" \
     || { echo "FAIL: Codex errors are not captured outside dtach" >&2; fail=1; }
+grep -q 'dtach -c \$SOCKET opencode --auto' "$W" \
+    || { echo "FAIL: wrapper does not launch opencode with --auto" >&2; fail=1; }
+grep -q 'ln -sfn /sandbox/source/CLAUDE.md /sandbox/.config/opencode/AGENTS.md' "$W" \
+    || { echo "FAIL: OpenCode does not receive the sandbox system prompt as AGENTS.md" >&2; fail=1; }
+grep -q 'for h in claude codex opencode' "$W" \
+    || { echo "FAIL: wrapper does not consider every harness when picking a default" >&2; fail=1; }
 # There is no --yolo in codex 0.152.0; it is not an alias for the long flag.
 # Comments are stripped first — the wrapper says so in prose, which is not a use.
 grep -v '^[[:space:]]*#' "$W" | grep -q -- '--yolo' \
@@ -126,6 +133,30 @@ grep -q -- '--dangerously-bypass-hook-trust' "$W" \
     || { echo "FAIL: codex command is missing --dangerously-bypass-hook-trust" >&2; fail=1; }
 grep -q "refresh token was revoked' \"\$CODEX_ERROR_LOG\"" "$W" \
     || { echo "FAIL: failed Codex startup does not explain how to refresh auth" >&2; fail=1; }
+
+# The wrapper validates the remembered harness itself, because it runs inside
+# the sandbox where lib.sh is not sourced. That copy must accept every harness
+# the rest of the change adds, or a remembered OpenCode launch falls back to
+# Claude. Lift the predicate and drive it rather than matching its source text.
+# The predicate is a one-line function, so match that line exactly: a range to
+# the next column-0 `}` would also capture the `HARNESS_DEFAULT` reset below it,
+# and sourcing that under `set -u` with the variable unset fails in CI.
+VALID_HELPERS="${TMP}/valid-harness.sh"
+sed -n '/^valid_harness()/p' "$W" > "$VALID_HELPERS"
+grep -q 'valid_harness' "$VALID_HELPERS" \
+    || { echo "FAIL: could not lift valid_harness out of the wrapper" >&2; exit 1; }
+for h in claude codex opencode; do
+    # shellcheck disable=SC1090 # fixture written by the sed above
+    if ! ( source "$VALID_HELPERS"; valid_harness "$h" ); then
+        echo "FAIL: wrapper rejects harness '${h}'" >&2
+        fail=1
+    fi
+done
+# shellcheck disable=SC1090 # fixture written by the sed above
+if ( source "$VALID_HELPERS"; valid_harness bogus ); then
+    echo "FAIL: wrapper accepts harness 'bogus'" >&2
+    fail=1
+fi
 
 if CODEX_ERROR_LOG="${TMP}/codex-error.log" \
     "${REPO_ROOT}/bin/codex-error-wrapper.sh" bash -c 'echo "refresh token was revoked" >&2; exit 7' \
@@ -173,6 +204,8 @@ picks() {
 check "nothing remembered falls back" "claude default" "$(HARNESS_DEFAULT='' picks)"
 check "the remembered harness wins over the fallback" "codex remembered" \
     "$(HARNESS_DEFAULT=codex picks)"
+check "a remembered OpenCode wins too" "opencode remembered" \
+    "$(HARNESS_DEFAULT=opencode picks)"
 
 mksock claude
 check "a live socket beats the remembered harness" "claude session running" \
@@ -184,7 +217,11 @@ mksock codex
 check "two live sockets are not a signal, so the remembered harness decides" \
     "codex remembered" "$(HARNESS_DEFAULT=codex picks)"
 
-rm -f "${SOCKDIR}/.dtach-claude" "${SOCKDIR}/.dtach-codex"
+mksock opencode
+check "three live sockets are not a signal either" \
+    "codex remembered" "$(HARNESS_DEFAULT=codex picks)"
+
+rm -f "${SOCKDIR}/.dtach-claude" "${SOCKDIR}/.dtach-codex" "${SOCKDIR}/.dtach-opencode"
 
 # The profile is not an input to the default anymore: a work sandbox with
 # nothing remembered and nothing running offers the same fallback as any other.

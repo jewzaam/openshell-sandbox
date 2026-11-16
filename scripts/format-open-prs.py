@@ -23,13 +23,13 @@ JIRA_RE = re.compile(r"([a-zA-Z]+-\d+)")
 
 
 def is_bot(pr):
-    branch = pr.get("headRefName", "")
-    author = pr.get("author", {}).get("login", "")
+    branch = pr["headRefName"]
+    author = pr["author"]["login"]
     return bool(BOT_BRANCH_RE.match(branch) or BOT_AUTHOR_RE.search(author))
 
 
 def extract_refs(pr, all_numbers):
-    text = pr.get("title", "") + "\n" + (pr.get("body", "") or "")
+    text = pr["title"] + "\n" + (pr["body"] or "")
     pr_refs = {int(m) for m in PR_REF_RE.findall(text)} & all_numbers
     pr_refs.discard(pr["number"])
     jira_refs = {r.upper() for r in JIRA_RE.findall(text)}
@@ -74,15 +74,15 @@ def main():
 
     for p in sorted(human_prs, key=lambda x: x["number"]):
         pr_refs, jira_refs = extract_refs(p, all_numbers)
-        files = [f["path"] for f in p.get("files", []) if "path" in f]
-        labels = [l["name"] for l in p.get("labels", [])]
+        files = [f["path"] for f in p["files"] if "path" in f]
+        labels = [l["name"] for l in p["labels"]]
         entry = {
             "number": p["number"],
             "branch": p["headRefName"],
-            "base": p.get("baseRefName", ""),
+            "base": p["baseRefName"],
             "title": p["title"],
-            "body": p.get("body", ""),
-            "merge_state": p.get("mergeStateStatus", ""),
+            "body": p["body"],
+            "merge_state": p["mergeStateStatus"],
             "files": files,
         }
         if labels:
@@ -104,7 +104,7 @@ def main():
         output["bot_prs"].append({
             "number": p["number"],
             "title": p["title"],
-            "author": p.get("author", {}).get("login", "bot"),
+            "author": p["author"]["login"],
         })
 
     if not output["cross_refs"]:
