@@ -265,7 +265,7 @@ conditionally today, and both are segment-scoped under this model:
 
 | Host path | Sandbox path | Today's gate |
 |---|---|---|
-| `~/.config/gws-sandbox` | `/sandbox/.config/gws` | `profile != personal`, create + refresh (`sandbox.sh:594-606`) |
+| `~/.config/gws/sandbox` | `/sandbox/.config/gws` | `profile != personal`, create + refresh (`sandbox.sh:594-606`) |
 | `~/.config/gcloud` | `/sandbox/.config/gcloud` | `profile != personal`, create only (`sandbox.sh:1242-1245`) |
 
 Everything else uploaded is unconditional and belongs to no segment:
@@ -277,7 +277,7 @@ signing key, `bin/`, the system prompt, and the manifest
 `upload_claude_state`), never uploaded on a normal create.
 
 `~/.config/gcloud` belongs to `access: vertex`, not to a segment — it is
-what Vertex authentication itself requires. `~/.config/gws-sandbox` belongs
+what Vertex authentication itself requires. `~/.config/gws/sandbox` belongs
 to the `gws-full` segment.
 
 **`base` is always included and is not a segment.** `policies/base.yaml`
