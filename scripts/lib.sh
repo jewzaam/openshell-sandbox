@@ -241,6 +241,31 @@ record_repo_timestamp() {
         "$manifest" > "${manifest}.tmp" && mv "${manifest}.tmp" "$manifest"
 }
 
+# The moment host and sandbox were last known equal, per direction:
+# repo_last_upload() is the reference the upload delta is measured from, and
+# repo_sync_reference() is the LATEST of both stamps, which is what a download
+# compares against. A skipped upload deliberately does not stamp, so the latter
+# never advances past a divergence it never resolved.
+#
+# One definition each: the skip check, the delta staging, and the download tar
+# must all measure from the same moment, or one of them sends a file the other
+# thinks is already there.
+repo_last_upload() {
+    local sandbox_dir="$1" repo_name="$2"
+    [[ -f "${sandbox_dir}/manifest.json" ]] || return 0
+    jq -r --arg r "$repo_name" '.repos[$r].last_upload // empty' \
+        "${sandbox_dir}/manifest.json" 2>/dev/null || true
+}
+
+repo_sync_reference() {
+    local sandbox_dir="$1" repo_name="$2"
+    [[ -f "${sandbox_dir}/manifest.json" ]] || return 0
+    jq -r --arg r "$repo_name" \
+        '[.repos[$r].last_upload, .repos[$r].last_download]
+         | map(select(. != null)) | max // empty' \
+        "${sandbox_dir}/manifest.json" 2>/dev/null || true
+}
+
 # True when the repo has anything modified since its last upload — including
 # never having been uploaded, or a manifest that does not say.
 #
@@ -250,16 +275,12 @@ record_repo_timestamp() {
 #
 # ponytail: mtime only, like make and like rsync's default. A file edited and
 # restored to its original size and mtime is missed. Content hashing a 59M .git
-# costs more than the tar it saves.
+# costs more than the tar it saves. The delta upload shares the limitation:
+# --upload --force is the full-tree path.
 repo_changed_since_upload() {
     local sandbox_dir="$1" repo_name="$2"
-    local manifest="${sandbox_dir}/manifest.json"
-
-    local last_upload=""
-    if [[ -f "$manifest" ]]; then
-        last_upload=$(jq -r --arg r "$repo_name" '.repos[$r].last_upload // empty' \
-            "$manifest" 2>/dev/null || true)
-    fi
+    local last_upload
+    last_upload="$(repo_last_upload "$sandbox_dir" "$repo_name")"
     if [[ -z "$last_upload" ]]; then
         echo "has no last_upload recorded" >&2
         return 0

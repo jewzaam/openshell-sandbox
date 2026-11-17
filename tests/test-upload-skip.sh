@@ -3,9 +3,9 @@
 #
 # Rules under test:
 #   1. --upload does not re-upload a repo with nothing modified since
-#      .repos[<name>].last_upload. `openshell sandbox upload` is a full tar with
-#      no delta, so an unchanged reference repo otherwise re-sends its whole
-#      .git every time.
+#      .repos[<name>].last_upload. A changed repo sends only paths newer than
+#      that stamp (test-delta-transfer.sh), so an unchanged reference repo
+#      otherwise re-sends its whole .git every time.
 #   2. --upload --force ALWAYS sends, unchanged or not. It rm -rf's the sandbox
 #      copy first, so it is how edits a session made inside the sandbox get
 #      wiped back to host state. Skipping there would assume host and sandbox
