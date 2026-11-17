@@ -249,12 +249,13 @@ OPTIONS:
     --source-dir DIR  Derive origin URL from local repo checkout
     --add-repo [NAME] Add repo(s) to existing sandbox (use --repo for URL)
     --download [NAME] Download repos from sandbox to ~/sandboxes/<name>/.
-                      Default pulls only files changed in the sandbox; --force
-                      pulls the whole repo and mirrors deletions
+                      Default pulls only files changed in the sandbox and
+                      removes host files the sandbox no longer has; --force
+                      pulls the whole repo, including .git and .venv
     --upload [NAME]   Upload local repo changes back into sandbox. Default
-                      sends only files newer than the last transfer; --force
-                      sends the whole repo and removes sandbox-side files the
-                      host no longer has
+                      sends only files newer than the last transfer and
+                      removes sandbox files the host no longer has; --force
+                      sends the whole repo, including .git and .venv
     -f, --force       With --upload/--download: transfer every repo in full and
                       regenerate context, not only what changed
     --policy NAME     Policy name or path (e.g. research). Standalone: hot-swap on running sandbox
@@ -714,16 +715,72 @@ stage_repo_for_upload() {
 # is then the same expression the download side already runs on the same
 # stamp, with no path quoting between the two.
 #
-# Nothing here deletes. A path the host removed is still in the sandbox until
-# --upload --force, which is the full-tree path and the only one that mirrors
-# deletions. That is the deliberate cost of not shipping an inventory: the
-# sandbox cannot be read on the upload side without an exec and a metadata walk
-# of the whole tree, which is the expense this exists to avoid.
+# Nothing here deletes; that is sync_upload_deletions().
 stage_repo_delta_for_upload() {
     local src="$1" dest="$2" since="$3"
     mkdir -p "$dest"
     tar cf - --newer="$since" --exclude=.venv -C "$src" . \
         | tar xf - -C "$dest"
+}
+
+# Relative paths of files and symlinks, NUL-separated and sorted, for the
+# deletion diff. Directories are deliberately absent: an emptied directory is
+# removed by the parent walk on the receiving side, and a directory that only
+# one side has is not itself a deletion.
+#
+# `.git` and `.venv` are excluded in both directions. Git internals diverge
+# legitimately between host and sandbox (index, packed refs, logs), so a path
+# diff there would delete real state; `--force` remains how git storage is
+# mirrored. A `.venv` is built per side (gotcha 12), so the other side's is
+# never a deletion.
+repo_file_inventory() {
+    local root="$1"
+    # -print0 after a cd, not -printf '%P': the sandbox's find is bfs, and the
+    # two inventories must be produced by the same expression on both sides.
+    ( cd "$root" && find . \( -name .git -o -name .venv \) -prune -o \
+        \( -type f -o -type l \) -print0 2>/dev/null ) | LC_ALL=C sort -z
+}
+
+# Removes sandbox paths the host no longer has. The delta only writes, so
+# without this a host-side deletion never reaches the sandbox.
+#
+# The list travels as an uploaded file, not a pipe: `sandbox exec` buffers
+# stdin to EOF, so a streaming protocol cannot work (knowledgebase:
+# containers/openshell.md). One tiny upload plus one exec per changed repo.
+#
+# A failed exec is reported and the run continues: the upload that follows
+# will fail too if the gateway is down, and a missed deletion is recoverable
+# with --force. Silently stamping a repo whose deletions never applied is the
+# failure this warning exists to prevent.
+sync_upload_deletions() {
+    local sandbox_name="$1" sandbox_dir="$2" repo_name="$3" stage="$4"
+    local inv_dir="${stage}/.openshell-inv-${repo_name}"
+    local remote_inv="/sandbox/source/.openshell-inv-${repo_name}/inv"
+    mkdir -p "$inv_dir"
+    repo_file_inventory "${sandbox_dir}/${repo_name}" > "${inv_dir}/inv"
+    run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" --no-git-ignore \
+        "$inv_dir" /sandbox/source/
+    if ! run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+        -- bash -c '
+            set -e
+            cd "/sandbox/source/$1"
+            find . \( -name .git -o -name .venv \) -prune -o \
+                \( -type f -o -type l \) -print0 \
+                | LC_ALL=C sort -z > /tmp/openshell-remote-inv
+            comm -z -13 "$2" /tmp/openshell-remote-inv \
+                | while IFS= read -r -d "" p; do
+                    rm -f -- "$p"
+                    d=$(dirname -- "$p")
+                    while [[ "$d" != "." && "$d" != "/" ]]; do
+                        rmdir -- "$d" 2>/dev/null || break
+                        d=$(dirname -- "$d")
+                    done
+                done
+            rm -rf "$(dirname -- "$2")" /tmp/openshell-remote-inv
+        ' _ "$repo_name" "$remote_inv" >/dev/null 2>&1
+    then
+        echo "Warning: deletion check failed for ${repo_name}; host-deleted files may remain in the sandbox (--force mirrors)" >&2
+    fi
 }
 
 upload_repo() {
@@ -787,6 +844,11 @@ upload_repo() {
     if [[ -n "$delta_since" ]]; then
         stage_repo_delta_for_upload "${sandbox_dir}/${repo_name}" \
             "${stage}/${repo_name}" "$delta_since"
+        # Before the transfer: a path that flipped from directory to file is
+        # cleared here, so the extraction below has nothing to collide with.
+        # Runs even when the delta stages nothing, because a deletion-only
+        # change stages no visible entry (`ls -A` cannot see the root).
+        sync_upload_deletions "$sandbox_name" "$sandbox_dir" "$repo_name" "$stage"
     else
         stage_repo_for_upload "${sandbox_dir}/${repo_name}" "$stage"
     fi
@@ -1016,22 +1078,64 @@ download_sandbox() {
         if [[ "$FORCE_MODE" != true ]]; then
             since="$(repo_sync_reference "$sandbox_dir" "$repo_name")"
         fi
+        # The deletion inventory rides in the same archive as the delta, so a
+        # pull is still one transfer. It is a NUL-separated path list, sorted
+        # the same way the host's repo_file_inventory() sorts; the host diffs
+        # and removes what only it has. The exec folds the find into the tar
+        # call: exec stdin is buffered (knowledgebase: containers/openshell.md),
+        # so the list is written where tar can pick it up, not piped.
+        local remote_inv="openshell-inv-${repo_name}"
         local tar_args=(cf "$tarball" -C /sandbox/source --exclude=.venv)
-        [[ -z "$since" ]] || tar_args+=(--newer="$since")
-        tar_args+=("$repo_name")
-        run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
-            -- tar "${tar_args[@]}"
+        if [[ -n "$since" ]]; then
+            tar_args+=(--newer="$since" "$repo_name" "$remote_inv")
+            run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+                -- bash -c '
+                    set -e
+                    cd "/sandbox/source/$1"
+                    find . \( -name .git -o -name .venv \) -prune -o \
+                        \( -type f -o -type l \) -print0 \
+                        | LC_ALL=C sort -z > "/sandbox/source/$2"
+                    shift 2
+                    tar "$@"
+                ' _ "$repo_name" "$remote_inv" "${tar_args[@]}"
+        else
+            tar_args+=("$repo_name")
+            run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+                -- tar "${tar_args[@]}"
+        fi
         transfer_quiet "Download complete — ${repo_name}" \
             run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
                 "$tarball" "$dl_tmp"
         run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
-            -- rm -f "$tarball"
+            -- rm -f "$tarball" "/sandbox/source/${remote_inv}"
         # Members are ${repo_name}/..., so this lands where the rsync expects.
         run tar xf "${dl_tmp}/openshell-dl-${repo_name}.tar" -C "$dl_tmp"
         mkdir -p "${sandbox_dir}/${repo_name}"
         if [[ -n "$since" ]]; then
+            # Host paths absent from the sandbox inventory go. Without this a
+            # sandbox-side deletion never reaches the host, and the next upload
+            # would send the stale copy back.
+            if [[ "$DRYRUN" != true ]]; then
+                local host_inv="${dl_tmp}/openshell-host-inv"
+                repo_file_inventory "${sandbox_dir}/${repo_name}" > "$host_inv"
+                if [[ -f "${dl_tmp}/${remote_inv}" ]]; then
+                    while IFS= read -r -d '' p; do
+                        rm -f -- "${sandbox_dir}/${repo_name}/${p}"
+                        local d
+                        d=$(dirname -- "$p")
+                        while [[ "$d" != "." && "$d" != "/" ]]; do
+                            rmdir -- "${sandbox_dir}/${repo_name}/${d}" 2>/dev/null || break
+                            d=$(dirname -- "$d")
+                        done
+                    done < <(LC_ALL=C comm -z -23 "$host_inv" "${dl_tmp}/${remote_inv}")
+                else
+                    echo "Warning: no deletion inventory for ${repo_name}; sandbox-deleted files may remain on the host (--force mirrors)" >&2
+                fi
+                rm -f "$host_inv"
+            fi
             # The tarball holds only changed paths, so --delete would remove
-            # every host file it did not carry. Deletions are --force's job.
+            # every host file it did not carry; the inventory above is the
+            # only deletion source on this path.
             run rsync -a "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
         else
             # Content decides what gets written, not timestamps. tar does

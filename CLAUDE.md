@@ -173,13 +173,22 @@ is no default. `research` and `fetch-service` are policies only —
     (`repo_last_upload()` / `repo_sync_reference()` in lib.sh — the skip check
     and the transfer must measure from the same stamp). `tar --newer` at the
     source, not a file list: the bytes cross the wire only for changed paths,
-    and an ordinary edit to a 2GB repo no longer re-sends 2GB. `--force` is
-    still the full tree, and it is the **only** path that mirrors deletions —
-    a delta carries changed paths, so a host-deleted file stays in the sandbox
-    and a sandbox-deleted file stays on the host until `--force`. The
-    alternative was an inventory exec plus a full metadata walk of both trees
-    on every transfer, the expensive side of the trade this exists to fix. Both walks stay mtime-based; a file whose mtime
-    is older than the stamp is missed, and `--force` sends it.
+    and an ordinary edit to a 2GB repo no longer re-sends 2GB. Deletions ride
+    the same run: `repo_file_inventory()` lists relative paths of files and
+    symlinks (NUL, sorted), and the receiving side removes what only it has —
+    upload ships the host list as a file and runs `comm` in one exec; download
+    packs the sandbox list into the same delta tar and the host diffs on
+    arrival. Directories are absent from the inventory on purpose: an emptied
+    parent is `rmdir`'d during the same walk, which is what lets a path flip
+    between file and directory without `--force`. `.git` and `.venv` are
+    excluded in **both** directions: git internals diverge legitimately
+    (index, packed refs, logs) and a `.venv` is built per side (gotcha 12), so
+    neither is ever a deletion — `--force` is how git storage and the venv are
+    mirrored. The list travels as a file rather than an exec pipe because
+    `sandbox exec` buffers stdin to EOF (knowledgebase:
+    `containers/openshell.md`). `--force` is still the full tree. Both walks
+    stay mtime-based; a file whose mtime is older than the stamp is missed, and
+    `--force` sends it.
     `upload_repo()` rm -rf's the sandbox copy first on the full path, so
     `--upload --force` is how edits a session made *inside* the sandbox get
     wiped back to host state. The delta path must not pre-delete: the tree it
@@ -602,6 +611,17 @@ is no default. `research` and `fetch-service` are policies only —
   only, one socket per harness at `/sandbox/.dtach-<harness>`, requires
   `/dev/pts` in policy `read_write`. See
   `knowledgebase/containers/terminal-multiplexers-in-sandboxes.md`.
+- **rsync over `sandbox exec` was tested and rejected** as a delta transport —
+  `openshell sandbox exec` buffers stdin until EOF rather than streaming it, so
+  rsync's bidirectional protocol deadlocks in both directions. On push the file
+  list and changed bytes go out on the rsh stdin, and the remote command is not
+  launched until that stdin closes; on pull the local receiver holds stdin open
+  for the remote's checksums. Measured on a live sandbox: two bytes written 2s
+  apart arrived 1.2ms apart at the far end, and `rsync -avn -e <wrapper>`
+  hung past a 15s timeout. The documented 4MB stdin cap (policy gotcha 9) is
+  the same buffering. Transfers stay tar-based — `tar --newer` for the delta,
+  `--force` for the full mirror (gotcha 16). Do not build an rsync transport,
+  add an `-e` wrapper, or treat exec as a pipe for any protocol.
 - **`.claude.json` and `.credentials.json` are both required** to preserve
   OAuth across `--recreate`. See
   [knowledgebase: oauth-tokens](https://github.com/jewzaam/knowledgebase/blob/main/claude-code/oauth-tokens.md).
