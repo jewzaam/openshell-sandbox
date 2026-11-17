@@ -127,9 +127,9 @@ Common options below; `sandbox.sh --help` lists every one.
 | `--since DATE` | Clone only history newer than DATE, every repo in this run. Any `date -d` value (`-30days`, `-3months`, `2026-08-01`); `''` for full. Default: `SANDBOX_CLONE_SINCE` from `config/site.env` |
 | `--add-repo [NAME]` | Add repo(s) to existing sandbox |
 | `--jira KEY` | Fetch Jira issue into `~/sandboxes/<name>/jira-context.md` and its comments into `jira-comments.md`, from the sandbox directory (repeatable; key or browse URL). The keys given are the file; `--create`/`--refresh` upload both |
-| `--download [NAME]` | Download repos from sandbox to `~/sandboxes/<name>/` |
-| `-f, --force` | With `--upload`/`--download`: transfer every repo and regenerate context. Plain runs transfer only what changed |
-| `--upload [NAME]` | Upload local repo changes back into sandbox |
+| `--download [NAME]` | Download repos from sandbox to `~/sandboxes/<name>/`. Plain runs pull only files changed in the sandbox; `--force` pulls the whole repo and mirrors deletions |
+| `-f, --force` | With `--upload`/`--download`: transfer every repo in full and regenerate context. Plain runs transfer only what changed |
+| `--upload [NAME]` | Upload local repo changes back into sandbox. Plain runs send only files newer than the last transfer; `--force` sends the whole repo and removes sandbox-side files the host no longer has |
 | `--profile NAME` | `work`, `personal`, or `home`. Required with `--create` and `--recreate` |
 | `--policy FILE` | Override policy file (default: the profile's own) |
 | `--gateway NAME` | OpenShell gateway |

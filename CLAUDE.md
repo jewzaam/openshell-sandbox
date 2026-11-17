@@ -143,9 +143,12 @@ is no default. `research` and `fetch-service` are policies only —
     `~/.claude`. It keeps symlinks as symlinks (`-a`, not `-rL`), which is what
     uploading the directory did before it existed.
     `tests/test-upload-venv.sh` fails if the exclusion goes away.
-13. **`upload_repo()` pre-deletes the sandbox copy, except a top-level
-    `.venv`.** Without the delete, re-uploading a repo where a path flipped
-    between symlink and directory fails with tar `Cannot open: File exists`.
+13. **`upload_repo()` pre-deletes the sandbox copy on its full path only,
+    except a top-level `.venv`.** The delta path must not: the tree it sends is
+    partial, so an empty-then-extract would delete everything it did not carry
+    (gotcha 16). Without the delete on the full path, re-uploading a repo where
+    a path flipped between symlink and directory fails with tar
+    `Cannot open: File exists`.
     The venv is spared because it was built in here (gotcha 12 keeps the
     host's out) and the host has no copy to restore it from, so deleting it
     only forced a rebuild after every `--upload`, `--force` included. That
@@ -164,16 +167,31 @@ is no default. `research` and `fetch-service` are policies only —
     `--max-time`, not just `--connect-timeout`: the latter only bounds the hop
     to the L7 proxy, which always succeeds, so a stalled upstream hangs forever.
 16. **Skipping an unchanged repo is the default. `--force`/`-f` always sends.**
-    `upload_repo()` rm -rf's the sandbox copy before uploading, so
+    A repo that *does* need sending moves only the files that changed, in both
+    directions: upload stages paths newer than `last_upload`, download tars
+    paths newer than the latest of `last_upload`/`last_download`
+    (`repo_last_upload()` / `repo_sync_reference()` in lib.sh — the skip check
+    and the transfer must measure from the same stamp). `tar --newer` at the
+    source, not a file list: the bytes cross the wire only for changed paths,
+    and an ordinary edit to a 2GB repo no longer re-sends 2GB. `--force` is
+    still the full tree, and it is the **only** path that mirrors deletions —
+    a delta carries changed paths, so a host-deleted file stays in the sandbox
+    and a sandbox-deleted file stays on the host until `--force`. The
+    alternative was an inventory exec plus a full metadata walk of both trees
+    on every transfer, the expensive side of the trade this exists to fix. Both walks stay mtime-based; a file whose mtime
+    is older than the stamp is missed, and `--force` sends it.
+    `upload_repo()` rm -rf's the sandbox copy first on the full path, so
     `--upload --force` is how edits a session made *inside* the sandbox get
-    wiped back to host state. Skipping on "the host has not changed" assumes
+    wiped back to host state. The delta path must not pre-delete: the tree it
+    sends is partial, so an empty-then-extract would remove everything it did
+    not carry. Skipping on "the host has not changed" assumes
     host and sandbox agree — the one thing `--force` exists to fix, which is
     why `--recreate` passes it to both its `--download` and its `--upload`,
     and why `--create`/`--add-repo` set it internally (a freshly cloned repo
     has no context generated yet). The default takes the other bargain: no
     gh/Jira calls, and skip any repo untouched since
-    `.repos[<name>].last_upload`, because upload is a full tar with no delta
-    and the reference repos dominate the payload. That mtime walk must
+    `.repos[<name>].last_upload`, because even a delta upload regenerates
+    context and the reference repos dominate the payload. That mtime walk must
     keep excluding `.git`, `.git/index` and `.git/index.lock`: `git status`
     rewrites exactly those three and nothing else, so any editor or shell
     prompt polling status makes every repo look modified on every run. Same
@@ -184,8 +202,8 @@ is no default. `research` and `fetch-service` are policies only —
     branch switches detected. Relatedly, do not add
     write-only-if-changed logic to the context writers to keep repos "clean":
     the open-prs debounce reads `open-prs.json`'s mtime and would stop
-    advancing. `tests/test-upload-skip.sh` and `tests/test-open-prs.sh` fail if
-    either returns.
+    advancing. `tests/test-upload-skip.sh`, `tests/test-delta-transfer.sh`, and
+    `tests/test-open-prs.sh` fail if any of this returns.
     `--download` is the mirror image, and asymmetric on purpose.
     Nothing on the host can see the sandbox, so the walk runs there, over
     `openshell sandbox exec` — one exec for every repo, because the walk is
@@ -196,16 +214,18 @@ is no default. `research` and `fetch-service` are policies only —
     without it a dead gateway reads as "nothing changed". The fail-safe runs
     the other way from the upload side — a wrongly skipped upload costs one
     redundant tar, a wrongly skipped download loses whatever the session did.
-    `download_sandbox()` is the other half of the same rule: it rsyncs
-    `--no-times --checksum`, so a downloaded file the sandbox never changed
-    keeps its host mtime. `openshell sandbox download` does not preserve
-    mtimes, so a plain `rsync -a` rewrote every file and left the repo newer
-    than `last_upload` — and edit-in-sandbox, download, upload is the usual
-    pattern, so the upload had nothing left to skip. `--checksum` alone is not
-    enough: for matching content rsync still does an attribute-only mtime
-    update. Measured with rsync 3.4.1: `-a --delete` touches every path of an
-    identical tree, `-a --checksum --delete` touches every path,
-    `-a --no-times --checksum --delete` touches none.
+    `download_sandbox()` is the other half of the same rule: on the full path
+    it rsyncs `--no-times --checksum`, so a downloaded file the sandbox never
+    changed keeps its host mtime. `openshell sandbox download` does not
+    preserve mtimes, so a plain `rsync -a` rewrote every file and left the repo
+    newer than `last_upload` — and edit-in-sandbox, download, upload is the
+    usual pattern, so the upload had nothing left to skip. `--checksum` alone
+    is not enough: for matching content rsync still does an attribute-only
+    mtime update. Measured with rsync 3.4.1: `-a --delete` touches every path
+    of an identical tree, `-a --checksum --delete` touches every path,
+    `-a --no-times --checksum --delete` touches none. The delta extract runs a
+    plain `rsync -a` with no `--delete`, for the reason above: the tree it
+    reads is partial.
 17. **Profile name, policy filename, and system-prompt fragment are one
     word.** `--profile home` renders `policies/home.yaml` and appends
     `config/sandbox-claude.d/home.md` if it exists. Adding a profile means
@@ -517,10 +537,11 @@ is no default. `research` and `fetch-service` are policies only —
 
 24. **Gitignored files: repos keep them, config drops them.** Two opposite
     rules, and copying either onto the other path is the regression.
-    - **Repos (`--upload`, `--download`, context files on `--refresh`) move
-      everything but `.venv`.** A repo is a working copy: untracked build
-      output, local notes, and host-gitignored `pr-context.md`/`open-prs.json`
-      must round-trip. That is why every repo/context upload passes
+    - **Repos (`--upload --force`, `--download --force`, context files on
+      `--refresh`) move everything but `.venv`.** A repo is a working copy:
+      untracked build output, local notes, and host-gitignored
+      `pr-context.md`/`open-prs.json` must round-trip. The default
+      upload/download move only changed paths (gotcha 16), under the same rule. That is why every repo/context upload passes
       `--no-git-ignore` (without it openshell filters through
       `git ls-files --exclude-standard`), and why neither the staging rsync,
       the in-sandbox `tar`, nor the host rsync on download may learn a

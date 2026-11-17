@@ -248,9 +248,14 @@ OPTIONS:
                       \$SANDBOX_CLONE_SINCE from config/site.env, else full.
     --source-dir DIR  Derive origin URL from local repo checkout
     --add-repo [NAME] Add repo(s) to existing sandbox (use --repo for URL)
-    --download [NAME] Download repos from sandbox to ~/sandboxes/<name>/
-    --upload [NAME]   Upload local repo changes back into sandbox
-    -f, --force       With --upload/--download: transfer every repo and
+    --download [NAME] Download repos from sandbox to ~/sandboxes/<name>/.
+                      Default pulls only files changed in the sandbox; --force
+                      pulls the whole repo and mirrors deletions
+    --upload [NAME]   Upload local repo changes back into sandbox. Default
+                      sends only files newer than the last transfer; --force
+                      sends the whole repo and removes sandbox-side files the
+                      host no longer has
+    -f, --force       With --upload/--download: transfer every repo in full and
                       regenerate context, not only what changed
     --policy NAME     Policy name or path (e.g. research). Standalone: hot-swap on running sandbox
     --profile NAME    Credential profile: work, personal, home. Controls env vars, uploads,
@@ -704,6 +709,23 @@ stage_repo_for_upload() {
     rsync -a --exclude=.venv "$src" "${dest}/"
 }
 
+# The delta half of stage_repo_for_upload(): only paths newer than the stamp
+# the skip check used. A tar pipe rather than a find list, because the filter
+# is then the same expression the download side already runs on the same
+# stamp, with no path quoting between the two.
+#
+# Nothing here deletes. A path the host removed is still in the sandbox until
+# --upload --force, which is the full-tree path and the only one that mirrors
+# deletions. That is the deliberate cost of not shipping an inventory: the
+# sandbox cannot be read on the upload side without an exec and a metadata walk
+# of the whole tree, which is the expense this exists to avoid.
+stage_repo_delta_for_upload() {
+    local src="$1" dest="$2" since="$3"
+    mkdir -p "$dest"
+    tar cf - --newer="$since" --exclude=.venv -C "$src" . \
+        | tar xf - -C "$dest"
+}
+
 upload_repo() {
     local sandbox_name="$1" sandbox_dir="$2" repo_name="$3"
     if [[ -z "$repo_name" ]]; then
@@ -725,23 +747,30 @@ upload_repo() {
     fi
     # Default: skip the per-repo gh and Jira calls, and skip any repo the host
     # has not touched since its last upload. Fast, and trusts the sandbox copy.
+    # What does get sent is paths newer than that upload, not the whole tree:
+    # `openshell sandbox upload` is a full tar, and the reference repos are
+    # large enough that re-sending one for a three-line edit is the cost this
+    # avoids. Only the delta path ever stamps without an exec.
     #
     # --force is the opposite bargain: send even when the host copy has not
     # changed. upload_repo() rm -rf's the sandbox copy first, so --force is how
     # a session's edits inside the sandbox get wiped back to host state — the
     # default path assumes host and sandbox agree, which is the one thing
-    # --force cannot assume.
+    # --force cannot assume. It is also the path that mirrors deletions; the
+    # delta carries changed paths only and leaves a host-deleted file in the
+    # sandbox (stage_repo_delta_for_upload()).
     #
     # No caller announces the repo. They used to, before the decision was made,
     # so every skipped repo printed "uploading X..." directly above the line
     # saying it was not uploading X — and the four call sites had drifted to two
     # different indents. openshell announces a repo that really uploads; one that
     # does not is a single ⊘ line here.
-    local why=""
+    local why="" delta_since=""
     if [[ "$FORCE_MODE" == true ]]; then
         generate_repo_context "$sandbox_dir" "$repo_name" "${effective_profile:-${SANDBOX_PROFILE:-}}"
     elif why=$(repo_changed_since_upload "$sandbox_dir" "$repo_name" 2>&1); then
         : # held until the upload finishes, then hung off the ✓ line below
+        delta_since="$(repo_last_upload "$sandbox_dir" "$repo_name")"
     else
         echo "${MARK_SKIP} Upload skipped — ${repo_name} unchanged locally (--force to send)" >&2
         return 0
@@ -751,26 +780,47 @@ upload_repo() {
     # else — no exclude, no filter — and --no-git-ignore switches off the only
     # filtering it would otherwise have applied, so everything in the tree went
     # across. Stage a filtered copy first, the way upload_config() already does
-    # for ~/.claude.
+    # for ~/.claude. With a stamp, only the delta is staged; without one (first
+    # upload, --force) the whole tree.
     local stage
     stage="$(mktemp -d)"
-    stage_repo_for_upload "${sandbox_dir}/${repo_name}" "$stage"
+    if [[ -n "$delta_since" ]]; then
+        stage_repo_delta_for_upload "${sandbox_dir}/${repo_name}" \
+            "${stage}/${repo_name}" "$delta_since"
+    else
+        stage_repo_for_upload "${sandbox_dir}/${repo_name}" "$stage"
+    fi
 
-    # Pre-delete to avoid tar type conflicts (symlink vs dir) on re-upload —
-    # everything but the top-level .venv. The staging above never sends one, so
-    # the venv in there was built in here and the host has nothing to restore
-    # it from; deleting it only made every session rebuild it after an upload.
-    # The upload is a tar extract into the surviving dir (policy gotcha 20), so
-    # the venv sits beside the fresh tree. -mindepth 1 is what keeps the repo
-    # dir itself from matching `! -name .venv`.
-    # ponytail: top-level .venv only; a nested one is still deleted, and sparing
-    # its parent dir would bring back the symlink-vs-dir conflict.
-    # Both streams: the remote find's stderr comes back on exec's stdout, so
-    # 2>/dev/null alone let "No such file or directory" through on a first
-    # upload (--add-repo), when the dir does not exist yet.
-    run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
-        -- find "/sandbox/source/${repo_name}" -mindepth 1 -maxdepth 1 \
-            ! -name .venv -exec rm -rf {} + >/dev/null 2>&1 || true
+    # A host walk can trip on a path staging then drops — a .venv write is the
+    # common one — leaving an empty delta. Sending it would be a transfer of
+    # nothing; the stamp still moves, because nothing in the tree differs.
+    if [[ -n "$delta_since" && -z "$(ls -A "${stage}/${repo_name}" 2>/dev/null)" ]]; then
+        echo "${MARK_SKIP} Upload skipped — ${repo_name} has nothing newer to send" >&2
+        rm -rf "$stage"
+        [[ "$DRYRUN" == true ]] || record_repo_timestamp "$sandbox_dir" "$repo_name" last_upload
+        return 0
+    fi
+
+    if [[ -z "$delta_since" ]]; then
+        # Pre-delete to avoid tar type conflicts (symlink vs dir) on re-upload —
+        # everything but the top-level .venv. The staging above never sends one,
+        # so the venv in there was built in here and the host has nothing to
+        # restore it from; deleting it only made every session rebuild it after
+        # an upload. The upload is a tar extract into the surviving dir (policy
+        # gotcha 20), so the venv sits beside the fresh tree. -mindepth 1 is
+        # what keeps the repo dir itself from matching `! -name .venv`.
+        # ponytail: top-level .venv only; a nested one is still deleted, and
+        # sparing its parent dir would bring back the symlink-vs-dir conflict.
+        # Both streams: the remote find's stderr comes back on exec's stdout, so
+        # 2>/dev/null alone let "No such file or directory" through on a first
+        # upload (--add-repo), when the dir does not exist yet.
+        #
+        # The delta path must skip this: the tree it sends is partial, so an
+        # empty-then-extract would delete every file it did not carry.
+        run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+            -- find "/sandbox/source/${repo_name}" -mindepth 1 -maxdepth 1 \
+                ! -name .venv -exec rm -rf {} + >/dev/null 2>&1 || true
+    fi
     transfer_quiet "Upload complete — ${repo_name}${why:+ ${why}}" \
         run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
             --no-git-ignore \
@@ -830,17 +880,15 @@ sandbox_clean_repos() {
     # The reference is the LATEST of the two stamps: both mark a moment the two
     # copies agreed. A skipped upload deliberately does not stamp, so this
     # cannot advance past a divergence it never resolved.
-    while IFS=$'\t' read -r repo since; do
+    while IFS= read -r repo; do
+        since="$(repo_sync_reference "$sandbox_dir" "$repo")"
         if [[ -z "$since" ]]
         then
             [[ "$DEBUG" != true ]] || echo "Download reason: ${repo} has no previous transfer timestamp" >&2
             continue
         fi
         script+="check $(printf '%q' "$repo") $(printf '%q' "$since")"$'\n'
-    done < <(jq -r '.repos | to_entries[] |
-        [.key, ([.value.last_upload, .value.last_download]
-                | map(select(. != null)) | max // "")] | @tsv' \
-        "${sandbox_dir}/manifest.json")
+    done < <(jq -r '.repos | keys[]' "${sandbox_dir}/manifest.json")
     [[ -n "$script" ]] || return 0
 
     # Same three exclusions as the upload walk: `git status` rewrites exactly
@@ -961,8 +1009,18 @@ download_sandbox() {
         # will see it. The name is derived from the repo, so the next attempt
         # truncates it rather than accumulating.
         local tarball="/sandbox/source/openshell-dl-${repo_name}.tar"
+        # Delta by default: only paths newer than the moment host and sandbox
+        # last agreed, which both stamps record. --force is the full mirror.
+        # With no stamp (first pull, --force) the whole repo travels.
+        local since=""
+        if [[ "$FORCE_MODE" != true ]]; then
+            since="$(repo_sync_reference "$sandbox_dir" "$repo_name")"
+        fi
+        local tar_args=(cf "$tarball" -C /sandbox/source --exclude=.venv)
+        [[ -z "$since" ]] || tar_args+=(--newer="$since")
+        tar_args+=("$repo_name")
         run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
-            -- tar cf "$tarball" -C /sandbox/source --exclude=.venv "$repo_name"
+            -- tar "${tar_args[@]}"
         transfer_quiet "Download complete — ${repo_name}" \
             run openshell sandbox download "$sandbox_name" "${GW_FLAG[@]}" \
                 "$tarball" "$dl_tmp"
@@ -971,24 +1029,30 @@ download_sandbox() {
         # Members are ${repo_name}/..., so this lands where the rsync expects.
         run tar xf "${dl_tmp}/openshell-dl-${repo_name}.tar" -C "$dl_tmp"
         mkdir -p "${sandbox_dir}/${repo_name}"
-        # Content decides what gets written, not timestamps. tar does preserve
-        # mtimes, so the original hazard here is gone — but the flags stay,
-        # because what they actually protect is the host copy of a file the
-        # sandbox never touched, and that is unchanged. Before the tar,
-        # `openshell sandbox download` did not preserve mtimes, so under a
-        # plain `rsync -a` every downloaded file looked newer, rsync rewrote
-        # all of them, and the whole
-        # repo came out newer than .repos[<name>].last_upload — which made the
-        # next `--upload` re-send everything. Edit in the sandbox, download,
-        # upload is the usual pattern, so the upload skip had nothing left to
-        # skip. `--checksum` alone does not fix it: for a file whose content
-        # matches it still does an attribute-only mtime update. `--no-times`
-        # is what leaves the untransferred file alone; a file that really
-        # changed gets the current time, which is what the walk wants to see.
-        # Costs a full read of both trees, against a download that just moved
-        # the same bytes over the network.
-        run rsync -a --no-times --checksum --delete --exclude=.venv \
-            "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
+        if [[ -n "$since" ]]; then
+            # The tarball holds only changed paths, so --delete would remove
+            # every host file it did not carry. Deletions are --force's job.
+            run rsync -a "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
+        else
+            # Content decides what gets written, not timestamps. tar does
+            # preserve mtimes, so the original hazard here is gone — but the
+            # flags stay, because what they actually protect is the host copy
+            # of a file the sandbox never touched, and that is unchanged.
+            # Before the tar, `openshell sandbox download` did not preserve
+            # mtimes, so under a plain `rsync -a` every downloaded file looked
+            # newer, rsync rewrote all of them, and the whole repo came out
+            # newer than .repos[<name>].last_upload — which made
+            # the next `--upload` re-send everything. Edit in the sandbox,
+            # download, upload is the usual pattern, so the upload skip had
+            # nothing left to skip. `--checksum` alone does not fix it: for a
+            # file whose content matches it still does an attribute-only mtime
+            # update. `--no-times` is what leaves the untransferred file alone;
+            # a file that really changed gets the current time, which is what
+            # the walk wants to see. Costs a full read of both trees, against a
+            # download that just moved the same bytes over the network.
+            run rsync -a --no-times --checksum --delete --exclude=.venv \
+                "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
+        fi
         [[ "$DRYRUN" == true ]] || record_repo_timestamp "$sandbox_dir" "$repo_name" last_download
     done
     rm -rf "$dl_tmp"
