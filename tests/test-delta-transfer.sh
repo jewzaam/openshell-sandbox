@@ -3,14 +3,17 @@
 #
 # Rules under test:
 #   1. --upload sends only paths newer than .repos[<name>].last_upload, not the
-#      whole repo, so a sandbox-side edit to an unchanged file survives.
+#      whole repo, so a sandbox-side edit to a file the host did not touch
+#      survives the transfer.
 #   2. --download tars only paths newer than the latest stamp; the host copy of
-#      an untouched file is left alone.
-#   3. A delta never deletes: a host-deleted file stays in the sandbox and a
-#      sandbox-deleted file stays on the host.
-#   4. --force is the full mirror and is what applies those deletions.
-#   5. .venv is excluded from the delta tar in both directions, the same as the
-#      full tree.
+#      a file neither side touched is left alone.
+#   3. The inventory diff removes what only the receiving side has: a
+#      host-deleted file goes from the sandbox, a sandbox-deleted file goes
+#      from the host, and a sandbox-only file goes on upload (the same wipe the
+#      old pre-delete performed).
+#   4. `.git` and `.venv` are excluded from deletion in both directions; only
+#      --force mirrors them.
+#   5. --force remains the full-tree mirror.
 #
 # openshell is stubbed against a local directory playing /sandbox/source, so no
 # gateway is needed. The stub really extracts the staged tree on upload and
@@ -59,6 +62,9 @@ echo "openshell $*" >> "$CALL_LOG"
 map() {
     case "$1" in
         /sandbox/source|/sandbox/source/*) echo "${SANDBOX_FS}${1#/sandbox/source}" ;;
+        # The deletion scripts carry the path inside their own text as well as
+        # in argv, so substitute anywhere it appears, not only at the front.
+        *"/sandbox/source"*) echo "${1//\/sandbox\/source/$SANDBOX_FS}" ;;
         *) echo "$1" ;;
     esac
 }
@@ -72,8 +78,9 @@ case "$1 $2" in
         src="${pos[1]}"
         dest="$(map "${pos[2]}")"
         # Record what the delta actually carried, so a whole-tree upload cannot
-        # pass as a partial one.
-        { echo "src=${src}"; ls -A "${src}/$(basename "$src")" 2>/dev/null || ls -A "$src"; } >> "$STAGED_LOG"
+        # pass as a partial one. Tagged with the uploaded dir's name: the
+        # deletion inventory is a second upload in the same run.
+        { echo "dir=$(basename "$src")"; ls -A "$src"; } >> "$STAGED_LOG"
         mkdir -p "$dest"
         # openshell extracts the tree into the destination, merging. That is
         # policy gotcha 20 and the reason a delta is safe without a pre-delete.
@@ -128,10 +135,12 @@ for f in big.bin edit.txt mirror.txt gone.txt; do
     [[ -f "${REMOTE}/${f}" ]] || fail "first upload did not send ${f}"
 done
 
-# --- a delta carries the changed file only, and leaves the rest alone ---
+# --- a delta carries the changed file only, and leaves untouched files alone ---
 sleep 1
 echo "sandbox version" > "${REMOTE}/big.bin"
 echo "sandbox only" > "${REMOTE}/sandbox-only.txt"
+mkdir -p "${REMOTE}/.git"
+echo keep > "${REMOTE}/.git/keepme"
 sleep 1
 echo "host edit" > "${REPO}/edit.txt"
 : > "$STAGED_LOG"
@@ -139,16 +148,20 @@ sb --upload probe
 grep -q "host edit" "${REMOTE}/edit.txt" || fail "delta upload did not send the changed file"
 [[ "$(cat "${REMOTE}/big.bin")" == "sandbox version" ]] \
     || fail "delta upload overwrote a file the host had not changed"
-[[ -f "${REMOTE}/sandbox-only.txt" ]] \
-    || fail "delta upload pre-deleted the sandbox tree"
-staged_paths="$(sed -n '/^src=/!p' "$STAGED_LOG" | sort | tr '\n' ' ')"
+[[ ! -e "${REMOTE}/sandbox-only.txt" ]] \
+    || fail "delta upload left a path only the sandbox had"
+[[ -f "${REMOTE}/.git/keepme" ]] \
+    || fail "upload deletion reached .git; it must be excluded"
+staged_paths="$(awk '/^dir=myrepo$/{f=1;next} /^dir=/{f=0} f' "$STAGED_LOG" | sort | tr '\n' ' ')"
 [[ "$staged_paths" == "edit.txt " ]] \
     || fail "upload staged more than the changed file: ${staged_paths}"
 
-# --- download pulls the changed file only; host copies stay put ---
+# --- download pulls the changed file only and removes what only the host had ---
 sleep 1
 echo "from the sandbox" > "${REMOTE}/edit.txt"
 rm -f "${REMOTE}/mirror.txt"
+mkdir -p "${REPO}/.venv/bin"
+echo keep > "${REPO}/.venv/bin/pyvenv.cfg"
 echo "host only" > "${REPO}/host-only.txt"
 sleep 1
 : > "$CALL_LOG"
@@ -157,27 +170,36 @@ sb --download probe
     || fail "delta download did not bring the sandbox edit"
 [[ "$(cat "${REPO}/big.bin")" == "big" ]] \
     || fail "delta download overwrote a file the sandbox had not changed"
-[[ -f "${REPO}/host-only.txt" ]] || fail "delta download deleted a host-only file"
-[[ -f "${REPO}/mirror.txt" ]] || fail "delta download mirrored a sandbox deletion"
-grep -q 'tar cf .*--newer=' "$CALL_LOG" || fail "download did not use a --newer delta tar"
+[[ ! -e "${REPO}/host-only.txt" ]] \
+    || fail "delta download left a path only the host had"
+[[ ! -e "${REPO}/mirror.txt" ]] \
+    || fail "delta download left a sandbox-side deletion"
+[[ -f "${REPO}/.venv/bin/pyvenv.cfg" ]] \
+    || fail "download deletion reached .venv; it must be excluded"
+grep -q -- '--newer=' "$CALL_LOG" || fail "download did not use a --newer delta tar"
+grep -q 'openshell-inv-myrepo' "$CALL_LOG" \
+    || fail "download tar did not carry the deletion inventory"
 
-# --- deletions need --force in both directions ---
+# --- a deletion alone is enough; no full transfer is needed ---
 sleep 1
 rm -f "${REPO}/gone.txt"
 sb --upload probe
-[[ -f "${REMOTE}/gone.txt" ]] || fail "delta upload mirrored a host deletion"
-sb --upload probe --force
-[[ ! -e "${REMOTE}/gone.txt" ]] || fail "--upload --force did not mirror a host deletion"
+[[ ! -e "${REMOTE}/gone.txt" ]] || fail "upload did not remove a host-side deletion"
 
-sleep 1
-rm -f "${REMOTE}/mirror.txt"
-sb --download probe
-[[ -f "${REPO}/mirror.txt" ]] || fail "delta download mirrored a sandbox deletion"
+# --- --force stays the full mirror, .git and .venv included ---
+echo remote-only > "${REMOTE}/force-only.txt"
+sb --upload probe --force
+[[ ! -e "${REMOTE}/force-only.txt" ]] \
+    || fail "--upload --force did not mirror a sandbox-only path"
+
+echo host-only > "${REPO}/force-host-only.txt"
 sb --download probe --force
-[[ ! -e "${REPO}/mirror.txt" ]] || fail "--download --force did not mirror a sandbox deletion"
+[[ ! -e "${REPO}/force-host-only.txt" ]] \
+    || fail "--download --force did not mirror a host-only path"
+[[ -f "${REPO}/.venv/bin/pyvenv.cfg" ]] \
+    || fail "--download --force removed the host's .venv"
 
 # --- .venv stays out of the delta, at the source ---
-mkdir -p "${REPO}/.venv/bin"
 echo venv > "${REPO}/.venv/bin/pyvenv.cfg"
 sleep 1
 sb --upload probe

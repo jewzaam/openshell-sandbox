@@ -260,10 +260,16 @@ repo_last_upload() {
 repo_sync_reference() {
     local sandbox_dir="$1" repo_name="$2"
     [[ -f "${sandbox_dir}/manifest.json" ]] || return 0
-    jq -r --arg r "$repo_name" \
-        '[.repos[$r].last_upload, .repos[$r].last_download]
-         | map(select(. != null)) | max // empty' \
-        "${sandbox_dir}/manifest.json" 2>/dev/null || true
+    # sort/tail rather than jq's `max`: the stamps are ISO-8601, so lexical and
+    # chronological order agree, and this does not depend on which jq build the
+    # host has (a `max` that rejects strings returns empty against a manifest
+    # that plainly holds both stamps). Blank lines sort first; the last line is
+    # the later stamp, or empty when neither exists.
+    {
+        repo_last_upload "$sandbox_dir" "$repo_name"
+        jq -r --arg r "$repo_name" '.repos[$r].last_download // empty' \
+            "${sandbox_dir}/manifest.json" 2>/dev/null || true
+    } | LC_ALL=C sort | tail -n 1
 }
 
 # True when the repo has anything modified since its last upload — including

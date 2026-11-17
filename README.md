@@ -127,9 +127,9 @@ Common options below; `sandbox.sh --help` lists every one.
 | `--since DATE` | Clone only history newer than DATE, every repo in this run. Any `date -d` value (`-30days`, `-3months`, `2026-08-01`); `''` for full. Default: `SANDBOX_CLONE_SINCE` from `config/site.env` |
 | `--add-repo [NAME]` | Add repo(s) to existing sandbox |
 | `--jira KEY` | Fetch Jira issue into `~/sandboxes/<name>/jira-context.md` and its comments into `jira-comments.md`, from the sandbox directory (repeatable; key or browse URL). The keys given are the file; `--create`/`--refresh` upload both |
-| `--download [NAME]` | Download repos from sandbox to `~/sandboxes/<name>/`. Plain runs pull only files changed in the sandbox; `--force` pulls the whole repo and mirrors deletions |
+| `--download [NAME]` | Download repos from sandbox to `~/sandboxes/<name>/`. Plain runs pull only files changed in the sandbox and remove host files the sandbox no longer has; `--force` pulls the whole repo, `.git` and `.venv` included |
 | `-f, --force` | With `--upload`/`--download`: transfer every repo in full and regenerate context. Plain runs transfer only what changed |
-| `--upload [NAME]` | Upload local repo changes back into sandbox. Plain runs send only files newer than the last transfer; `--force` sends the whole repo and removes sandbox-side files the host no longer has |
+| `--upload [NAME]` | Upload local repo changes back into sandbox. Plain runs send only files newer than the last transfer and remove sandbox files the host no longer has; `--force` sends the whole repo, `.git` and `.venv` included |
 | `--profile NAME` | `work`, `personal`, or `home`. Required with `--create` and `--recreate` |
 | `--policy FILE` | Override policy file (default: the profile's own) |
 | `--gateway NAME` | OpenShell gateway |
@@ -238,11 +238,19 @@ and `.profile` in the sandbox's `manifest.json`.
     ├── CLAUDE.md           # System prompt (from config/sandbox-claude.md)
     ├── manifest.json       # Sandbox name, repo list, profile
     ├── openshell-policy.yaml  # Effective policy, rendered from site.env
+    ├── files/              # Loose transfer dir, not a repo (see below)
     ├── knowledgebase/      # Uploaded from host
     ├── standards/          # Uploaded from host
     ├── myapp/              # Uploaded from host
     └── myapp-ui/           # Uploaded from host
 ```
+
+`/sandbox/source/files/` is a transfer directory for loose files — notes, data,
+output — that do not belong to a repo. The host side is
+`~/sandboxes/<name>/files/`, created at create time. Both `sandbox.sh --upload`
+and `--download` always include it, so files move in either direction without
+`--add-repo`. An empty host copy is never uploaded: sending it would empty the
+sandbox-side directory.
 
 ## Development
 

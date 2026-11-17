@@ -396,14 +396,13 @@ fi
 # and downloading a repo to learn whether it was worth downloading is the cost
 # being avoided. One exec covers every repo. ---
 if command -v rsync >/dev/null 2>&1; then
-    # A pull is now the download of that repo's tarball. The tar and the rm that
-    # bracket it are execs, so `execs` counts only the clean-repos walk — the
-    # one exec that runs `bash -c`. Counting every exec would make "one exec for
-    # all repos" grow with the number of repos actually pulled. Matching on the
-    # walk script's own text does not work: the stub logs `openshell $*`, and
-    # the script's embedded newlines put its body on lines of its own.
+    # A pull is now the download of that repo's tarball, and the delta path
+    # folds a deletion inventory into the same `bash -c` exec. `execs` counts
+    # only the clean-repos walk, by its own WALKED sentinel: counting every
+    # `bash -c` would make "one exec for all repos" grow with both the repo
+    # count and the repo walk's own text.
     pulled() { grep -q 'openshell sandbox download .*openshell-dl-myrepo\.tar' "$CALL_LOG"; }
-    execs() { grep -c 'openshell sandbox exec .*bash -c' "$CALL_LOG"; }
+    execs() { grep -c 'WALKED' "$CALL_LOG"; }
 
     # host and sandbox agree, and the sandbox has not touched the repo since
     rm -rf "${SANDBOX_FS}/myrepo"
@@ -454,7 +453,7 @@ if command -v rsync >/dev/null 2>&1; then
     # either way, so the check above passes even with the tar's exclusion
     # removed — it cannot tell "never sent" from "sent and discarded", which is
     # the entire difference this change exists to make.
-    grep -q 'sandbox exec .*tar cf .*--exclude=\.venv' "$CALL_LOG" \
+    grep -q -- '--exclude=\.venv' "$CALL_LOG" \
         || { echo "FAIL: the source-side tar did not exclude .venv" >&2; fail=1; }
     grep -q "beside the venv" "${REPO}/file.txt" \
         || { echo "FAIL: the tar did not carry the real edit to the host" >&2; fail=1; }
