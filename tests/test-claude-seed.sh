@@ -61,20 +61,22 @@ KEY="sk-test-0123456789abcdefghij-LASTTWENTYCHARS"
 KEY_TAIL="${KEY: -20}"
 
 # No provider: Anthropic direct or Vertex needs no seed, and writing one would
-# claim an approval the host never made.
+# claim an approval the host never made. Plain ANTHROPIC_* are the host's own
+# and are deliberately not read any more.
 : > "$CALL_LOG"
-# The host running the tests is itself a provider session; drop its vars.
-unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY
-seed_claude_json sb-none
+unset OPENSHELL_SANDBOX_ANTHROPIC_BASE_URL OPENSHELL_SANDBOX_ANTHROPIC_API_KEY
+ANTHROPIC_BASE_URL="https://host.example.invalid" ANTHROPIC_API_KEY="$KEY" \
+    seed_claude_json sb-none
 if [[ -s "$CALL_LOG" ]]; then
-    echo "FAIL: seeded without a provider URL" >&2
+    echo "FAIL: seeded from a plain host ANTHROPIC_* pair" >&2
     cat "$CALL_LOG" >&2
     fail=1
 fi
 
-# Provider: seed written, key tail only.
+# Provider: seed written from the prefixed pair the sandbox will actually see.
 : > "$CALL_LOG"
-ANTHROPIC_BASE_URL="https://provider.example.invalid" ANTHROPIC_API_KEY="$KEY" \
+OPENSHELL_SANDBOX_ANTHROPIC_BASE_URL="https://provider.example.invalid" \
+    OPENSHELL_SANDBOX_ANTHROPIC_API_KEY="$KEY" \
     seed_claude_json sb-provider
 
 grep -q '/sandbox' "$CALL_LOG" \

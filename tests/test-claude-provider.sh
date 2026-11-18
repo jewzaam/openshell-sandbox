@@ -6,8 +6,10 @@
 # things have to hold, and either one alone leaves the session failing against
 # a blocked api.anthropic.com:
 #
-#   1. sandbox.sh captures the provider URL and gateway model discovery for
-#      work only — personal and home policies reach no provider.
+#   1. The provider pair reaches .env only through the operator's
+#      OPENSHELL_SANDBOX_ exports. Plain host ANTHROPIC_BASE_URL/API_KEY are
+#      never captured by name, and the prefix is honored on every profile: the
+#      operator decides what a sandbox carries, the profile decides policy.
 #   2. validate-profile.sh stops demanding Vertex when the provider is in use,
 #      probes the provider URL instead, and requires CLAUDE_CODE_USE_VERTEX=0 —
 #      unset, the TUI ignores the URL and dials the blocked api.anthropic.com.
@@ -64,23 +66,23 @@ fail=0
 
 create_env() {
     local profile="$1" name="$2"
-    # The key is passed explicitly, never inherited: on a host that does not
-    # export one (CI) the presence assertions below would fail for a reason
-    # that has nothing to do with the profile rule under test.
-    HOME="$FAKE_HOME" \
-        ANTHROPIC_BASE_URL="$PROVIDER_URL" \
-        ANTHROPIC_API_KEY=sk-ant-provider \
-        CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \
+    # A clean env: the assertion is about what sandbox.sh does with these
+    # exports, so a host that already exports OPENSHELL_SANDBOX_* must not
+    # change the result. PATH carries the test's fakes and the real tools.
+    env -i PATH="$PATH" HOME="$FAKE_HOME" \
+        OPENSHELL_SANDBOX_ANTHROPIC_BASE_URL="$PROVIDER_URL" \
+        OPENSHELL_SANDBOX_ANTHROPIC_API_KEY=sk-ant-provider \
+        OPENSHELL_SANDBOX_CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \
+        OPENSHELL_SANDBOX_REVIEW_ORCHESTRATOR_HARNESS=claude \
         bash "$SANDBOX_SH" --create "$name" --profile "$profile" \
             --no-clone --no-connect --dryrun 2>&1
 }
 
-# Same host, no provider: ANTHROPIC_API_KEY is then an Anthropic credential and
-# personal is supposed to capture it.
+# Same sandbox, plain names only: nothing is captured by name any more, so no
+# credential reaches .env.
 create_env_direct() {
     local profile="$1" name="$2"
-    env -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY \
-        HOME="$FAKE_HOME" ANTHROPIC_API_KEY=sk-ant-direct \
+    env -i PATH="$PATH" HOME="$FAKE_HOME" ANTHROPIC_API_KEY=sk-ant-direct \
         bash "$SANDBOX_SH" --create "$name" --profile "$profile" \
             --no-clone --no-connect --dryrun 2>&1
 }
@@ -89,38 +91,23 @@ work_env="$(create_env work probe-work)"
 personal_env="$(create_env personal probe-personal)"
 direct_env="$(create_env_direct personal probe-personal-direct)"
 
-grep -q "ANTHROPIC_BASE_URL=${PROVIDER_URL}" <<< "$work_env" \
-    || { echo "FAIL: work .env does not capture ANTHROPIC_BASE_URL" >&2; fail=1; }
-grep -q 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1' <<< "$work_env" \
-    || { echo "FAIL: work .env does not capture gateway model discovery" >&2; fail=1; }
-if grep -q 'ANTHROPIC_BASE_URL' <<< "$personal_env"; then
-    echo "FAIL: personal .env captures ANTHROPIC_BASE_URL — its policy reaches no provider" >&2
-    fail=1
-fi
-# The pair is one credential: a base URL on the host means the key belongs to
-# that provider, so a personal sandbox must not receive it.
-if grep -q 'ANTHROPIC_API_KEY' <<< "$personal_env"; then
-    echo "FAIL: personal .env captures the provider's ANTHROPIC_API_KEY" >&2
-    fail=1
-fi
-grep -q 'ANTHROPIC_API_KEY' <<< "$work_env" \
-    || { echo "FAIL: work .env lost ANTHROPIC_API_KEY" >&2; fail=1; }
-grep -q 'ANTHROPIC_API_KEY' <<< "$direct_env" \
-    || { echo "FAIL: personal .env stopped capturing ANTHROPIC_API_KEY with no provider URL" >&2; fail=1; }
-
-# Review orchestrator: claude everywhere; work inherits the provider model from
-# settings.json, personal names Anthropic tiers.
+# The prefix is the one path in, and it is not profile-filtered.
 for profile_env in "$work_env" "$personal_env"; do
+    grep -q "ANTHROPIC_BASE_URL=${PROVIDER_URL}" <<< "$profile_env" \
+        || { echo "FAIL: prefixed provider URL did not reach .env" >&2; fail=1; }
+    grep -q 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1' <<< "$profile_env" \
+        || { echo "FAIL: prefixed gateway discovery flag did not reach .env" >&2; fail=1; }
+    # --dryrun redacts *KEY* values, so the name is what proves the pass-through.
+    grep -q '^ANTHROPIC_API_KEY=' <<< "$profile_env" \
+        || { echo "FAIL: prefixed provider key did not reach .env" >&2; fail=1; }
     grep -q '^REVIEW_ORCHESTRATOR_HARNESS=claude$' <<< "$profile_env" \
-        || { echo "FAIL: .env does not set REVIEW_ORCHESTRATOR_HARNESS=claude" >&2; fail=1; }
+        || { echo "FAIL: prefixed review harness did not reach .env" >&2; fail=1; }
 done
-if grep -q 'REVIEW_ORCHESTRATOR_MODEL_' <<< "$work_env"; then
-    echo "FAIL: work .env pins a review model — it must inherit the provider model" >&2
+if grep -q 'ANTHROPIC_API_KEY\|ANTHROPIC_BASE_URL\|REVIEW_ORCHESTRATOR' <<< "$direct_env"; then
+    echo "FAIL: a plain host env var was captured by name:" >&2
+    grep -n 'ANTHROPIC\|REVIEW_ORCHESTRATOR' <<< "$direct_env" >&2
     fail=1
 fi
-grep -q '^REVIEW_ORCHESTRATOR_MODEL_DEEP=sonnet$' <<< "$personal_env" \
-    && grep -q '^REVIEW_ORCHESTRATOR_MODEL_FOCUSED=haiku$' <<< "$personal_env" \
-    || { echo "FAIL: personal .env does not set sonnet/haiku review models" >&2; fail=1; }
 
 run_validate() {
     env -u ANTHROPIC_BASE_URL -u SANDBOX_PROMETHEUS_URL -u SANDBOX_LOKI_URL \

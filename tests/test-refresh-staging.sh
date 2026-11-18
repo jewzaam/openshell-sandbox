@@ -82,6 +82,7 @@ STUB_BIN="${TMP}/stub-bin"
 mkdir -p "$STUB_BIN"
 cat > "${STUB_BIN}/openshell" <<'EOF'
 #!/bin/bash
+printf '%s\n' "$*" >> "$CALL_LOG"
 if [[ "$1 $2" == "sandbox upload" ]]; then
     [[ -n "${FAIL_UPLOAD:-}" ]] && exit 1
     args=("$@")
@@ -91,6 +92,8 @@ exit 0
 EOF
 chmod +x "${STUB_BIN}/openshell"
 
+CALL_LOG="${TMP}/calls.log"
+export CALL_LOG
 fail=0
 
 # --- gitignored files are not staged ---
@@ -109,6 +112,15 @@ STAGED_PLUGIN="${CAPTURE}/.claude/plugins/marketplaces/docs/.claude"
     || { echo "FAIL: tracked file under a negated ignore was not staged" >&2; fail=1; }
 [[ ! -e "${STAGED_PLUGIN}/runtime.json" ]] \
     || { echo "FAIL: gitignored plugin runtime state was staged" >&2; fail=1; }
+
+# .env is wiped before the upload, so a variable the operator stopped exporting
+# cannot survive a --refresh (docs/environment-variables.md).
+awk '
+    /sandbox exec .*rm -f \/sandbox\/\.env/ { wiped = NR }
+    /sandbox upload/ && !uploaded { uploaded = NR }
+    END { exit !(wiped && uploaded && wiped < uploaded) }
+' "$CALL_LOG" \
+    || { echo "FAIL: --refresh did not delete .env before uploading" >&2; fail=1; }
 
 # --- a failed upload leaves nothing in TMPDIR ---
 RUN_TMP="${TMP}/run-tmp"

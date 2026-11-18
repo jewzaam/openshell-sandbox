@@ -57,9 +57,10 @@ is no default. `research` and `fetch-service` are policies only —
    Do not add `*_HOST`/`*_PORT` keys — the same value in two places, free to
    drift, with nothing checking it.
 5. **`--profile` applies at build time only** and the script rejects it
-   elsewhere. It decides four things at once (`.env` contents, credential
-   uploads, rendered policy, which system-prompt fragment is appended) and
-   only the create path writes all four; half-applied reads as applied.
+   elsewhere. It decides three things at once (credential uploads, rendered
+   policy, which system-prompt fragment is appended) and only the create path
+   writes all three; half-applied reads as applied. It does not decide env:
+   that is the operator's `OPENSHELL_SANDBOX_` exports.
    `--recreate NAME --profile <name>` is the only complete way to switch an
    existing sandbox. It is **required** on `--create`, `--recreate`, and on
    every `scode` invocation — reopening an existing sandbox included. Do not
@@ -590,11 +591,12 @@ is no default. `research` and `fetch-service` are policies only —
     because those entries fetch packages, and a scoped npm install cannot
     complete in a sandbox (Containerfile). `AGENTS.md` is not uploaded;
     `harness-wrapper.sh` symlinks the sandbox system prompt over it.
-    **No credential file is uploaded, but the filter is narrow.** It drops the
-    host's permissions, policies, and plugins but does not redact inline
-    secrets, so one in the host's `opencode.json` would travel. Provider keys
-    are expected from the environment: the host's provider config names an env
-    var and work's `.env` already carries the captured key. Session
+    **No credential file is uploaded, and env-injecting keys are dropped.** The
+    filter removes the host's permissions, policies, plugins, top-level `env`,
+    and inline provider keys (`providers[].settings.apiKey`); a config cannot
+    patch env in beside the operator's `OPENSHELL_SANDBOX_` exports.
+    `providers[].env` stays — it names the env var a provider reads. Provider
+    keys are expected from the environment, as prefixed exports. Session
     credentials and history stored in OpenCode's database survive `--recreate`
     through `download_opencode_state()` / `upload_opencode_state()`. GitLab
     `auth.json` does not: V2 keeps `opencode auth login` credentials in the
@@ -702,46 +704,40 @@ is no default. `research` and `fetch-service` are policies only —
   `key-123` (lowercased).
 - **`scode` accepts multiple PR URLs.** `scode PR_URL1 PR_URL2` for multi-repo
   review. Each becomes a `--repo`/`--ref` pair; sandbox named after first PR.
-- **`ANTHROPIC_DEFAULT_{HAIKU,OPUS,SONNET}_MODEL` are stripped from the
-  uploaded `settings.json` for every profile**, by
-  `scripts/strip-settings.py`. A host pins models for host reasons; in a
-  sandbox available models may differ.  Pinning model is not required.
-- **`ANTHROPIC_BASE_URL` and `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` are
-  captured for work only** (`CLAUDE_PROVIDER_VARS`). They select a Claude
-  provider instead of Anthropic or Vertex. Personal and home
-  capture neither: the host env is one global value, and both are
-  credential-less by design, so a provider URL there would point a personal
-  session at a host its policy blocks while carrying the work key along.
-  Do not widen it to `ANTHROPIC_VARS`. `ANTHROPIC_API_KEY` is the same
-  credential: personal and home capture it only when the host has **no**
-  `ANTHROPIC_BASE_URL`, because that variable being set means the key belongs
-  to the provider rather than to Anthropic. Without the condition a personal
-  sandbox inherited a work provider key its own policy cannot reach, so it
-  could only ever fail an Anthropic auth check. The endpoint reaches the
-  work policy through the bound provider profile (`PROVIDER_PROFILES_WORK`), so a host that
-  unbinds that provider from Codex loses Claude's path to it as well —
+- **The whole `settings.json` `env` block is stripped for every profile**, by
+  `scripts/strip-settings.py`. The only env path into a sandbox is the
+  operator's `OPENSHELL_SANDBOX_` exports (`docs/environment-variables.md`); a
+  settings file that patched its own env would be a second, unlisted one.
+  `tests/test-strip-settings.sh`.
+- **Credentials and provider settings are operator-supplied, not captured.**
+  `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`,
+  `ANTHROPIC_API_KEY`, the Jira names, bound-provider keys and every tool
+  setting arrive only as exported `OPENSHELL_SANDBOX_<NAME>`. There is no
+  per-profile capture list; the profile decides policy and file uploads, not
+  env. `tests/test-claude-provider.sh`, `tests/test-sandbox-env.sh`.
+  The provider URL still has to be reachable: it works through the bound
+  provider profile (`PROVIDER_PROFILES_WORK`), so a host that unbinds that
+  provider from Codex loses Claude's path to it as well —
   `validate-profile.sh` probes `ANTHROPIC_BASE_URL` and fails loudly rather
-  than letting Claude fall back to the blocked api.anthropic.com. A per-profile
-  binding of its own is the shape to build if another profile ever needs a
-  provider; env capture alone is not it.
-  **`CLAUDE_CODE_USE_VERTEX=0` is required alongside the URL**, and it travels
-  through the Vertex group rather than `CLAUDE_PROVIDER_VARS` because it is the
-  same key either path uses. Claude Code treats the variable's *presence* as
+  than letting Claude fall back to the blocked api.anthropic.com.
+  **`CLAUDE_CODE_USE_VERTEX=0` is required alongside the URL** and must be
+  exported prefixed with it. Claude Code treats the variable's *presence* as
   "use Vertex": unset, the TUI ignores `ANTHROPIC_BASE_URL` and dials the
   blocked api.anthropic.com (`Failed to connect ... ECONNREFUSED`, exit 1)
-  while `claude -p` succeeds — measured on the host and in a sandbox. So the
-  host must export `0`, not leave it unset, and `validate-profile.sh` asserts
-  the value in both directions (`0` with a provider URL, `1` without) instead
-  of just checking that the variable is set.
+  while `claude -p` succeeds — measured on the host and in a sandbox.
+  `validate-profile.sh` asserts the value in both directions (`0` with a
+  provider URL, `1` without) instead of just checking that it is set.
   **`.claude.json` is seeded, because the TUI checks Anthropic reachability
   before it reads the provider URL.** A provider sandbox with no
   `~/.claude.json` dies in the TUI (`Failed to connect to api.anthropic.com:
   ECONNREFUSED`, exit 1) while `claude -p` in the same shell works — the
   headless path skips that gate. The CLI skips it too once onboarding is
   complete and the key is approved; `seed_claude_json()` (called from
-  `upload_config()`, so create and refresh both) writes exactly those two
-  fields: `hasCompletedOnboarding: true` and
-  `customApiKeyResponses.approved: [<last 20 chars of ANTHROPIC_API_KEY>]`,
+  `upload_config()`, so create and refresh both) reads
+  `OPENSHELL_SANDBOX_ANTHROPIC_BASE_URL`/`_ANTHROPIC_API_KEY` — the prefixed
+  pair the sandbox will actually see — and writes exactly those two fields:
+  `hasCompletedOnboarding: true` and
+  `customApiKeyResponses.approved: [<last 20 chars of the key>]`,
   which is the CLI's own format on the host. It is **merged** with
   `jq -s '.[0] * .[1]'`, never written over: the file carries `projects`,
   `numStartups` and session state, and `--recreate` restores a copy through
@@ -767,13 +763,15 @@ is no default. `research` and `fetch-service` are policies only —
   review itself with a smaller model. There is no `--advisor` flag (checked
   against claude 2.1.269), so settings.json is the only way in.
   `tests/test-advisor-model.sh`.
-- **`/sandbox/.env` is host knowledge; `config/bashrc` is container policy.**
-  What only the host can know — credentials, collector address, which machine
-  and sandbox this is, and the `OTEL_RESOURCE_ATTRIBUTES` assembled from them —
-  is written into `.env` at create time. How the agent behaves in here —
-  telemetry toggles, exporters, intervals, log detail — lives in `config/bashrc`
-  and is never captured from the host env, so a host preference cannot silently
-  change a sandbox. Both halves have to be inherited, not sourced by a
+- **`/sandbox/.env` has two sources; `config/bashrc` is container policy.**
+  `.env` carries the operator's exported `OPENSHELL_SANDBOX_<NAME>` values
+  (written as `<NAME>`) plus the OTEL identity block — collector address,
+  which machine and sandbox this is, and the `OTEL_RESOURCE_ATTRIBUTES`
+  assembled from them. Nothing is captured from the host env by name; a
+  credential or setting arrives only through the prefix. How the agent behaves
+  in here — telemetry toggles, exporters, intervals, log detail — lives in
+  `config/bashrc` and is never captured from the host env, so a host preference
+  cannot silently change a sandbox. Both halves have to be inherited, not sourced by a
   launcher: `bin/claude.env` held the policy and only `harness-wrapper.sh` read
   it, so a bare `claude` came up with an endpoint and telemetry off; the
   attributes were assembled there too, so every review-orchestrator sub-agent

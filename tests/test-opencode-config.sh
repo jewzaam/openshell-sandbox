@@ -45,6 +45,13 @@ cat > "${FAKE_HOME}/.config/opencode/opencode.json" <<JSON
 {
   "model": "provider/model-a",
   "provider": { "vendor": { "options": { "baseURL": "https://provider.example/v1" } } },
+  "providers": {
+    "vendor": {
+      "env": ["OPENAI_API_KEY"],
+      "settings": { "baseURL": "https://provider.example/v1", "apiKey": "inline-secret" }
+    }
+  },
+  "env": { "INJECTED_SETTING": "from-settings" },
   "instructions": ["${FAKE_HOME}/notes.md"],
   "permissions": [{ "action": "*", "resource": "*", "effect": "ask" }],
   "policies": [{ "action": "tool.use", "resource": "shell:env", "effect": "deny" }],
@@ -94,6 +101,14 @@ check "host home path rewritten" '/sandbox/notes.md' \
 check "permissions dropped" "null" "$(jq -r '.permissions // "null"' "$CONFIG")"
 check "policies dropped" "null" "$(jq -r '.policies // "null"' "$CONFIG")"
 check "plugins dropped" "null" "$(jq -r '.plugins // "null"' "$CONFIG")"
+# Env a config could inject is stripped: the operator's OPENSHELL_SANDBOX_
+# exports are the only env path into a sandbox. `providers[].env` is a reader
+# list, not a value, so it stays.
+check "top-level env dropped" "null" "$(jq -r '.env // "null"' "$CONFIG")"
+check "inline provider key dropped" "null" \
+    "$(jq -r '.providers.vendor.settings.apiKey // "null"' "$CONFIG")"
+check "provider env names kept" "OPENAI_API_KEY" \
+    "$(jq -r '.providers.vendor.env[0]' "$CONFIG")"
 
 # Staging must not rewrite the host's own file.
 cmp -s "$CONFIG" "${FAKE_HOME}/.config/opencode/opencode.json" \

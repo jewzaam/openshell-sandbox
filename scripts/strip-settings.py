@@ -19,36 +19,10 @@ import sys
 # Host paths mean nothing in the sandbox, where $HOME is /sandbox.
 SANDBOX_HOME = "/sandbox"
 
-# The host pins models for its own reasons (cost, a rollout, a bug). A sandbox
-# has no business inheriting that: the wrapper decides the model there
-# (personal and home pin --model), and a stale default here silently overrides
-# it with no trace in the command line. Stripped for every profile.
-MODEL_KEYS = (
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-)
-
 # Profiles that carry no work credentials. home is personal plus Prometheus
 # and Loki reads — a network policy difference, nothing to do with settings.
 # Mirrors personal_profile() in scripts/lib.sh; keep the two in step.
 PERSONAL_PROFILES = ("personal", "home")
-
-# Personal sandboxes get no work credentials or work-only integrations.
-#
-# ANTHROPIC_BASE_URL is the same credential as the env pair sandbox.sh captures
-# for work only (`CLAUDE_PROVIDER_VARS`): it points Claude at a private
-# provider, which a personal policy blocks. A host that keeps it in
-# settings.json `env` rather than its shell hands it to every sandbox that way,
-# and the TUI then fails with `Connection refused` (ECONNREFUSED) against a
-# host it was never allowed to reach. Its discovery flag travels with it for the
-# same reason a provider model id is not in the CLI's catalog.
-PERSONAL_STRIP_RE = re.compile(
-    r"^(CLAUDE_CODE_USE_VERTEX|ANTHROPIC_VERTEX|ANTHROPIC_BASE_URL"
-    r"|CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
-    r"|GOOGLE|CLOUDSDK|CLOUD_ML|JIRA|ATLASSIAN)",
-    re.I,
-)
 
 # A hook whose command carries a `# KEEP:` comment survives stripping. The hook
 # declares its own retention instead of this file naming it, so a new hook that
@@ -81,13 +55,16 @@ def strip_permissions(settings):
 
 
 def strip_env(settings, profile):
-    env = settings.get("env")
-    if not isinstance(env, dict):
-        return
-    for key in MODEL_KEYS:
-        env.pop(key, None)
-    if profile in PERSONAL_PROFILES:
-        settings["env"] = {k: v for k, v in env.items() if not PERSONAL_STRIP_RE.match(k)}
+    """Drop settings.json's env block entirely.
+
+    A sandbox has exactly one env-injection path: exported OPENSHELL_SANDBOX_*
+    on the host at create/refresh (docs/environment-variables.md). A settings
+    file that patched its own env would be a second, unlisted one — and the
+    host pins models and provider credentials in it for host reasons, neither of
+    which a sandbox should inherit by accident. The profile is unused here now;
+    it stays in the signature because hooks and permissions still key on it.
+    """
+    settings.pop("env", None)
 
 
 def strip_model(settings, profile):
