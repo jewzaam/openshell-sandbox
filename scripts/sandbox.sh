@@ -3493,35 +3493,26 @@ for var in "${ACTIVE_VARS[@]}"; do
 done
 
 if ! personal_profile "$SANDBOX_PROFILE"; then
-    # JIRA env var aliases — tools use inconsistent names
-    if [[ -n "${JIRA_USERNAME+x}" && -z "${JIRA_EMAIL+x}" ]]; then
-        ENV_CONTENT+="$(printf 'JIRA_EMAIL=%q' "${JIRA_USERNAME}")"$'\n'
-    fi
-    if [[ -n "${JIRA_EMAIL+x}" && -z "${JIRA_USERNAME+x}" ]]; then
-        ENV_CONTENT+="$(printf 'JIRA_USERNAME=%q' "${JIRA_EMAIL}")"$'\n'
-    fi
-    if [[ -n "${JIRA_TOKEN+x}" && -z "${JIRA_API_TOKEN+x}" ]]; then
-        ENV_CONTENT+="$(printf 'JIRA_API_TOKEN=%q' "${JIRA_TOKEN}")"$'\n'
-    fi
-    if [[ -n "${JIRA_API_TOKEN+x}" && -z "${JIRA_TOKEN+x}" ]]; then
-        ENV_CONTENT+="$(printf 'JIRA_TOKEN=%q' "${JIRA_API_TOKEN}")"$'\n'
-    fi
-
-    # Sandbox-scoped JIRA credentials override (read-only scoped token via gateway)
-    if [[ -n "${SANDBOX_JIRA_TOKEN+x}" ]]; then
-        ENV_CONTENT+="$(printf 'JIRA_TOKEN=%q' "${SANDBOX_JIRA_TOKEN}")"$'\n'
-        ENV_CONTENT+="$(printf 'JIRA_API_TOKEN=%q' "${SANDBOX_JIRA_TOKEN}")"$'\n'
-        if [[ -n "${SANDBOX_JIRA_EMAIL+x}" ]]; then
-            ENV_CONTENT+="$(printf 'JIRA_EMAIL=%q' "${SANDBOX_JIRA_EMAIL}")"$'\n'
-            ENV_CONTENT+="$(printf 'JIRA_USERNAME=%q' "${SANDBOX_JIRA_EMAIL}")"$'\n'
-        fi
-        if [[ -n "${SANDBOX_JIRA_URL+x}" ]]; then
-            ENV_CONTENT+="$(printf 'JIRA_URL=%q' "${SANDBOX_JIRA_URL}")"$'\n'
-        fi
-        if [[ -n "${SANDBOX_JIRA_CLOUD_ID+x}" ]]; then
-            ENV_CONTENT+="$(printf 'JIRA_CLOUD_ID=%q' "${SANDBOX_JIRA_CLOUD_ID}")"$'\n'
-        fi
-    fi
+    # Sandbox-scoped overrides: every exported OPENSHELL_SANDBOX_<NAME> on the
+    # host lands in the sandbox as <NAME>. One convention instead of a
+    # hand-maintained per-variable mapping — a new override needs no change here.
+    #
+    # The longer prefix is deliberate. SANDBOX_ already names sandbox-side
+    # identity (SANDBOX_PROFILE, SANDBOX_HOST_DIR, ...) and host-only knobs
+    # (SANDBOX_CLONE_SINCE, SANDBOX_IMAGE_NAME), so a bare SANDBOX_ match would
+    # ship a stripped copy of this script's own variables and inject host build
+    # settings into every sandbox. OPENSHELL_SANDBOX_ collides with neither.
+    #
+    # Exported only (compgen -e): an unexported shell variable is not part of
+    # the host env. Work profile only, because personal and home are
+    # credential-less by design (CLAUDE.md gotcha 10) and an override there is
+    # exactly what those profiles keep on the host. .env is rebuilt and
+    # re-uploaded on every create and --refresh, replacing the sandbox copy
+    # wholesale, so unsetting a variable on the host removes it in there too.
+    while IFS= read -r var; do
+        [[ -n "${var#OPENSHELL_SANDBOX_}" ]] || continue
+        ENV_CONTENT+="$(printf '%s=%q' "${var#OPENSHELL_SANDBOX_}" "${!var}")"$'\n'
+    done < <(compgen -e | sort)
 
     # Remap credential file paths for sandbox
     if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS+x}" ]]; then

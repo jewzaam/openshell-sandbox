@@ -68,6 +68,7 @@ sandbox.sh literals + assembled OTEL identity ────┴──▶ /sandbox/
 | Source | What | Where |
 |---|---|---|
 | Host env capture | Only names in `ACTIVE_VARS`, and only if set on the host | `sandbox.sh:2812-2826` |
+| Host env overrides | Every exported `OPENSHELL_SANDBOX_<NAME>` becomes `<NAME>`, on work only | the override loop in `sandbox.sh` |
 | `config/site.env` | `OTEL_EXPORTER_OTLP_ENDPOINT` (from `OTEL_URL`), the Prometheus and Loki URLs, and explicit `PROVIDER_PROFILES_WORK`, `PROVIDER_PROFILES_PERSONAL`, `PROVIDER_PROFILES_HOME` publication allowlists | `resolve_provider_profiles()` in `scripts/sandbox.sh` |
 | Computed on the host | `SANDBOX_*`, `CLAUDE_DASHBOARD_HOST`, OTLP protocol, `OTEL_RESOURCE_ATTRIBUTES` | `sandbox.sh:1704-1785` |
 | Fixed per profile | `REVIEW_ORCHESTRATOR_HARNESS=claude` for every profile; `REVIEW_ORCHESTRATOR_MODEL_DEEP=sonnet` and `_FOCUSED=haiku` for personal and home. Work sets no model, so the review orchestrator's `claude -p` uses the provider model from the host `settings.json` | after `SANDBOX_PROFILE` in `scripts/sandbox.sh` |
@@ -94,6 +95,19 @@ the `0` rather than leave it unset; `validate-profile.sh` asserts the value.
 Each sandbox additionally receives only the environment keys referenced by its
 explicitly bound provider profiles (`env_key` and `env_http_headers`). Capture
 is conditional on the host exporting the variable.
+
+`OPENSHELL_SANDBOX_<NAME>` is the open-ended escape hatch: every **exported**
+variable with that prefix is written as `<NAME>`, so a per-sandbox override
+needs no change in `sandbox.sh`. It is work-only, like the Jira capture it
+replaced — personal and home are credential-less by design. The prefix is
+deliberately longer than `SANDBOX_`: those names are sandbox-side identity
+(`SANDBOX_PROFILE`, `SANDBOX_HOST_DIR`, …) or host-only knobs
+(`SANDBOX_CLONE_SINCE`, `SANDBOX_IMAGE_NAME`), and a shorter prefix would ship
+stripped copies of both. `.env` is regenerated and re-uploaded on every create
+and `--refresh`, and OpenShell extracts the archive entry over the existing
+file (gotcha 20), so a variable unset on the host is gone from the sandbox on
+the next refresh. `tests/test-sandbox-env.sh` asserts the prefix, the
+export requirement, the work-only gate, and that `SANDBOX_*` keeps its prefix.
 
 A provider sandbox also gets `/sandbox/.claude.json` seeded by
 `seed_claude_json()` (from `upload_config()`, so create and refresh alike):
