@@ -169,7 +169,7 @@ and bash terminals, then opens VS Code.
 
 | Profile | Auth | Network Access |
 |---------|------|----------------|
-| `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`) or a Claude provider via `ANTHROPIC_BASE_URL` (a private provider on this host), plus OpenAI for `--harness codex` (`/sandbox/.codex/auth.json`), OpenCode's host config with provider keys from `.env`, and explicitly bound Codex providers | Google APIs, Jira, OpenAI, bound Codex providers, npm, PyPI, Debian, Go modules, OTEL push, Prometheus + Loki reads |
+| `work` | Vertex AI (`CLAUDE_CODE_USE_VERTEX`) or a Claude provider via `ANTHROPIC_BASE_URL` (a private provider on this host), plus OpenAI for `--harness codex` (`/sandbox/.codex/auth.json`), OpenCode's host config, and explicitly bound Codex providers. Credential env comes only from the operator's `OPENSHELL_SANDBOX_` exports ([docs/environment-variables.md](docs/environment-variables.md)) | Google APIs, Jira, OpenAI, bound Codex providers, npm, PyPI, Debian, Go modules, OTEL push, Prometheus + Loki reads |
 | `personal` | Anthropic direct (API key or OAuth) | Anthropic API, npm, PyPI, Debian, Go modules, OTEL push only |
 | `home` | Anthropic direct (API key or OAuth) | as `personal`, plus Prometheus + Loki reads |
 

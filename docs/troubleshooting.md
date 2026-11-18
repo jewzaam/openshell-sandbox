@@ -122,7 +122,10 @@ Claude Code cannot find credentials.
 **Common causes:**
 - `~/.config/gcloud/` uploaded with wrong nesting (extra `gcloud/` dir)
 - `GOOGLE_APPLICATION_CREDENTIALS` points to a path that doesn't exist in sandbox
-- Env vars not in `.env` because they weren't set in the host shell
+- The variable was not exported as `OPENSHELL_SANDBOX_<NAME>` for that create or
+  refresh. Nothing is captured from the host env by name — see
+  [environment-variables.md](environment-variables.md). Re-export it and run
+  `sandbox.sh --refresh NAME`; refresh rebuilds `.env` from scratch.
 
 ### `getifaddrs returned an error`
 

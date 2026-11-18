@@ -67,6 +67,10 @@ done
 # refresh/ensure. Selecting a Codex profile is not permission to publish it.
 resolve_provider_profiles() {
     local binding_var resolved profiles=""
+    # Reset before resolving, so a failed re-resolve cannot leave a previous
+    # call's names in place. Assigned by the eval below; callers and tests read
+    # it, which shellcheck cannot see.
+    # shellcheck disable=SC2034
     PROVIDER_PROFILE_VARS=()
     PROVIDER_URLS=""
     PROVIDER_PROFILE_STAGE="$(mktemp -d)" || return 1
@@ -139,75 +143,18 @@ JIRA_KEYS=()
 CLONE_SINCE="${SANDBOX_CLONE_SINCE:-}"
 
 # ---------------------------------------------------------------------------
-# Env var groups — add new groups as needed
+# Env vars
 # ---------------------------------------------------------------------------
-
-ANTHROPIC_VARS=(
-    ANTHROPIC_API_KEY
-)
-
-VERTEX_VARS=(
-    CLAUDE_CODE_USE_VERTEX
-    CLOUD_ML_REGION
-    ANTHROPIC_VERTEX_PROJECT_ID
-    GOOGLE_APPLICATION_CREDENTIALS
-    GOOGLE_CLOUD_PROJECT
-    CLOUDSDK_CONFIG
-)
-
-JIRA_VARS=(
-    JIRA_USERNAME
-    JIRA_EMAIL
-    JIRA_API_TOKEN
-    JIRA_TOKEN
-    JIRA_URL
-    JIRA_CLOUD_ID
-)
-
-
-CLAUDE_VARS=(
-    CLAUDE_CODE_MAX_TURNS
-    CLAUDE_CODE_MAX_CONTEXT_TOKENS
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
-    CLAUDE_CODE_USE_BEDROCK
-)
-
-# A Claude Code provider other than Anthropic itself is reached by pointing
-# ANTHROPIC_BASE_URL at it; on this host that is a private provider, the same
-# one the work Codex profile uses. Work only, with the Vertex group: personal
-# and home policies reach api.anthropic.com and nothing else, so capturing a
-# provider URL there would hand a personal sandbox an address its policy blocks
-# and validate-profile.sh would report it as unreachable rather than absent.
-# CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY travels with it because a provider
-# model id is not in the CLI's own catalog.
-CLAUDE_PROVIDER_VARS=(
-    ANTHROPIC_BASE_URL
-    CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
-)
-
-# Filled only after resolving the sandbox profile's explicit Codex bindings.
-PROVIDER_PROFILE_VARS=()
-
-# No OTEL_VARS list: nothing telemetry-related is captured from the host env.
 #
-# Two kinds of value used to be in here and neither belongs. The exporter
-# selections, intervals, toggles and log-detail flags are a decision about how
-# the agent behaves inside the container — container policy, which config/bashrc
-# owns, and which a host's local preference must not silently change. The
-# endpoint, protocol and resource attributes are host knowledge, but they are
-# written unconditionally further down from site.env and the sandbox's own
-# identity, which always overrode whatever capture produced anyway.
-#
-# OTEL_RESOURCE_ATTRIBUTES specifically must never be captured: the host's value
-# names the host's project and session, so every attribute in it is wrong here.
+# Nothing is captured from the host environment by name. A sandbox receives
+# exported OPENSHELL_SANDBOX_<NAME> values (written as <NAME>), plus the OTEL
+# identity in docs/environment-variables.md. There is no per-profile capture
+# list to keep in step: which credential a sandbox gets is decided by exporting
+# the prefixed variable for that create or refresh.
 
-ALL_VARS=(
-    "${ANTHROPIC_VARS[@]}"
-    "${VERTEX_VARS[@]}"
-    "${CLAUDE_PROVIDER_VARS[@]}"
-    "${JIRA_VARS[@]}"
-    "${CLAUDE_VARS[@]}"
-)
+# PROVIDER_PROFILE_VARS/PROVIDER_URLS are set by resolve_provider_profiles()
+# from provider-profiles.py. The names are the env keys bound providers read;
+# their values reach the sandbox only through OPENSHELL_SANDBOX_<key>.
 
 # ---------------------------------------------------------------------------
 # Infer sandbox name from CWD if under ~/sandboxes/<name>/
@@ -1836,13 +1783,17 @@ git_ignored_excludes() {
 # is repaired rather than left failing a check it cannot pass.
 seed_claude_json() {
     local sandbox_name="$1"
-    # personal and home never capture ANTHROPIC_BASE_URL (CLAUDE_PROVIDER_VARS),
-    # so a seed there would claim a provider approval the sandbox does not use.
+    # The provider pair is operator-supplied now, so read the prefixed names
+    # this sandbox will actually see, not the host's plain ones. Without them no
+    # seed is needed, and on personal/home a seed would claim a provider
+    # approval the sandbox does not use.
+    local provider_url="${OPENSHELL_SANDBOX_ANTHROPIC_BASE_URL:-}"
+    local provider_key="${OPENSHELL_SANDBOX_ANTHROPIC_API_KEY:-}"
     personal_profile "${SANDBOX_PROFILE:-}" && return 0
-    [[ -n "${ANTHROPIC_BASE_URL:-}" && -n "${ANTHROPIC_API_KEY:-}" ]] || return 0
+    [[ -n "$provider_url" && -n "$provider_key" ]] || return 0
     local stage
     stage="$(mktemp -d)"
-    if ! jq -n --arg tail "${ANTHROPIC_API_KEY: -20}" \
+    if ! jq -n --arg tail "${provider_key: -20}" \
             '{hasCompletedOnboarding: true,
               customApiKeyResponses: {approved: [$tail], rejected: []}}' \
             > "${stage}/.claude-seed.json"; then
@@ -1883,11 +1834,12 @@ seed_claude_json() {
 # Everything else travels because the live file is the only source for the
 # host's model, provider, theme, agents, and instructions choices.
 #
-# The filter drops only `permissions`, `policies`, and `plugins`, so it does not
-# redact inline secrets. Provider keys are expected from the environment: the
-# host's provider config names an env var, and work's `.env` already carries the
-# captured keys. A credential kept inline in `opencode.json` would be copied
-# into the sandbox; extend the filter if that path needs closing. V2 keeps
+# The filter drops `permissions`, `policies`, `plugins`, any top-level `env`
+# block, and inline provider keys (`settings.apiKey`). The first three encode
+# host boundaries; the last two are env/credential paths that must not exist
+# beside the operator's OPENSHELL_SANDBOX_ exports. Provider credentials are
+# expected from the environment: the host's provider config names an env var,
+# and the operator exports OPENSHELL_SANDBOX_<that name>. V2 keeps
 # `opencode auth login` credentials in the database instead, so the legacy
 # `auth.json` is not a path the host uses; an in-sandbox login lands in the
 # database, which the state functions preserve across --recreate.
@@ -1899,14 +1851,21 @@ stage_opencode_config() {
     local staged_state="${destination_root}/.local/state/opencode"
     local source staged name shipped=1
 
-    # Main config: filtered, because it carries the host boundaries.
+    # Main config: filtered, because it carries the host boundaries and can
+    # inject env of its own. Env a config patches in is stripped here: the only
+    # env path into a sandbox is the operator's OPENSHELL_SANDBOX_ exports
+    # (docs/environment-variables.md). `.providers[].env` stays — it names the
+    # env var a provider reads, it does not set one. Inline provider keys go
+    # with the env: a key that is not in the environment is a second path.
     source="${config_dir}/opencode.json"
     staged="${staged_config}/opencode.json"
     if [[ -f "$source" ]]; then
         mkdir -p "$staged_config"
         # A JSONC config or a broken file is an error, not "nothing to ship":
         # the caller must not quietly launch a sandbox on defaults.
-        if ! jq 'del(.permissions, .policies, .plugins)' "$source" \
+        if ! jq 'del(.permissions, .policies, .plugins, .env,
+                    .providers[]?.settings?.apiKey,
+                    .providers[]?.settings?.api_key)' "$source" \
             | sed "s|${HOME}|/sandbox|g" > "${staged}.tmp"
         then
             rm -f "${staged}.tmp"
@@ -2732,12 +2691,13 @@ fi
 # --profile is only applied on a path that creates a sandbox
 # ---------------------------------------------------------------------------
 
-# Profile decides four things at once: which env vars land in /sandbox/.env,
-# which credentials upload, which policy renders, and whether the system prompt
-# keeps its Jira section. Only the create path writes all four. Every other mode
-# either ignores --profile outright or — worse, --refresh — applies the new
-# .env and leaves the policy, system prompt, and manifest on the old profile.
-# Half-applied reads as applied, so refuse instead.
+# Profile decides three things at once: which credentials upload, which policy
+# renders, and whether the system prompt keeps its Jira section. Only the create
+# path writes all three. (Env vars are no longer one of them: they come from the
+# operator's OPENSHELL_SANDBOX_ exports.) Every other mode either ignores
+# --profile outright or — worse, --refresh — leaves the policy, system prompt,
+# and manifest on the old profile. Half-applied reads as applied, so refuse
+# instead.
 if [[ "$PROFILE_FROM_CLI" == true \
       && "$CREATE_MODE" != true \
       && "$RECREATE_MODE" != true \
@@ -3463,69 +3423,26 @@ if [[ "$REFRESH_MODE" != true ]]; then
     init_manifest "${SANDBOXES_DIR}/${SANDBOX_NAME}" "$SANDBOX_NAME" "$SANDBOX_PROFILE" "$HARNESS"
 fi
 
-# Build active var list based on profile
-ACTIVE_VARS=()
-if personal_profile "$SANDBOX_PROFILE"; then
-    ACTIVE_VARS+=("${CLAUDE_VARS[@]}")
-    # ANTHROPIC_API_KEY is a personal credential only while the host talks to
-    # Anthropic directly. With ANTHROPIC_BASE_URL set it is the *provider's*
-    # key, and that pair is work-only (`CLAUDE_PROVIDER_VARS`): shipping it to
-    # personal or home hands a work sandbox's credential to a profile whose
-    # policy cannot reach the provider it belongs to, where it can only fail an
-    # Anthropic auth check. A host that signs in with OAuth carries no
-    # ANTHROPIC_API_KEY at all, which is the other personal path
-    # (`validate-profile.sh` accepts either).
-    if [[ -z "${ANTHROPIC_BASE_URL:-}" ]]; then
-        ACTIVE_VARS+=("${ANTHROPIC_VARS[@]}")
-    fi
-else
-    ACTIVE_VARS+=("${ALL_VARS[@]}")
-fi
-
+# /sandbox/.env has exactly two sources.
+#
+# 1. Telemetry identity and its query endpoints — the OTEL exception. These are
+#    dynamic per-sandbox values (collector address, hostname, host directory,
+#    openshell name, profile) that nobody can write by hand and that the
+#    in-container wrappers and validate-profile.sh read. See
+#    docs/environment-variables.md.
+# 2. Exported OPENSHELL_SANDBOX_<NAME> on the create/refresh host, written as
+#    <NAME>. That is the only path for everything else, credentials included:
+#    nothing is captured from the host environment by name any more, so a
+#    credential, provider URL, or tool setting arrives only when the operator
+#    exports the prefixed form. Setting those is the operator's job.
+#
+# Written last, so a prefixed variable can override an identity value above.
 ENV_CONTENT=""
-ACTIVE_VARS+=("${PROVIDER_PROFILE_VARS[@]}")
-captured=0
-for var in "${ACTIVE_VARS[@]}"; do
-    if [[ -n "${!var+x}" ]]; then
-        ENV_CONTENT+="$(printf '%s=%q' "$var" "${!var}")"$'\n'
-        captured=$((captured + 1))
-    fi
-done
 
-if ! personal_profile "$SANDBOX_PROFILE"; then
-    # Sandbox-scoped overrides: every exported OPENSHELL_SANDBOX_<NAME> on the
-    # host lands in the sandbox as <NAME>. One convention instead of a
-    # hand-maintained per-variable mapping — a new override needs no change here.
-    #
-    # The longer prefix is deliberate. SANDBOX_ already names sandbox-side
-    # identity (SANDBOX_PROFILE, SANDBOX_HOST_DIR, ...) and host-only knobs
-    # (SANDBOX_CLONE_SINCE, SANDBOX_IMAGE_NAME), so a bare SANDBOX_ match would
-    # ship a stripped copy of this script's own variables and inject host build
-    # settings into every sandbox. OPENSHELL_SANDBOX_ collides with neither.
-    #
-    # Exported only (compgen -e): an unexported shell variable is not part of
-    # the host env. Work profile only, because personal and home are
-    # credential-less by design (CLAUDE.md gotcha 10) and an override there is
-    # exactly what those profiles keep on the host. .env is rebuilt and
-    # re-uploaded on every create and --refresh, replacing the sandbox copy
-    # wholesale, so unsetting a variable on the host removes it in there too.
-    while IFS= read -r var; do
-        [[ -n "${var#OPENSHELL_SANDBOX_}" ]] || continue
-        ENV_CONTENT+="$(printf '%s=%q' "${var#OPENSHELL_SANDBOX_}" "${!var}")"$'\n'
-    done < <(compgen -e | sort)
-
-    # Remap credential file paths for sandbox
-    if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS+x}" ]]; then
-        ENV_CONTENT+=$'\n'"GOOGLE_APPLICATION_CREDENTIALS=/sandbox/.config/gcloud/application_default_credentials.json"
-    fi
-fi
-
-# Dashboard hooks: relay to host dashboard via container gateway
-ENV_CONTENT+="CLAUDE_DASHBOARD_HOST=host.containers.internal"$'\n'
-
-# Telemetry egress. Always written from site.env, overriding anything captured
-# from the host env: the host reaches its collector on a host-local address
-# and over gRPC, neither of which works from inside a sandbox (gotcha 13).
+# Telemetry egress. Always written from site.env: the host reaches its
+# collector on a host-local address and over gRPC, neither of which works from
+# inside a sandbox (gotcha 13). A prefixed export with the same name wins,
+# because the override loop runs after this block.
 ENV_CONTENT+="$(printf 'OTEL_EXPORTER_OTLP_ENDPOINT=%q' "$OTEL_URL")"$'\n'
 ENV_CONTENT+="OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf"$'\n'
 
@@ -3574,17 +3491,6 @@ if [[ -n "$SANDBOX_PROFILE" ]]; then
     ENV_CONTENT+="$(printf 'SANDBOX_PROFILE=%q' "$SANDBOX_PROFILE")"$'\n'
 fi
 
-# jewzaam-reviews orchestrator: harness and model per review level. Work sets
-# no model, so `claude -p` uses the host settings.json `model` (strip_model
-# keeps it for work) — the provider's model travels with its provider and no
-# provider id lands in this repo. Personal and home have no settings.json
-# model; Anthropic tiers are named explicitly.
-ENV_CONTENT+="REVIEW_ORCHESTRATOR_HARNESS=claude"$'\n'
-if personal_profile "$SANDBOX_PROFILE"; then
-    ENV_CONTENT+="REVIEW_ORCHESTRATOR_MODEL_DEEP=sonnet"$'\n'
-    ENV_CONTENT+="REVIEW_ORCHESTRATOR_MODEL_FOCUSED=haiku"$'\n'
-fi
-
 # The OTEL identity, assembled from the values just written. Every attribute is
 # host knowledge and none of it is observable from inside the container:
 # `hostname` there is sandbox-sb-<hash>, and $(pwd) is /sandbox/source for every
@@ -3619,10 +3525,24 @@ fi
 # malformed attributes. Both consumers strip surrounding single quotes.
 ENV_CONTENT+="OTEL_RESOURCE_ATTRIBUTES='${OTEL_ATTRS}'"$'\n'
 
-if [[ $captured -eq 0 ]]; then
-    echo "Warning: no env vars captured, sandbox will have no credentials" >&2
+# Operator-supplied env, last so it wins over the identity defaults above.
+# Exported only (compgen -e): an unexported shell variable is not part of the
+# host env. Every profile accepts it — which credential a sandbox may carry is
+# now the operator's call, expressed by exporting it, not the profile's.
+override_count=0
+while IFS= read -r var; do
+    case "$var" in
+        OPENSHELL_SANDBOX_?*) ;;
+        *) continue ;;
+    esac
+    ENV_CONTENT+="$(printf '%s=%q' "${var#OPENSHELL_SANDBOX_}" "${!var}")"$'\n'
+    override_count=$((override_count + 1))
+done < <(compgen -e | sort)
+
+if [[ $override_count -eq 0 ]]; then
+    echo "⊘ No OPENSHELL_SANDBOX_ env vars set — sandbox gets telemetry identity only" >&2
 else
-    echo "Captured $captured env vars" >&2
+    echo "Passing $override_count OPENSHELL_SANDBOX_ env vars" >&2
 fi
 
 if [[ "$DRYRUN" == true ]]; then
@@ -3659,6 +3579,11 @@ if [[ "$REFRESH_MODE" == true ]]; then
     fi
     start_error_sandbox "$OS_NAME" || exit 1
     echo "Refreshing config on ${SANDBOX_NAME}..." >&2
+    # Wipe before upload: .env is regenerated from the exports of THIS run, so a
+    # variable the operator stopped exporting must not survive. Upload extracts
+    # the archive entry over the path, but deleting first makes the guarantee
+    # independent of that.
+    run openshell sandbox exec --name "$OS_NAME" "${GW_FLAG[@]}" -- rm -f /sandbox/.env
     upload_config "$OS_NAME" "$SANDBOX_DIR"
     # Regenerate and upload context files for PR repos. Unconditional: --force
     # is about the upload and download change checks, and --refresh has no

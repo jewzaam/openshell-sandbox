@@ -1,8 +1,11 @@
 ## Jira
 
-Use the `docs-tools:jira-reader` skill for reading Jira issues. It works
-inside the sandbox — JIRA_URL, JIRA_API_TOKEN, and JIRA_USERNAME are set
-in the environment. Do not claim Jira is inaccessible.
+Use the `docs-tools:jira-reader` skill for reading Jira issues. Jira
+credentials reach a sandbox only when the operator exported them as
+`OPENSHELL_SANDBOX_` variables at create/refresh time; when they did, the
+sandbox has JIRA_URL, JIRA_API_TOKEN, and JIRA_USERNAME. Check the env before
+claiming Jira is inaccessible — absent credentials are a host-side setup
+decision, not a policy block.
 
 ## If you are Codex: request_user_input works here
 

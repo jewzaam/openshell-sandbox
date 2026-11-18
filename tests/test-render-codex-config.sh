@@ -60,6 +60,11 @@ exporter = "host-only"
 
 [mcp_servers.my_server]
 command = "/home/me/bin/my-mcp-server"
+env = { HOST_ONLY_SETTING = "from-mcp-config" }
+
+[shell_environment_policy]
+include_only = ["PATH", "HOME"]
+set = { HOST_ONLY_SETTING = "from-shell-policy" }
 
 [profiles.other]
 model = "not-this-one"
@@ -195,6 +200,10 @@ echo "$OUT" | grep -q "my-mcp-server" \
     && { echo "FAIL: host MCP server entry leaked into rendered config" >&2; fail=1; }
 echo "$OUT" | grep -q "sandbox_permissions" \
     && { echo "FAIL: host sandbox_permissions leaked into rendered config" >&2; fail=1; }
+# Env a harness config could inject is stripped: only the operator's
+# OPENSHELL_SANDBOX_ exports may set env in a sandbox.
+echo "$OUT" | grep -q 'HOST_ONLY_SETTING\|shell_environment_policy' \
+    && { echo "FAIL: host env-injecting config reached the sandbox" >&2; fail=1; }
 echo "$OUT" | grep -q '/home/me/source/jewzaam-reviews' \
     && { echo "FAIL: host marketplace path leaked into rendered config" >&2; fail=1; }
 
