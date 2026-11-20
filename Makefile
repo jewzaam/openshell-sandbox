@@ -12,28 +12,22 @@ SHELLCHECK ?= shellcheck
 MANAGED_SETTINGS_SRC ?= /etc/claude-code/managed-settings.json
 MANAGED_SETTINGS_STAGE = .tmp-managed-settings.json
 
-# scode has no extension; everything else is *.sh. config/bashrc is a
-# sourced fragment, not a script, and is left out.
-SHELL_SOURCES ?= $(wildcard bin/*.sh fetchsvc/*.sh scripts/*.sh scripts/explore/*.sh tests/*.sh) scripts/scode
+# scode has no extension; the agent shims are extensionless too. config/bashrc
+# is a sourced fragment, not a script, and is left out.
+SHELL_SOURCES ?= $(wildcard bin/*.sh fetchsvc/*.sh scripts/*.sh scripts/explore/*.sh tests/*.sh) \
+    bin/claude bin/codex bin/opencode scripts/scode
 TEST_SCRIPTS ?= $(wildcard tests/test-*.sh)
-
-# The claude/codex PATH shims come from claude-otel-stack, the one source for
-# host and sandbox. Copied into the build context because COPY cannot reach
-# outside it; .tmp-* is gitignored. bin/claude's host telemetry block is skipped
-# when /sandbox/.env exists, so the sandbox keeps config/bashrc + /sandbox/.env.
-OTEL_STACK_BIN ?= $(HOME)/source/claude-otel-stack/bin
-WRAPPER_STAGE_DIR = .tmp-otel-stack-bin
 
 # Only warnings and errors gate. The info/style notes (SC2016 in test fixtures,
 # SC1091 for sourced files that are gitignored or resolved at runtime) are
 # noise here; run `make test-lint SHELLCHECK_SEVERITY=style` to see them.
 SHELLCHECK_SEVERITY ?= warning
 
-.PHONY: build build-fetcher build-force check clean help stage-managed-settings stage-wrappers test-lint test-unit
+.PHONY: build build-fetcher build-force check clean help stage-managed-settings test-lint test-unit
 
 check: test-lint test-unit  ## Run the full quality gate
 
-build: build-fetcher stage-wrappers stage-managed-settings  ## Build the sandbox, work, and fetch-service container images
+build: build-fetcher stage-managed-settings  ## Build the sandbox, work, and fetch-service container images
 	$(CONTAINER_TOOL) build -t $(IMAGE_REF) -f Containerfile .
 	$(CONTAINER_TOOL) build -t $(WORK_IMAGE_REF) -f Containerfile.work \
 	    --build-arg BASE_IMAGE=$(IMAGE_REF) .
@@ -51,18 +45,10 @@ build-fetcher:  ## Build the fetch-service container image
 # published. A normal `make build` then reuses the layer and ships the old CLI.
 # --no-cache is the whole point of this target; --pull picks up a newer base at
 # the same time. Rebuilds apt and pip too, so it is slow by design.
-build-force: clean stage-wrappers stage-managed-settings  ## Rebuild the images from scratch (no cache, fresh base)
+build-force: clean stage-managed-settings  ## Rebuild the images from scratch (no cache, fresh base)
 	$(CONTAINER_TOOL) build --no-cache --pull -t $(IMAGE_REF) -f Containerfile .
 	$(CONTAINER_TOOL) build --no-cache -t $(WORK_IMAGE_REF) -f Containerfile.work \
 	    --build-arg BASE_IMAGE=$(IMAGE_REF) .
-
-stage-wrappers:  ## Copy claude/codex shims from OTEL_STACK_BIN into the build context
-	@test -x $(OTEL_STACK_BIN)/claude && test -x $(OTEL_STACK_BIN)/codex || { \
-	    echo "error: no executable claude and codex in $(OTEL_STACK_BIN) — set OTEL_STACK_BIN=<claude-otel-stack>/bin" >&2; \
-	    exit 1; \
-	}
-	mkdir -p $(WRAPPER_STAGE_DIR)
-	cp $(OTEL_STACK_BIN)/claude $(OTEL_STACK_BIN)/codex $(WRAPPER_STAGE_DIR)/
 
 # The work image bakes this file in; see Containerfile.work. Refusing to build
 # it when the source is absent is deliberate — a work image without the deny

@@ -35,10 +35,11 @@ is no default. `research` and `fetch-service` are policies only —
 ## Rules where the obvious change is wrong
 
 1. **The sandbox is the security boundary.**
-   `--dangerously-skip-permissions` is intentional, as is Codex's
-   `--dangerously-bypass-approvals-and-sandbox` under `--harness codex`.
-   Network policy (L4/L7), Landlock filesystem, and process isolation replace
-   the agent's own permission system. Do not "fix" either flag.
+   `--dangerously-skip-permissions` is intentional, as are Codex's two
+   `--dangerously-bypass-*` flags and OpenCode's `--auto` — all forced by the
+   shims in `bin/`, not just the wrapper. Network policy (L4/L7), Landlock
+   filesystem, and process isolation replace the agent's own permission
+   system. Do not "fix" them.
 2. **Never hand `policies/*.yaml` to `openshell` directly.** They are templates.
    An unsubstituted `${OTEL_HOST}` is valid YAML, and OpenShell accepts it as a
    literal hostname — the sandbox then silently denies all traffic.
@@ -169,10 +170,14 @@ is no default. `research` and `fetch-service` are policies only —
     to the L7 proxy, which always succeeds, so a stalled upstream hangs forever.
 16. **Skipping an unchanged repo is the default. `--force`/`-f` always sends.**
     A repo that *does* need sending moves only the files that changed, in both
-    directions: upload stages paths newer than `last_upload`, download tars
-    paths newer than the latest of `last_upload`/`last_download`
-    (`repo_last_upload()` / `repo_sync_reference()` in lib.sh — the skip check
-    and the transfer must measure from the same stamp). `tar --newer` at the
+    directions: both measure from the latest of `last_upload`/`last_download`
+    (`repo_sync_reference()` in lib.sh — the skip check and the transfer must
+    measure from the same stamp). A download makes the host identical to the
+    sandbox, so measuring upload from `last_upload` alone made the next
+    `--upload` re-send everything the download had just delivered. A download
+    that left host work behind (a conflict, or a host-only path) does **not**
+    stamp, so the reference never advances past a divergence it never
+    resolved. `tar --newer` at the
     source, not a file list: the bytes cross the wire only for changed paths,
     and an ordinary edit to a 2GB repo no longer re-sends 2GB. Deletions ride
     the same run: `repo_file_inventory()` lists relative paths of files and
@@ -185,11 +190,38 @@ is no default. `research` and `fetch-service` are policies only —
     excluded in **both** directions: git internals diverge legitimately
     (index, packed refs, logs) and a `.venv` is built per side (gotcha 12), so
     neither is ever a deletion — `--force` is how git storage and the venv are
-    mirrored. The list travels as a file rather than an exec pipe because
+    mirrored. That exclusion is for deletions only: the delta does ship `.git`,
+    so the newer-side check covers git paths too; `.venv` is the one path no
+    transfer carries. An empty delta never stamps — the reference must not move
+    past sandbox work it did not send. The list travels as a file rather than an exec pipe because
     `sandbox exec` buffers stdin to EOF (knowledgebase:
     `containers/openshell.md`). `--force` is still the full tree. Both walks
     stay mtime-based; a file whose mtime is older than the stamp is missed, and
     `--force` sends it.
+    **A file the receiving side changed more recently is skipped, not
+    overwritten**, and the run ends with one line per affected repo:
+    `⚠ Sandbox changes not reconciled in <repo> (--download brings them to the
+    host)` after `--upload`, `⚠ Host changes not reconciled in <repo>
+    (--upload sends them to the sandbox)` after `--download`. No file list.
+    Upload sends the staged paths and their mtimes to the sandbox, has it
+    report the ones it holds a newer copy of, and strips those from the stage
+    before the tar; a failed check aborts that repo's upload rather than
+    sending a delta it could not check. Download compares the extracted delta
+    against the host and drops the newer-on-host paths before the rsync (which
+    runs without `--delete`, so the host copy stays).
+    The warning is not the same check: upload also names a repo it skipped as
+    unchanged (host-side walk found nothing) when the *sandbox* has newer
+    paths, which is why upload pays one batched exec for every repo with a
+    stamp and subtracts the paths it just sent. Download walks the host
+    locally and subtracts the delta tree, and runs the same host walk for a
+    repo the sandbox reports unchanged — that skip is exactly when a host-only
+    edit would otherwise go unmentioned. Whole seconds in both directions —
+    tar stores no nanoseconds, so a finer comparison reads every file the host
+    wrote in the same second as newer (knowledgebase: `common/tar-mtime.md`,
+    including why `--newer` also matches on ctime). The stamps still advance,
+    so the divergence is frozen until `--force`, which mirrors the full tree and
+    reports nothing. `tests/test-delta-transfer.sh` covers both directions and
+    the skipped-repo case.
     `upload_repo()` rm -rf's the sandbox copy first on the full path, so
     `--upload --force` is how edits a session made *inside* the sandbox get
     wiped back to host state. The delta path must not pre-delete: the tree it
@@ -489,15 +521,21 @@ is no default. `research` and `fetch-service` are policies only —
     - **Codex launches `codex resume` unconditionally**, with no check for
       existing sessions. Its picker starts a new session as readily as it
       resumes one and works with none recorded, so testing for
-      `/sandbox/.codex/sessions` first buys nothing. It carries
-      `--dangerously-bypass-approvals-and-sandbox` **and**
-      `--dangerously-bypass-hook-trust`: every hook in the sandbox was uploaded
-      from the host by `upload_config()`, so the trust gate has no untrusted
-      hook to catch and only costs a prompt on the observe-hook that reports
-      state to claude-dashboard. There is **no `--yolo`** in codex 0.152.0 —
-      the long flags are the flags, and the test asserts it has not crept in.
-    - **OpenCode launches with `--auto`, no `--continue`.** `--auto` is its
-      documented "auto-approve permissions that are not explicitly denied"
+      `/sandbox/.codex/sessions` first buys nothing. The danger flags —
+      `--dangerously-bypass-approvals-and-sandbox` and
+      `--dangerously-bypass-hook-trust` — live in `bin/codex`, not here, so a
+      bare `codex` in a shell gets them too. Every hook in the sandbox was
+      uploaded from the host by `upload_config()`, so the trust gate has no
+      untrusted hook to catch and only costs a prompt on the observe-hook that
+      reports state to claude-dashboard. `bin/codex` also folds in the old
+      `codex-error-wrapper.sh`: when `CODEX_ERROR_LOG` is exported it tees
+      stderr to that file and preserves the exit status, which is what lets
+      `harness-wrapper.sh` report a revoked refresh token after dtach exits.
+      There is **no `--yolo`** in codex 0.152.0 — the long flags are the flags,
+      and both tests assert it has not crept in.
+    - **OpenCode launches plain `opencode`.** `--auto` lives in
+      `bin/opencode`, so a bare `opencode` in a shell gets it too. `--auto` is
+      the documented "auto-approve permissions that are not explicitly denied"
       flag: the OpenShell policy is the boundary, the same bargain as Claude's
       `--dangerously-skip-permissions` and Codex's bypass. Explicit denies
       still apply, which is why `upload_config()` drops the host's
@@ -775,13 +813,14 @@ is no default. `research` and `fetch-service` are policies only —
   launcher: `bin/claude.env` held the policy and only `harness-wrapper.sh` read
   it, so a bare `claude` came up with an endpoint and telemetry off; the
   attributes were assembled there too, so every review-orchestrator sub-agent
-  reported with no identity at all. The `/sandbox/bin/claude` and `codex` PATH
-  shims (from claude-otel-stack, staged by `make build`) are not that launcher
-  again: in here they set no telemetry (`bin/claude`'s host block is gated on
-  `/sandbox/.env` being absent), only tag headless runs and fill a missing
-  codex `project`. Renaming or moving `/sandbox/.env` breaks that gate.
-  `docs/environment-variables.md` has the full chain and the evidence that
-  Claude Code strips `OTEL_*` from the env it hands to tool subprocesses.
+  reported with no identity at all. The `/sandbox/bin/claude`, `codex` and
+  `opencode` PATH shims are owned by this repo (`bin/`), not staged from
+  claude-otel-stack: in here they set no telemetry, only tag headless runs,
+  fill a missing codex `project`, and force each harness's danger flag
+  (`--dangerously-skip-permissions`, both Codex bypass flags, `--auto`).
+  Renaming or moving `/sandbox/.env` breaks the codex `project` inheritance. `docs/environment-variables.md` has the full
+  chain and the evidence that Claude Code strips `OTEL_*` from the env it hands
+  to tool subprocesses.
 
 ## OpenShell Policy Gotchas
 

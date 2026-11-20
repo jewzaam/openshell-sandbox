@@ -192,17 +192,23 @@ fetch_jira_comments() {
 
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Result marks — see standards/cli/conventions.md. MARK_OK is openshell's own
-# green bold ✓, reproduced because upload_repo() reprints that line to hang the
-# reason off it. Colour only on a tty, so a redirected log keeps the glyphs
-# without the escapes.
-# shellcheck disable=SC2034  # MARK_OK is used by sandbox.sh, which sources this
+# Result marks — see standards/cli/conventions.md. Colour means what the reader
+# has to do: green = no action needed, yellow = informational, red = action
+# required. A skip is green (nothing was wrong, nothing is needed). A transfer
+# that carried changes is yellow: something moved, and the operator has no work
+# to do because of it. The unreconciled warning is red: the other side holds
+# work the next transfer must settle. Glyphs stay in redirected logs.
+# shellcheck disable=SC2034  # the marks are used by sandbox.sh, which sources this
 if [[ -t 2 ]]; then
     MARK_OK=$'\033[1;32m✓\033[0m'
-    MARK_SKIP=$'\033[1;33m⊘\033[0m'
+    MARK_INFO=$'\033[1;33m✓\033[0m'
+    MARK_SKIP=$'\033[1;32m⊘\033[0m'
+    MARK_WARN=$'\033[1;31m⚠\033[0m'
 else
     MARK_OK='✓'
+    MARK_INFO='✓'
     MARK_SKIP='⊘'
+    MARK_WARN='⚠'
 fi
 
 # ---------------------------------------------------------------------------
@@ -241,11 +247,12 @@ record_repo_timestamp() {
         "$manifest" > "${manifest}.tmp" && mv "${manifest}.tmp" "$manifest"
 }
 
-# The moment host and sandbox were last known equal, per direction:
-# repo_last_upload() is the reference the upload delta is measured from, and
-# repo_sync_reference() is the LATEST of both stamps, which is what a download
-# compares against. A skipped upload deliberately does not stamp, so the latter
-# never advances past a divergence it never resolved.
+# The moment host and sandbox were last known equal. Both directions measure
+# from the LATEST of the two stamps: a download makes the host identical to the
+# sandbox, so the next upload must not treat the files it just received as host
+# work. A skipped transfer deliberately does not stamp, and neither does a
+# download that left host work behind, so the reference never advances past a
+# divergence it never resolved.
 #
 # One definition each: the skip check, the delta staging, and the download tar
 # must all measure from the same moment, or one of them sends a file the other
@@ -272,8 +279,9 @@ repo_sync_reference() {
     } | LC_ALL=C sort | tail -n 1
 }
 
-# True when the repo has anything modified since its last upload — including
-# never having been uploaded, or a manifest that does not say.
+# True when the repo has anything modified since host and sandbox last agreed
+# (either direction) — including never having been transferred, or a manifest
+# that does not say.
 #
 # Says why on stderr as a bare fragment, naming no repo: upload_repo() captures
 # it and hangs it off its own `✓ Upload complete` line, which sits under an
@@ -285,10 +293,10 @@ repo_sync_reference() {
 # --upload --force is the full-tree path.
 repo_changed_since_upload() {
     local sandbox_dir="$1" repo_name="$2"
-    local last_upload
-    last_upload="$(repo_last_upload "$sandbox_dir" "$repo_name")"
-    if [[ -z "$last_upload" ]]; then
-        echo "has no last_upload recorded" >&2
+    local sync_reference
+    sync_reference="$(repo_sync_reference "$sandbox_dir" "$repo_name")"
+    if [[ -z "$sync_reference" ]]; then
+        echo "has no previous transfer recorded" >&2
         return 0
     fi
 
@@ -326,7 +334,7 @@ repo_changed_since_upload() {
     # reset` to unstage, with nothing else touched. The walk misses that;
     # --upload --force sends it.
     local repo_dir="${sandbox_dir}/${repo_name}" newer
-    newer=$(find "$repo_dir" -newermt "$last_upload" \
+    newer=$(find "$repo_dir" -name .venv -prune -o -newermt "$sync_reference" \
         ! -path "${repo_dir}/.git" \
         ! -path "${repo_dir}/.git/index" \
         ! -path "${repo_dir}/.git/index.lock" \
@@ -337,7 +345,7 @@ repo_changed_since_upload() {
     [[ -n "$newer" ]] || return 1
     local tail=""
     [[ "$newer" == "$repo_dir" ]] || tail=" (${newer#"${repo_dir}/"})"
-    echo "newer than ${last_upload}${tail}" >&2
+    echo "newer than ${sync_reference}${tail}" >&2
 }
 
 # ---------------------------------------------------------------------------

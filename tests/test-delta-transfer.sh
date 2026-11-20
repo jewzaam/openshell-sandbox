@@ -14,6 +14,10 @@
 #   4. `.git` and `.venv` are excluded from deletion in both directions; only
 #      --force mirrors them.
 #   5. --force remains the full-tree mirror.
+#   6. A file the receiving side changed more recently is not overwritten, and
+#      the transfer warns once that unreconciled changes remain on the other
+#      side. The warning fires even when the repo itself was skipped because
+#      only one side changed.
 #
 # openshell is stubbed against a local directory playing /sandbox/source, so no
 # gateway is needed. The stub really extracts the staged tree on upload and
@@ -99,7 +103,20 @@ case "$1 $2" in
             [[ "$a" == "--" ]] && seen=1
         done
         case "${cmd[0]:-}" in
-            bash|tar|mkdir|find|rm) "${cmd[@]}" ;;
+            bash)
+                # HOSTILE_CONFLICT: the sandbox answers the conflict check with
+                # a path that tries to escape the stage. The host must refuse it.
+                if [[ -n "${HOSTILE_CONFLICT:-}" && "${cmd[*]}" == *'stat -c %Y'* ]]; then
+                    printf '../../sentinel-hostile\0'
+                fi
+                # HOSTILE_DIRTY: a repo name the host never listed must not
+                # reach the operator warning.
+                if [[ -n "${HOSTILE_DIRTY:-}" && "${cmd[*]}" == *'/tmp/unrec'* ]]; then
+                    echo 'DIRTY ../../evil'
+                fi
+                "${cmd[@]}"
+                ;;
+            tar|mkdir|find|rm) "${cmd[@]}" ;;
         esac
         ;;
 esac
@@ -170,8 +187,12 @@ sb --download probe
     || fail "delta download did not bring the sandbox edit"
 [[ "$(cat "${REPO}/big.bin")" == "big" ]] \
     || fail "delta download overwrote a file the sandbox had not changed"
-[[ ! -e "${REPO}/host-only.txt" ]] \
-    || fail "delta download left a path only the host had"
+# Newer on the host than the last agreement: this is host work, not a
+# sandbox-side deletion, so it stays and the run says so.
+[[ -f "${REPO}/host-only.txt" ]] \
+    || fail "delta download deleted a host-only file written since the last agreement"
+grep -q "Host changes not reconciled in myrepo" "${TMP}/last.log" \
+    || fail "download did not warn about the kept host-only file"
 [[ ! -e "${REPO}/mirror.txt" ]] \
     || fail "delta download left a sandbox-side deletion"
 [[ -f "${REPO}/.venv/bin/pyvenv.cfg" ]] \
@@ -204,5 +225,116 @@ echo venv > "${REPO}/.venv/bin/pyvenv.cfg"
 sleep 1
 sb --upload probe
 [[ ! -e "${REMOTE}/.venv" ]] || fail "delta upload carried .venv"
+
+# --- a newer sandbox copy survives --upload, and the skip is reported ---
+sleep 1
+echo "host older" > "${REPO}/edit.txt"
+sleep 1
+echo "sandbox newer" > "${REMOTE}/edit.txt"
+sb --upload probe
+[[ "$(cat "${REMOTE}/edit.txt")" == "sandbox newer" ]] \
+    || fail "delta upload overwrote a sandbox file newer than the host's"
+grep -q "Sandbox changes not reconciled in myrepo" "${TMP}/last.log" \
+    || fail "upload did not warn about unreconciled sandbox changes"
+grep -q -- "--download brings them" "${TMP}/last.log" \
+    || fail "upload warning did not name the reconciling direction"
+
+# --force is the override.
+sb --upload probe --force
+[[ "$(cat "${REMOTE}/edit.txt")" == "host older" ]] \
+    || fail "--upload --force did not overwrite the newer sandbox copy"
+
+# --- a newer host copy survives --download, and the skip is reported ---
+sleep 1
+echo "sandbox older" > "${REMOTE}/edit.txt"
+sleep 1
+echo "host newer" > "${REPO}/edit.txt"
+sb --download probe
+[[ "$(cat "${REPO}/edit.txt")" == "host newer" ]] \
+    || fail "delta download overwrote a host file newer than the sandbox's"
+grep -q "Host changes not reconciled in myrepo" "${TMP}/last.log" \
+    || fail "download did not warn about unreconciled host changes"
+grep -q -- "--upload sends them" "${TMP}/last.log" \
+    || fail "download warning did not name the reconciling direction"
+
+sb --download probe --force
+[[ "$(cat "${REPO}/edit.txt")" == "sandbox older" ]] \
+    || fail "--download --force did not overwrite the newer host copy"
+
+# --- a sandbox-only edit warns even when the host has nothing to send ---
+# Settle first: the force download above rewrote edit.txt in the stamp's own
+# second, which is newer than the whole-second stamp and would make this a
+# delta rather than the skip the case is about.
+sleep 1
+sb --upload probe --force
+sleep 1
+echo "sandbox drift" > "${REMOTE}/drift.txt"
+sb --upload probe
+[[ "$(cat "${REMOTE}/drift.txt")" == "sandbox drift" ]] \
+    || fail "upload removed a sandbox-only file"
+[[ ! -e "${REPO}/drift.txt" ]] || fail "upload pulled a sandbox-only file to the host"
+grep -q "Sandbox changes not reconciled in myrepo" "${TMP}/last.log" \
+    || fail "skipped upload did not warn about sandbox-only changes"
+
+# --- a host-only edit warns even when the sandbox has nothing to send ---
+sb --upload probe --force
+sleep 1
+echo "host drift" > "${REPO}/host-drift.txt"
+sb --download probe
+[[ ! -e "${REMOTE}/host-drift.txt" ]] || fail "download pushed a host-only file to the sandbox"
+grep -q "Host changes not reconciled in myrepo" "${TMP}/last.log" \
+    || fail "skipped download did not warn about host-only changes"
+
+# --- a successful delta does not warn about the paths it just sent ---
+sb --upload probe --force
+sleep 1
+echo "host only change" > "${REPO}/host-new.txt"
+sb --upload probe
+[[ "$(cat "${REMOTE}/host-new.txt")" == "host only change" ]] \
+    || fail "delta upload did not send a host-only file"
+grep -q "Sandbox changes not reconciled in myrepo" "${TMP}/last.log" \
+    && fail "upload warned about the paths it had just sent"
+
+# Same, but the host change is a commit-shaped `.git` write.
+sleep 1
+mkdir -p "${REPO}/.git/objects" "${REPO}/.git/refs/heads"
+echo obj > "${REPO}/.git/objects/newobject"
+echo ref > "${REPO}/.git/refs/heads/main"
+sb --upload probe
+grep -q "Sandbox changes not reconciled in myrepo" "${TMP}/last.log" \
+    && fail "upload warned about .git paths it had just sent"
+
+# --- a sandbox-reported conflict path cannot escape the stage ---
+sentinel="${TMP}/sentinel-hostile"
+: > "$sentinel"
+sleep 1
+echo "host change" > "${REPO}/edit.txt"
+HOSTILE_CONFLICT=1 sb --upload probe
+[[ -f "$sentinel" ]] || fail "a sandbox-reported '../' path deleted a host file outside the stage"
+
+# --- a sandbox-reported repo name cannot reach the warning ---
+HOSTILE_DIRTY=1 sb --upload probe
+grep -q "evil" "${TMP}/last.log" && fail "the warning echoed a sandbox-supplied repo name"
+
+# --- a newer sandbox .git ref survives --upload ---
+sb --upload probe --force
+sleep 1
+echo "host ref" > "${REPO}/.git/refs/heads/main"
+sleep 1
+echo "sandbox ref" > "${REMOTE}/.git/refs/heads/main"
+sb --upload probe
+[[ "$(cat "${REMOTE}/.git/refs/heads/main")" == "sandbox ref" ]] \
+    || fail "upload overwrote a newer sandbox .git ref"
+grep -q "Sandbox changes not reconciled in myrepo" "${TMP}/last.log" \
+    || fail "upload did not warn about the newer sandbox .git ref"
+
+# --- a sandbox .venv write is not unreconciled work ---
+sb --upload probe --force
+sleep 1
+mkdir -p "${REMOTE}/.venv/lib"
+echo pyc > "${REMOTE}/.venv/lib/x.pyc"
+sb --upload probe
+grep -q "Sandbox changes not reconciled in myrepo" "${TMP}/last.log" \
+    && fail "a sandbox .venv write produced the unreconciled warning"
 
 echo "all delta-transfer checks passed"

@@ -95,12 +95,14 @@ HOME="$FAKE_HOME" bash "${WORK}/scripts/sandbox.sh" --connect myapp --harness bo
 W="${REPO_ROOT}/bin/harness-wrapper.sh"
 grep -q '/sandbox/\.dtach-\$1' "$W" \
     || { echo "FAIL: wrapper does not derive the dtach socket from the harness" >&2; fail=1; }
-grep -q 'codex resume --dangerously-bypass-approvals-and-sandbox' "$W" \
-    || { echo "FAIL: wrapper does not launch codex resume with the bypass flag" >&2; fail=1; }
-grep -q 'codex-error-wrapper.sh codex resume' "$W" \
-    || { echo "FAIL: Codex errors are not captured outside dtach" >&2; fail=1; }
-grep -q 'dtach -c \$SOCKET opencode --auto' "$W" \
-    || { echo "FAIL: wrapper does not launch opencode with --auto" >&2; fail=1; }
+grep -q 'dtach -c \$SOCKET codex resume' "$W" \
+    || { echo "FAIL: wrapper does not launch codex resume" >&2; fail=1; }
+grep -q 'dtach -c \$SOCKET opencode' "$W" \
+    || { echo "FAIL: wrapper does not launch opencode" >&2; fail=1; }
+# The danger flags live in the sandbox shims (bin/claude, bin/codex,
+# bin/opencode), not here; tests/test-agent-shims.sh drives them.
+grep -q -- '--dangerously-bypass\|--auto' <(grep -v '^[[:space:]]*#' "$W") \
+    && { echo "FAIL: wrapper still carries a harness danger flag" >&2; fail=1; }
 grep -q 'ln -sfn /sandbox/source/CLAUDE.md /sandbox/.config/opencode/AGENTS.md' "$W" \
     || { echo "FAIL: OpenCode does not receive the sandbox system prompt as AGENTS.md" >&2; fail=1; }
 grep -q 'for h in claude codex opencode' "$W" \
@@ -129,8 +131,6 @@ grep -q '\-S "\$(socket_for "\$h")"' "$W" \
 grep -q 'if \[\[ -z "\$HARNESS" \]\]; then' "$W" \
     || { echo "FAIL: wrapper prompts even when the harness was named" >&2; fail=1; }
 
-grep -q -- '--dangerously-bypass-hook-trust' "$W" \
-    || { echo "FAIL: codex command is missing --dangerously-bypass-hook-trust" >&2; fail=1; }
 grep -q "refresh token was revoked' \"\$CODEX_ERROR_LOG\"" "$W" \
     || { echo "FAIL: failed Codex startup does not explain how to refresh auth" >&2; fail=1; }
 
@@ -157,17 +157,6 @@ if ( source "$VALID_HELPERS"; valid_harness bogus ); then
     echo "FAIL: wrapper accepts harness 'bogus'" >&2
     fail=1
 fi
-
-if CODEX_ERROR_LOG="${TMP}/codex-error.log" \
-    "${REPO_ROOT}/bin/codex-error-wrapper.sh" bash -c 'echo "refresh token was revoked" >&2; exit 7' \
-    2>"${TMP}/codex-stderr"; then
-    status=0
-else
-    status=$?
-fi
-[[ $status -eq 7 ]] || { echo "FAIL: Codex error wrapper lost the command status" >&2; fail=1; }
-grep -q 'refresh token was revoked' "${TMP}/codex-error.log" \
-    || { echo "FAIL: Codex error wrapper did not save stderr" >&2; fail=1; }
 
 # --- default harness precedence ---
 #
