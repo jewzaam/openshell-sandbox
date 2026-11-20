@@ -1057,13 +1057,20 @@ manifest_ensure_cmd() {
 # folder opens. Overwrites; scode only calls it when the file is missing.
 write_tasks_json() {
     local dir="$1" cmd="$2"
+    # The bash terminal runs repo-update first. It is host tooling — in neither
+    # this repo nor the image — and it used to be a step the operator had to
+    # remember in this terminal. A login shell so the host's PATH is in force,
+    # and a fresh shell after it however repo-update exits: a cancelled picker
+    # or a missing tool must still leave a usable terminal. No `command -v`
+    # guard, on purpose — silently skipping is the forgetting this replaces.
+    local shell_cmd="bash -li -c 'repo-update .; exec bash -li'"
     mkdir -p "${dir}/.vscode"
-    jq -n --arg cmd "$cmd" '
+    jq -n --arg cmd "$cmd" --arg shell "$shell_cmd" '
         def task($label; $command): {label: $label, type: "shell", command: $command,
             isBackground: true, problemMatcher: [],
             presentation: {reveal: "always", panel: "new", group: "sandbox-dev"},
             runOptions: {runOn: "folderOpen"}};
-        {version: "2.0.0", tasks: [task("sandbox"; $cmd), task("bash"; "exec bash -li")]}' \
+        {version: "2.0.0", tasks: [task("sandbox"; $cmd), task("bash"; $shell)]}' \
         > "${dir}/.vscode/tasks.json"
 }
 

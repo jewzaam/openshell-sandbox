@@ -160,7 +160,8 @@ scode --profile work ~/sandboxes/myapp-pr-1176
 ```
 
 Creates `~/sandboxes/<name>/.vscode/tasks.json` with auto-launching sandbox
-and bash terminals, then opens VS Code.
+and bash terminals, then opens VS Code. The bash terminal runs `repo-update .`
+(host tooling, not part of the image) before handing over to the shell.
 
 ### Profiles
 

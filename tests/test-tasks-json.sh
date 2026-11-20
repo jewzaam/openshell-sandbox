@@ -63,6 +63,14 @@ want="${WORK}/scripts/sandbox.sh --ensure probe-pr-1 --profile work --repo git@g
     got:  $(sandbox_cmd)"
 [[ "$(jq -r '.tasks[] | select(.label == "bash") | .runOptions.runOn' "$TASKS")" == folderOpen ]] \
     || fail "bash task lost"
+# The shell terminal updates the host clones before handing over. Pinned as a
+# string: repo-update is host tooling and must run on a login shell's PATH,
+# ahead of the exec, with no guard that could skip it silently.
+want_bash="bash -li -c 'repo-update .; exec bash -li'"
+[[ "$(jq -r '.tasks[] | select(.label == "bash") | .command' "$TASKS")" == "$want_bash" ]] \
+    || fail "bash task no longer runs repo-update first
+    want: ${want_bash}
+    got:  $(jq -r '.tasks[] | select(.label == "bash") | .command' "$TASKS")"
 
 # A manifest from before .profile renders no --profile, rather than failing.
 jq 'del(.profile)' "${PROBE}/manifest.json" > "${TMP}/m" && cat "${TMP}/m" > "${PROBE}/manifest.json"
