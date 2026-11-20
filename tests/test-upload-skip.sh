@@ -65,6 +65,15 @@ if [[ "$1 $2" == "sandbox upload" && -n "${UPLOAD_BROKEN:-}" ]]; then
     echo "✓ Upload complete" >&2
     exit 1
 fi
+# The per-file conflict check uploads a mtime list beside the repo, and its
+# remote half stats from there. Model that one upload; the repo upload itself
+# stays a no-op so the fixtures survive.
+if [[ "$1 $2" == "sandbox upload" && -n "${SANDBOX_FS:-}" ]]; then
+    src="${@: -2:1}"
+    if [[ "$(basename "$src")" == .openshell-conf-* ]]; then
+        cp -a "$src" "${SANDBOX_FS}/"
+    fi
+fi
 # `sandbox download <name> [--gateway X] <remote-path> <dest>` serves from
 # $SANDBOX_FS when one is set. A .tar source is the repo tarball the exec below
 # just wrote, so it is copied as a file — its path is under /sandbox/source and
@@ -382,13 +391,18 @@ if command -v rsync >/dev/null 2>&1; then
     upload
     uploaded && { echo "FAIL: --download of unchanged content made the next upload re-send everything" >&2; fail=1; }
 
-    # ...and a real sandbox-side edit still lands, and still counts as a change
+    # ...and a real sandbox-side edit still lands, and is not sent straight back
     echo "from the sandbox" > "${SANDBOX_FS}/myrepo/file.txt"
-    download --force
+    download
     grep -q "from the sandbox" "${REPO}/file.txt" \
         || { echo "FAIL: --download did not bring the sandbox edit to the host" >&2; fail=1; }
     upload
-    uploaded || { echo "FAIL: a file changed by --download was not uploaded" >&2; fail=1; }
+    uploaded && { echo "FAIL: upload re-sent a repo the download had just reconciled" >&2; fail=1; }
+
+    # ...but a real host edit after that download still goes.
+    echo "host edit after download" > "${REPO}/file.txt"
+    upload
+    uploaded || { echo "FAIL: a host edit after a download was not uploaded" >&2; fail=1; }
 fi
 
 # --- --download asks the sandbox which repos it changed and pulls only those.
@@ -436,7 +450,10 @@ if command -v rsync >/dev/null 2>&1; then
     # own mtime, which is a real change and pulls once. It is the writes
     # afterwards, inside it, that must not. ---
     mkdir -p "${SANDBOX_FS}/myrepo/.venv/lib"
-    upload
+    # The mkdir moves the repo root, so it is a real change and pulls once —
+    # that pull is also what stamps the reference past it. An upload no longer
+    # does, because a skipped upload must not claim the copies agree.
+    download
     echo wheel > "${SANDBOX_FS}/myrepo/.venv/lib/pkg.so"
     download
     pulled && { echo "FAIL: a .venv write made --download pull the whole repo" >&2; fail=1; }

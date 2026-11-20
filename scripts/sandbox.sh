@@ -580,7 +580,7 @@ transfer_quiet() {
     if [[ "$transfer_status" -ne 0 ]]; then
         return "$transfer_status"
     fi
-    [[ -z "$label" || "$DRYRUN" == true ]] || echo "${MARK_OK} ${label}" >&2
+    [[ -z "$label" || "$DRYRUN" == true ]] || echo "${MARK_INFO} ${label}" >&2
 }
 
 clone_repo_host() {
@@ -670,6 +670,74 @@ stage_repo_delta_for_upload() {
         | tar xf - -C "$dest"
 }
 
+# Per-file conflict check for a delta upload. A file the sandbox changed after
+# the host did must not be replaced by the host's older copy, so the staged
+# paths and their mtimes go to the sandbox, it reports which ones it holds a
+# newer copy of, and those paths are removed from the stage before the tar.
+#
+# Says nothing itself: the one-line unreconciled warning after the upload
+# covers every skipped path (upload_sandbox). Removing the path is the whole
+# job here.
+#
+# Whole seconds, matching the tar --newer walk this rides beside: two edits in
+# the same second are not a conflict (the host copy wins), and --force
+# overwrites either way. Returns non-zero when the check could not run — the
+# caller must not upload a delta it could not check, because the point is not
+# clobbering sandbox edits.
+drop_newer_sandbox_files() {
+    local sandbox_name="$1" repo_name="$2" stage="$3"
+    local list_dir="${stage}/.openshell-conf-${repo_name}"
+    local remote_list="/sandbox/source/.openshell-conf-${repo_name}/list"
+    local conflict_file="${stage}/.openshell-conflicts"
+    local rel target stage_root real_target
+
+    mkdir -p "$list_dir"
+    # -printf is GNU find, host side only: the sandbox's find is bfs, so the
+    # remote half stats each listed path instead. Only .venv is pruned: the
+    # delta does ship .git, so git state gets the same newer-side-wins check as
+    # every other path.
+    ( cd "${stage}/${repo_name}" && find . \
+        -name .venv -prune -o \
+        \( -type f -o -type l \) -printf '%T@\t%P\0' ) > "${list_dir}/list"
+    transfer_quiet "" run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
+        --no-git-ignore "$list_dir" /sandbox/source/
+    # Succeeds only on a clean remote run: a failed exec leaves no conflict
+    # list, which must not read as "no conflicts".
+    if ! run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
+        -- bash -c '
+            set -e
+            cd "/sandbox/source/$1"
+            IFS=$(printf "\t")
+            while read -r -d "" m p; do
+                m=${m%%.*}
+                if [ -e "$p" ] || [ -L "$p" ]; then
+                    r=$(stat -c %Y -- "$p" 2>/dev/null) || continue
+                    if [ "$r" -gt "$m" ]; then printf "%s\0" "$p"; fi
+                fi
+            done < "$2"
+            rm -rf "$(dirname -- "$2")"
+        ' _ "$repo_name" "$remote_list" > "$conflict_file"
+    then
+        rm -rf "$list_dir" "$conflict_file"
+        echo "Error: conflict check failed for ${repo_name}; delta not uploaded (retry, or --force to overwrite the sandbox copy)" >&2
+        return 1
+    fi
+    # The list comes back from code running inside the sandbox, so it is
+    # untrusted. A reported path reaches a host-side `rm`, which means an
+    # absolute path or a `..` component would escape the stage: skip anything
+    # that is not a plain relative path, and confirm the resolved target is
+    # still under the stage before removing it.
+    stage_root="$(realpath -m -- "${stage}/${repo_name}")"
+    while IFS= read -r -d "" rel; do
+        [[ -n "$rel" && "$rel" != /* && "/${rel}/" != */../* ]] || continue
+        target="${stage}/${repo_name}/${rel}"
+        real_target="$(realpath -m -- "$target")"
+        [[ "$real_target" == "${stage_root}/"* ]] || continue
+        rm -f -- "$target"
+    done < "$conflict_file"
+    rm -rf "$list_dir" "$conflict_file"
+}
+
 # Relative paths of files and symlinks, NUL-separated and sorted, for the
 # deletion diff. Directories are deliberately absent: an emptied directory is
 # removed by the parent walk on the receiving side, and a directory that only
@@ -705,8 +773,8 @@ sync_upload_deletions() {
     local remote_inv="/sandbox/source/.openshell-inv-${repo_name}/inv"
     mkdir -p "$inv_dir"
     repo_file_inventory "${sandbox_dir}/${repo_name}" > "${inv_dir}/inv"
-    run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" --no-git-ignore \
-        "$inv_dir" /sandbox/source/
+    transfer_quiet "" run openshell sandbox upload "$sandbox_name" "${GW_FLAG[@]}" \
+        --no-git-ignore "$inv_dir" /sandbox/source/
     if ! run openshell sandbox exec --name "$sandbox_name" "${GW_FLAG[@]}" \
         -- bash -c '
             set -e
@@ -774,7 +842,7 @@ upload_repo() {
         generate_repo_context "$sandbox_dir" "$repo_name" "${effective_profile:-${SANDBOX_PROFILE:-}}"
     elif why=$(repo_changed_since_upload "$sandbox_dir" "$repo_name" 2>&1); then
         : # held until the upload finishes, then hung off the ✓ line below
-        delta_since="$(repo_last_upload "$sandbox_dir" "$repo_name")"
+        delta_since="$(repo_sync_reference "$sandbox_dir" "$repo_name")"
     else
         echo "${MARK_SKIP} Upload skipped — ${repo_name} unchanged locally (--force to send)" >&2
         return 0
@@ -791,6 +859,11 @@ upload_repo() {
     if [[ -n "$delta_since" ]]; then
         stage_repo_delta_for_upload "${sandbox_dir}/${repo_name}" \
             "${stage}/${repo_name}" "$delta_since"
+        # A sandbox copy newer than the host's is left alone, with a warning;
+        # --force is the way to overwrite it. Before the deletion sync, so a
+        # failed check leaves the sandbox untouched.
+        drop_newer_sandbox_files "$sandbox_name" "$repo_name" "$stage" \
+            || { rm -rf "$stage"; return 1; }
         # Before the transfer: a path that flipped from directory to file is
         # cleared here, so the extraction below has nothing to collide with.
         # Runs even when the delta stages nothing, because a deletion-only
@@ -801,13 +874,28 @@ upload_repo() {
     fi
 
     # A host walk can trip on a path staging then drops — a .venv write is the
-    # common one — leaving an empty delta. Sending it would be a transfer of
-    # nothing; the stamp still moves, because nothing in the tree differs.
+    # common one — or on paths the conflict check removed, leaving an empty
+    # delta. Sending it would be a transfer of nothing, and it must not stamp:
+    # the shared reference would then move past sandbox work that was never
+    # sent, and the next download would call the repo clean.
     if [[ -n "$delta_since" && -z "$(ls -A "${stage}/${repo_name}" 2>/dev/null)" ]]; then
         echo "${MARK_SKIP} Upload skipped — ${repo_name} has nothing newer to send" >&2
         rm -rf "$stage"
-        [[ "$DRYRUN" == true ]] || record_repo_timestamp "$sandbox_dir" "$repo_name" last_upload
         return 0
+    fi
+
+    # What this delta actually carries, so sandbox_unreconciled_repos() can
+    # subtract it: an uploaded file lands with the host's mtime, which is newer
+    # than the reference and would otherwise warn about its own transfer.
+    if [[ -n "$delta_since" && -n "${UPLOAD_SENT_DIR:-}" ]]; then
+        # `.git` is sent by every upload (only `.venv` is staged out), so it
+        # belongs in the list: the remote walk does look at git paths, and
+        # leaving them out flagged every commit as unreconciled.
+        ( cd "${stage}/${repo_name}" && find . -name .venv -prune -o \
+            \( -type f -o -type l \) -printf '%P\0' \
+            | while IFS= read -r -d "" p; do
+                printf '%s/%s\0' "$repo_name" "$p"
+            done | LC_ALL=C sort -z ) > "${UPLOAD_SENT_DIR}/${repo_name}"
     fi
 
     if [[ -z "$delta_since" ]]; then
@@ -866,6 +954,55 @@ write_manifest() {
             + (if $sha == "" then {} else {sha: $sha, cloned_at: $ts} end)' \
         "$manifest" > "${manifest}.tmp"
     mv "${manifest}.tmp" "$manifest"
+}
+
+# Names the repos the sandbox has changed since host and sandbox last agreed,
+# minus the paths this upload just sent. One exec for every repo; used purely
+# for the one-line warning after --upload, so a failure reports itself and
+# never fails the upload.
+#
+# The sent lists matter: an uploaded file lands in the sandbox with the host's
+# mtime, which is newer than the reference, and without subtracting it every
+# successful upload would warn about its own work. A repo whose upload was
+# skipped has no list, so a sandbox edit there still counts.
+sandbox_unreconciled_repos() {
+    local os_name="$1" refs="$2" sent_dir="$3"
+    local stage out
+    stage="$(mktemp -d)"
+    mkdir -p "${stage}/sent"
+    cp "$refs" "${stage}/refs"
+    cp -a "${sent_dir}/." "${stage}/sent/" 2>/dev/null || true
+    # The uploaded directory's basename is the remote path's last segment.
+    local remote_dir
+    remote_dir="/sandbox/source/$(basename "$stage")"
+    transfer_quiet "" run openshell sandbox upload "$os_name" "${GW_FLAG[@]}" \
+        --no-git-ignore "$stage" /sandbox/source/
+    out=$(run openshell sandbox exec --name "$os_name" "${GW_FLAG[@]}" -- bash -c '
+cd /sandbox/source
+IFS=$(printf "\t")
+while read -r repo since; do
+    [ -d "$repo" ] || continue
+    find "$repo" -name .venv -prune -o -newermt "$since" \
+        ! -path "$repo/.git" ! -path "$repo/.git/index" ! -path "$repo/.git/index.lock" \
+        ! -path "$repo/.git/objects" ! -path "$repo/.git/FETCH_HEAD" \
+        ! \( -type d -path "$repo/.git/refs/remotes/*" \) \
+        \( -type f -o -type l \) -print0 2>/dev/null | LC_ALL=C sort -z > /tmp/unrec
+    sent="$1/sent/$repo"
+    if [ -f "$sent" ]; then
+        LC_ALL=C comm -z -23 /tmp/unrec "$sent" > /tmp/unrec.rem
+    else
+        cp /tmp/unrec /tmp/unrec.rem
+    fi
+    [ -s /tmp/unrec.rem ] && echo "DIRTY $repo"
+done < "$1/refs"
+rm -rf "$1" /tmp/unrec /tmp/unrec.rem
+' _ "$remote_dir" 2>/dev/null) || {
+        rm -rf "$stage"
+        echo "Warning: could not check for unreconciled sandbox changes" >&2
+        return 0
+    }
+    rm -rf "$stage"
+    awk '/^DIRTY /{print $2}' <<<"$out"
 }
 
 # Names the repos the sandbox has NOT touched since host and sandbox were last
@@ -938,14 +1075,28 @@ echo WALKED' 2>/dev/null) || {
             line = substr($0, 7)
             split(line, fields, " ")
             path = substr(line, length(fields[1]) + 2)
+            gsub(/[[:cntrl:]]/, "", path)
             printf "Download reason: %s has newer path %s\n", fields[1], path > "/dev/stderr"
         }
     ' <<<"$out"
 }
 
+# Host paths newer than SINCE, NUL-separated and sorted, relative to the repo
+# root so a listing of the delta tree compares directly. Excludes the same git
+# noise repo_changed_since_upload() documents: `git status` and a no-op
+# `git fetch` must not read as host work.
+host_newer_paths() {
+    local repo_dir="$1" since="$2"
+    ( cd "$repo_dir" 2>/dev/null && find . -name .venv -prune -o -newermt "$since" \
+        ! -path ./.git ! -path ./.git/index ! -path ./.git/index.lock \
+        ! -path ./.git/objects ! -path ./.git/FETCH_HEAD \
+        ! \( -type d -path './.git/refs/remotes/*' \) \
+        \( -type f -o -type l \) -print0 2>/dev/null ) | LC_ALL=C sort -z
+}
+
 download_sandbox() {
     local sandbox_name="$1" sandbox_dir="$2"
-    local manifest="${sandbox_dir}/manifest.json"
+    local manifest="${sandbox_dir}/manifest.json" since=""
 
     if [[ ! -f "$manifest" ]]; then
         echo "Error: no manifest at ${manifest}" >&2
@@ -974,6 +1125,15 @@ download_sandbox() {
     for repo_name in $repos; do
         if [[ "$clean" == *" ${repo_name} "* ]]; then
             echo "${MARK_SKIP} Download skipped — ${repo_name} unchanged in the sandbox (--force to pull)" >&2
+            # A clean sandbox is not a clean host: the repo is skipped, so no
+            # delta ran, but host work newer than the last agreement is still
+            # unreconciled. One line, same as a pulled repo.
+            since="$(repo_sync_reference "$sandbox_dir" "$repo_name")"
+            if [[ -n "$since" ]] \
+                && [[ "$(host_newer_paths "${sandbox_dir}/${repo_name}" "$since" | wc -c)" -gt 0 ]]
+            then
+                echo "${MARK_WARN} Host changes not reconciled in ${repo_name} (--upload sends them to the sandbox)" >&2
+            fi
             continue
         fi
         # tar fails on a missing dir, and a sandbox not refreshed since the
@@ -1021,7 +1181,7 @@ download_sandbox() {
         # Delta by default: only paths newer than the moment host and sandbox
         # last agreed, which both stamps record. --force is the full mirror.
         # With no stamp (first pull, --force) the whole repo travels.
-        local since=""
+        local since="" host_pending=false
         if [[ "$FORCE_MODE" != true ]]; then
             since="$(repo_sync_reference "$sandbox_dir" "$repo_name")"
         fi
@@ -1059,13 +1219,46 @@ download_sandbox() {
         run tar xf "${dl_tmp}/openshell-dl-${repo_name}.tar" -C "$dl_tmp"
         mkdir -p "${sandbox_dir}/${repo_name}"
         if [[ -n "$since" ]]; then
-            # Host paths absent from the sandbox inventory go. Without this a
-            # sandbox-side deletion never reaches the host, and the next upload
-            # would send the stale copy back.
+            # A host copy newer than the sandbox's stays put; --force is the way
+            # to overwrite it. Dropped from the staging tree rather than
+            # filtered at rsync, so the delta write below never sees it (and the
+            # rsync runs without --delete, so the host file stays). No message
+            # here: the one-line unreconciled warning after the loop covers it.
+            local rel
             if [[ "$DRYRUN" != true ]]; then
-                local host_inv="${dl_tmp}/openshell-host-inv"
+                while IFS= read -r -d "" rel; do
+                    local host_path="${sandbox_dir}/${repo_name}/${rel}"
+                    local host_epoch incoming_epoch
+                    # Whole seconds on both sides: tar stores mtimes to the
+                    # second, so a nanosecond comparison reads every file the
+                    # host wrote in the same second as "newer".
+                    [[ (-e "$host_path" || -L "$host_path") ]] || continue
+                    host_epoch=$(stat -c %Y -- "$host_path" 2>/dev/null) || continue
+                    incoming_epoch=$(stat -c %Y -- "${dl_tmp}/${repo_name}/${rel}" 2>/dev/null) || continue
+                    if (( host_epoch > incoming_epoch )); then
+                        host_pending=true
+                        rm -f -- "${dl_tmp}/${repo_name}/${rel}"
+                    fi
+                done < <( cd "${dl_tmp}/${repo_name}" && find . \
+                    -name .venv -prune -o \
+                    \( -type f -o -type l \) -printf '%P\0' )
+            fi
+            # Host paths absent from the sandbox inventory are deletions the
+            # sandbox made — unless the host wrote them after the last
+            # agreement, in which case they look identical and are host work.
+            # Those are kept and the warning below fires; deleting them is how
+            # a plain --download used to destroy an unsent host file.
+            if [[ "$DRYRUN" != true ]]; then
+                local host_inv host_only host_newer to_delete
+                host_inv="${dl_tmp}/openshell-host-inv"
+                host_only="${dl_tmp}/openshell-host-only"
+                host_newer="${dl_tmp}/openshell-host-newer"
+                to_delete="${dl_tmp}/openshell-host-delete"
                 repo_file_inventory "${sandbox_dir}/${repo_name}" > "$host_inv"
                 if [[ -f "${dl_tmp}/${remote_inv}" ]]; then
+                    LC_ALL=C comm -z -23 "$host_inv" "${dl_tmp}/${remote_inv}" > "$host_only"
+                    host_newer_paths "${sandbox_dir}/${repo_name}" "$since" > "$host_newer"
+                    LC_ALL=C comm -z -23 "$host_only" "$host_newer" > "$to_delete"
                     while IFS= read -r -d '' p; do
                         rm -f -- "${sandbox_dir}/${repo_name}/${p}"
                         local d
@@ -1074,16 +1267,35 @@ download_sandbox() {
                             rmdir -- "${sandbox_dir}/${repo_name}/${d}" 2>/dev/null || break
                             d=$(dirname -- "$d")
                         done
-                    done < <(LC_ALL=C comm -z -23 "$host_inv" "${dl_tmp}/${remote_inv}")
+                    done < "$to_delete"
                 else
                     echo "Warning: no deletion inventory for ${repo_name}; sandbox-deleted files may remain on the host (--force mirrors)" >&2
                 fi
-                rm -f "$host_inv"
+                rm -f "$host_inv" "$host_only" "$host_newer" "$to_delete"
             fi
             # The tarball holds only changed paths, so --delete would remove
             # every host file it did not carry; the inventory above is the
             # only deletion source on this path.
             run rsync -a "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
+
+            # One line, not a file list: host paths newer than the reference
+            # that this pull did not write are still divergent, so the next
+            # --upload is what settles them. The delta tree is the set just
+            # written, so subtracting it leaves host-only work; a conflict kept
+            # on the host is in it by construction.
+            if [[ "$DRYRUN" != true ]]; then
+                local remaining
+                remaining=$( LC_ALL=C comm -z -23 \
+                    <( host_newer_paths "${sandbox_dir}/${repo_name}" "$since" ) \
+                    <( cd "${dl_tmp}/${repo_name}" && find . \
+                        -name .venv -prune -o \
+                        \( -type f -o -type l \) -print0 | LC_ALL=C sort -z ) \
+                    | wc -c )
+                if (( remaining > 0 )); then
+                    host_pending=true
+                    echo "${MARK_WARN} Host changes not reconciled in ${repo_name} (--upload sends them to the sandbox)" >&2
+                fi
+            fi
         else
             # Content decides what gets written, not timestamps. tar does
             # preserve mtimes, so the original hazard here is gone — but the
@@ -1104,7 +1316,11 @@ download_sandbox() {
             run rsync -a --no-times --checksum --delete --exclude=.venv \
                 "${dl_tmp}/${repo_name}/" "${sandbox_dir}/${repo_name}/"
         fi
-        [[ "$DRYRUN" == true ]] || record_repo_timestamp "$sandbox_dir" "$repo_name" last_download
+        # Stamp only a fully reconciled pull: host work left behind means the
+        # two copies did not agree, and advancing the reference would hide it
+        # from the next upload (which measures from this same stamp).
+        [[ "$DRYRUN" == true || "$host_pending" == true ]] \
+            || record_repo_timestamp "$sandbox_dir" "$repo_name" last_download
     done
     rm -rf "$dl_tmp"
 }
@@ -1118,26 +1334,63 @@ upload_sandbox() {
         exit 1
     fi
 
+    if [[ -n "$target_repo" && ! -d "${sandbox_dir}/${target_repo}" ]]; then
+        echo "Error: repo not found at ${sandbox_dir}/${target_repo}" >&2
+        exit 1
+    fi
+
+    local repos repo_name refs="" sent_dir="" since
     if [[ -n "$target_repo" ]]; then
-        if [[ ! -d "${sandbox_dir}/${target_repo}" ]]; then
-            echo "Error: repo not found at ${sandbox_dir}/${target_repo}" >&2
-            exit 1
-        fi
-        upload_repo "$sandbox_name" "$sandbox_dir" "$target_repo"
+        repos="$target_repo"
     else
-        local repos
         repos=$( { jq -r '.repos | keys[]' "$manifest"; echo "$FILES_DIR"; } | sort -u)
+    fi
+
+    # Captured before any upload moves a stamp: the unreconciled check after the
+    # loop measures each repo from the moment host and sandbox last agreed, and
+    # the sent lists (UPLOAD_SENT_DIR, written by upload_repo) are what keep a
+    # successful upload from warning about its own files.
+    if [[ "$FORCE_MODE" != true && "$DRYRUN" != true ]]; then
+        refs="$(mktemp)"
+        sent_dir="$(mktemp -d)"
         for repo_name in $repos; do
-            # An empty host files dir (what create leaves) has nothing to send,
-            # and upload_repo() empties the sandbox copy first — sending it
-            # would wipe whatever the session put there.
-            if [[ "$repo_name" == "$FILES_DIR" && -z "$(ls -A "${sandbox_dir}/${FILES_DIR}" 2>/dev/null)" ]]; then
-                continue
-            fi
-            if [[ -d "${sandbox_dir}/${repo_name}" ]]; then
-                upload_repo "$sandbox_name" "$sandbox_dir" "$repo_name"
-            fi
+            since="$(repo_sync_reference "$sandbox_dir" "$repo_name")"
+            [[ -n "$since" ]] \
+                && printf '%s\t%s\n' "$repo_name" "$since" >> "$refs"
         done
+        export UPLOAD_SENT_DIR="$sent_dir"
+    fi
+
+    for repo_name in $repos; do
+        # An empty host files dir (what create leaves) has nothing to send,
+        # and upload_repo() empties the sandbox copy first — sending it
+        # would wipe whatever the session put there.
+        if [[ "$repo_name" == "$FILES_DIR" && -z "$(ls -A "${sandbox_dir}/${FILES_DIR}" 2>/dev/null)" ]]; then
+            continue
+        fi
+        if [[ -d "${sandbox_dir}/${repo_name}" ]]; then
+            upload_repo "$sandbox_name" "$sandbox_dir" "$repo_name"
+        fi
+    done
+
+    # One line, not a file list: the sandbox holds work the host does not, so
+    # the next --download is what reconciles it. --force wiped the sandbox copy
+    # before sending, so there is nothing left to report there.
+    if [[ -s "$refs" ]]; then
+        local dirty
+        dirty="$(sandbox_unreconciled_repos "$sandbox_name" "$refs" "$sent_dir")"
+        # Iterate the host's own repo list, never the names the sandbox
+        # reported: the warning is operator-facing, and the sandbox controls
+        # that text.
+        for repo_name in $repos; do
+            grep -Fqx "${repo_name}" <<<"$dirty" || continue
+            echo "${MARK_WARN} Sandbox changes not reconciled in ${repo_name} (--download brings them to the host)" >&2
+        done
+    fi
+    if [[ -n "$refs" ]]; then
+        rm -f "$refs"
+        rm -rf "$sent_dir"
+        unset UPLOAD_SENT_DIR
     fi
 
     # The manifest is NOT re-uploaded here, and neither is anything else that
@@ -1211,7 +1464,7 @@ download_claude_state() {
         cp "${dl_tmp}/.claude.json" "${claude_dir}/.claude.json"
         notes+="    preserved .claude.json"$'\n'
     fi
-    [[ "$DRYRUN" == true ]] || echo "${MARK_OK} Download complete — Claude session state" >&2
+    [[ "$DRYRUN" == true ]] || echo "${MARK_INFO} Download complete — Claude session state" >&2
     [[ -z "$notes" ]] || printf '%s' "$notes" >&2
     rm -rf "$dl_tmp"
 }
@@ -3153,14 +3406,6 @@ if [[ "$UPLOAD_MODE" == true ]]; then
     echo "Uploading to sandbox ${SANDBOX_NAME}..." >&2
     upload_sandbox "$OS_NAME" "$SANDBOX_DIR" "$target_repo"
     echo "Done." >&2
-    # Last line, so it survives a long upload log. The change check reads
-    # mtimes and skips `.git/index`, which is the only thing an unstage
-    # touches — see repo_changed_since_upload().
-    if [[ "$FORCE_MODE" != true ]]; then
-        echo "Note: repos with no detected change are skipped, and unstaging" >&2
-        echo "  (git reset) alone is not detected. Re-run with --force to" >&2
-        echo "  send every repo." >&2
-    fi
     exit 0
 fi
 
@@ -3461,8 +3706,8 @@ ENV_CONTENT+="$(printf 'SANDBOX_SOURCE_NAME=%q' "${SANDBOX_NAME}")"$'\n'
 # `hostname` returns sandbox-sb-<hash>, which identifies the sandbox, not the
 # machine — and sandbox.source already carries the sandbox identity. With
 # several machines shipping to one collector, host.name has to be the machine.
-# Must be the same `hostname` invocation claude-otel-stack's bin/claude uses, or the
-# same laptop splits into two series (short name vs FQDN).
+# This is the only source of it in a sandbox: bin/claude sets no telemetry and
+# never calls `hostname`, which would return the container's name anyway.
 HOST_NAME_VALUE="$(hostname)"
 ENV_CONTENT+="$(printf 'SANDBOX_HOST_NAME=%q' "$HOST_NAME_VALUE")"$'\n'
 

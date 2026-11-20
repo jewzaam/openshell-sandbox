@@ -157,33 +157,22 @@ fi
 if [[ -S "$SOCKET" ]]; then
     cmd="dtach -a $SOCKET"
 elif [[ "$HARNESS" == "codex" ]]; then
-    # Same bargain as --dangerously-skip-permissions below, for the same
-    # reason: the OpenShell policy is the security boundary, so Codex's own
-    # sandbox, approval prompts and hook-trust gate are redundant confinement
-    # inside it. Every hook in here was uploaded from the host by
-    # upload_config(), so there is no untrusted hook for the gate to catch — it
-    # only costs a prompt on the observe-hook that reports state to
-    # claude-dashboard. No --model: unlike the Anthropic profiles there is
-    # nothing to correct for.
+    # The bypass flags are not added here: bin/codex is the sandbox-owned shim
+    # and forces both for every launch, bare `codex` included. No --model:
+    # unlike the Anthropic profiles there is nothing to correct for.
     #
     # `resume` unconditionally, with no check for existing sessions. Its picker
     # opens a new session as easily as it resumes one and works fine when there
     # are none, so branching on `-d /sandbox/.codex/sessions` bought nothing.
-    # There is no --yolo in codex 0.152.0; the long flags are the flags.
-    cmd="dtach -c $SOCKET /sandbox/bin/codex-error-wrapper.sh codex resume --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
+    cmd="dtach -c $SOCKET codex resume"
 elif [[ "$HARNESS" == "opencode" ]]; then
-    # --auto is the documented long flag: "Auto-approve permissions that are
-    # not explicitly denied". The sandbox policy is the security boundary, so
-    # permission prompts are redundant confinement here, the same bargain as
-    # --dangerously-skip-permissions and Codex's bypass above. Explicit denies
-    # still apply; upload_config() drops the host's permission and policy
-    # fragments on the way in because those encode host boundaries, not this
-    # container's.
+    # --auto is not added here: bin/opencode is the sandbox-owned shim and
+    # forces it for every launch, bare `opencode` included.
     #
     # No --continue: its behavior with no resumable session in a fresh database
     # is unverified, so the default launch is left to the TUI, which can resume
     # a session without the flag.
-    cmd="dtach -c $SOCKET opencode --auto"
+    cmd="dtach -c $SOCKET opencode"
 else
     claude_cmd="claude"
     # $SANDBOX_PROFILE comes from /sandbox/.env, written and uploaded on the
@@ -195,7 +184,9 @@ else
     case "${SANDBOX_PROFILE:-}" in
         personal|home) claude_cmd="$claude_cmd --model opus[1m]" ;;
     esac
-    claude_cmd="$claude_cmd --dangerously-skip-permissions"
+    # --dangerously-skip-permissions is not added here: bin/claude is the
+    # sandbox-owned shim and forces it for every launch, including a bare
+    # `claude` typed in a shell. One place, no duplicate flag.
     if [[ -d /sandbox/.claude/projects ]]; then
         claude_cmd="$claude_cmd -c"
     fi

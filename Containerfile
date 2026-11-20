@@ -69,12 +69,11 @@ RUN pip install --no-cache-dir pytest jsonschema yq
 RUN groupadd -g 1000 sandbox && \
     useradd -m -u 1000 -g sandbox -s /bin/bash -d /sandbox sandbox
 
+# bin/ carries the agent shims (claude, codex, opencode) as well as the
+# wrappers. /sandbox/bin is first on PATH (config/bashrc), so every `claude`,
+# `codex` or `opencode` resolved by name — dtach, scripts, a nested
+# `claude -p` — passes through them before reaching /usr/bin.
 COPY --chown=sandbox:sandbox bin/ /sandbox/bin/
-# claude/codex PATH shims, staged from claude-otel-stack by `make build`.
-# /sandbox/bin is first on PATH (config/bashrc), so every `claude` or `codex`
-# resolved by name — dtach, scripts, a nested `claude -p` — passes through
-# them before reaching /usr/bin.
-COPY --chown=sandbox:sandbox .tmp-otel-stack-bin/ /sandbox/bin/
 COPY --chown=sandbox:sandbox config/bashrc /sandbox/.bashrc
 
 USER sandbox

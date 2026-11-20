@@ -63,10 +63,7 @@ settings.
 2. OpenShell CLI installed
 3. OpenShell gateway running: `openshell gateway start --driver podman`
 4. fzf, for the `--reap` picker (`--reap --all` runs without it)
-5. A `claude-otel-stack` checkout for `OTEL_STACK_BIN` (default
-   `~/source/claude-otel-stack/bin`); `make build` copies its `claude` and
-   `codex` shims
-6. The host managed-settings file for `MANAGED_SETTINGS_SRC` (default
+5. The host managed-settings file for `MANAGED_SETTINGS_SRC` (default
    `/etc/claude-code/managed-settings.json`); the work image bakes it in
 
 ## Usage
@@ -127,9 +124,9 @@ Common options below; `sandbox.sh --help` lists every one.
 | `--since DATE` | Clone only history newer than DATE, every repo in this run. Any `date -d` value (`-30days`, `-3months`, `2026-08-01`); `''` for full. Default: `SANDBOX_CLONE_SINCE` from `config/site.env` |
 | `--add-repo [NAME]` | Add repo(s) to existing sandbox |
 | `--jira KEY` | Fetch Jira issue into `~/sandboxes/<name>/jira-context.md` and its comments into `jira-comments.md`, from the sandbox directory (repeatable; key or browse URL). The keys given are the file; `--create`/`--refresh` upload both |
-| `--download [NAME]` | Download repos from sandbox to `~/sandboxes/<name>/`. Plain runs pull only files changed in the sandbox and remove host files the sandbox no longer has; `--force` pulls the whole repo, `.git` and `.venv` included |
-| `-f, --force` | With `--upload`/`--download`: transfer every repo in full and regenerate context. Plain runs transfer only what changed |
-| `--upload [NAME]` | Upload local repo changes back into sandbox. Plain runs send only files newer than the last transfer and remove sandbox files the host no longer has; `--force` sends the whole repo, `.git` and `.venv` included |
+| `--download [NAME]` | Download repos from sandbox to `~/sandboxes/<name>/`. Plain runs pull only files changed in the sandbox and remove host files, older than the last transfer, that the sandbox no longer has; a file the host changed more recently stays on the host, and the run warns once that host changes were not reconciled to the sandbox; `--force` pulls the whole repo, `.git` and `.venv` included |
+| `-f, --force` | With `--upload`/`--download`: transfer every repo in full and regenerate context. Plain runs transfer only what changed; an index-only change (`git reset` with nothing else touched) is not detected, so `--force` is how it is sent |
+| `--upload [NAME]` | Upload local repo changes back into sandbox. Plain runs send only files newer than the last transfer and remove sandbox files the host no longer has; a file the sandbox changed more recently stays in the sandbox, and the run warns once that sandbox changes were not reconciled to the host; `--force` sends the whole repo, `.git` and `.venv` included |
 | `--profile NAME` | `work`, `personal`, or `home`. Required with `--create` and `--recreate` |
 | `--policy FILE` | Override policy file (default: the profile's own) |
 | `--gateway NAME` | OpenShell gateway |
